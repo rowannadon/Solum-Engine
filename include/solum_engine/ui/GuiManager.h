@@ -1,0 +1,48 @@
+#include <glm/glm.hpp>
+
+#include <imgui/imgui.h>
+#include <imgui/backends/imgui_impl_glfw.h>
+#include <imgui/backends/imgui_impl_wgpu.h>
+
+#include <webgpu/webgpu.hpp>
+
+#include "solum_engine/core/Camera.h"
+#include "solum_engine/render/Uniforms.h"
+
+using namespace wgpu;
+
+class GuiManager {
+        // ImGUI state
+    struct ImGUIState {
+        bool showMainWindow = true;
+        bool showDemo = true;
+        float timeMultiplier = 0.5f;  // Multiplier for time (originally hardcoded as 0.5)
+        bool pauseTime = false;       // Allow pausing time
+        float manualTime = 0.0f;      // Manual time override
+        bool useManualTime = false;   // Use manual time instead of automatic
+
+        // Camera controls
+        bool showCameraControls = true;
+
+        // Performance metrics
+        bool showPerformanceMetrics = true;
+
+        // Lighting controls
+        bool showLightingControls = true;
+        glm::vec3 lightDirection = glm::vec3(0.3f, 0.3f, -0.7f);
+        glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 0.9f);
+        float lightIntensity = 1.0f;
+    };
+
+    ImGUIState imguiState;  // Add ImGUI state
+
+public:
+    ImGUIState& getState() {
+        return imguiState;
+    }
+
+    bool initImGUI(GLFWwindow* window, Device device, TextureFormat format);
+    void renderImGUI(const FrameUniforms& uniforms, const std::vector<float>& frameTimes, FirstPersonCamera& camera, float frameTime);
+    void terminateImGUI();
+    void updateImGUIFrame();
+};

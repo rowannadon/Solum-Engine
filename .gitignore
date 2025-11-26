@@ -1,0 +1,10 @@
+build/
+assets/large/
+.vs/
+.vscode/
+out/
+
+# Temporary files
+*.~
+*.tmp
+*.temp
