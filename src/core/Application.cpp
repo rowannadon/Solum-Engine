@@ -23,17 +23,13 @@ bool Application::Initialize() {
     }
 
     // initialize uniforms
-    uniforms.time = 1.0f;
-    uniforms.highlightedVoxelPos = { 0, 0, 0 };
     uniforms.modelMatrix = glm::mat4x4(1.0);
-    uniforms.projectionMatrix = glm::perspective(camera.zoom * PI / 180, 1280.0f / 720.0f, 0.1f, 2500.0f);
-    uniforms.inverseProjectionMatrix = glm::inverse(uniforms.projectionMatrix);
-    uniforms.screenSize = glm::vec2(static_cast<float>(1280), static_cast<float>(720));
-
-    buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
 
     camera.updateCameraVectors();
+    updateProjectionMatrix(camera.zoom);
     updateViewMatrix();
+
+    buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
 
     if (!gui.initImGUI(window, gpu.getContext()->getDevice(), gpu.getContext()->getSurfaceFormat())) {
         std::cerr << "Failed to initialize ImGUI" << std::endl;
@@ -85,14 +81,9 @@ void Application::MainLoop() {
     // Early exit if frame budget is already exceeded
     float frameStartTime = currentFrame;
 
-    if (gui.getState().useManualTime) {
-        uniforms.time = gui.getState().manualTime;
-    }
-    else if (!gui.getState().pauseTime) {
-        uniforms.time = currentFrame * gui.getState().timeMultiplier;
-    }
-
-    uniforms.cameraWorldPos = camera.position;
+    const glm::mat4 viewGPU = glm::lookAt(camera.position, camera.position + camera.front, camera.up);
+    uniforms.viewMatrix = viewGPU;
+    uniforms.inverseViewMatrix = glm::inverse(viewGPU);
 
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
 
@@ -229,9 +220,7 @@ void Application::updateProjectionMatrix(int zoom) {
     glfwGetFramebufferSize(window, &width, &height);
     float ratio = width / (float)height;
     uniforms.projectionMatrix = glm::perspective(zoom * PI / 180, ratio, 0.1f, 2500.0f);
-    uniforms.infiniteProjectionMatrix = glm::tweakedInfinitePerspective(zoom * PI / 180, ratio, 0.1f);
     uniforms.inverseProjectionMatrix = glm::inverse(uniforms.projectionMatrix);
-    uniforms.screenSize = glm::vec2(static_cast<float>(width), static_cast<float>(height));
 
     buf->writeBuffer("uniform_buffer", offsetof(FrameUniforms, projectionMatrix), &uniforms.projectionMatrix, sizeof(FrameUniforms::projectionMatrix));
 }

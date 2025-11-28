@@ -4,10 +4,9 @@
 #include <glm/glm.hpp>
 
 class Chunk {
-    std::vector<BlockMaterial> data;
+    std::array<BlockMaterial, CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE> data;
     
 public:
-    Chunk();
     bool setBlock(glm::ivec3 pos, UnpackedBlockMaterial mat);
     UnpackedBlockMaterial getBlock(glm::ivec3 pos);
 

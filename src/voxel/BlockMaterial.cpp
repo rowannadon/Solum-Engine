@@ -26,7 +26,7 @@ UnpackedBlockMaterial BlockMaterial::unpack() const {
     mat.waterLevel = (data >> 3) & 0xF;
 
     // Extract facing direction from bits 0–2
-    mat.dir = static_cast<FacingDirection>(data & 0x7);
+    mat.dir = static_cast<Direction>(data & 0x7);
 
     return mat;
 }

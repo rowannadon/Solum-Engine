@@ -59,7 +59,7 @@ void GuiManager::renderImGUI(const FrameUniforms& uniforms, const std::vector<fl
                 ImGui::SliderFloat("Manual Time", &imguiState.manualTime, 0.0f, 100.0f, "%.2f");
             }
 
-            ImGui::Text("Current Time: %.2f", uniforms.time);
+            //ImGui::Text("Current Time: %.2f", uniforms.time);
         }
 
         // Camera Controls

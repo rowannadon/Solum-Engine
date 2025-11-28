@@ -1,9 +1,5 @@
 #include "solum_engine/voxel/Chunk.h"
 
-Chunk::Chunk() {
-    data.resize(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE);
-};
-
 bool Chunk::setBlock(glm::ivec3 pos, UnpackedBlockMaterial mat) {
     if (!validatePos(pos)) {
         return false;

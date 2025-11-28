@@ -7,6 +7,8 @@
 #include <fstream> 
 #include <vector>
 
+#include "solum_engine/render/VertexAttributes.h"
+
 using namespace wgpu;
 
 struct PipelineConfig {

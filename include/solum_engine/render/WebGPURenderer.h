@@ -11,6 +11,7 @@
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
+#include "solum_engine/render/VertexAttributes.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
@@ -28,6 +29,9 @@ private:
 
     // Add this for ImGUI support
     RenderPassEncoder currentCommandEncoder = nullptr;
+
+    uint16_t vertexCount;
+    uint16_t indexCount;
 
 public:
     bool initialize();

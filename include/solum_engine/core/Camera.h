@@ -3,7 +3,7 @@
 
 
 struct FirstPersonCamera {
-    glm::vec3 position = glm::vec3(5.0f, 0.0f, 200.0f);  // Camera position in world space
+    glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f);  // Camera position in world space
     glm::vec3 front = glm::vec3(-1.0f, 0.0f, 0.0f);    // Direction camera is looking
     glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);        // Up vector
     glm::vec3 right = glm::vec3(0.0f, 1.0f, 0.0f);     // Right vector (corrected)

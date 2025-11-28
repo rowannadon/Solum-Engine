@@ -20,7 +20,7 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineN
     if (config.useVertexBuffers && !config.vertexAttributes.empty()) {
         vertexBufferLayout.attributeCount = static_cast<uint32_t>(config.vertexAttributes.size());
         vertexBufferLayout.attributes = config.vertexAttributes.data();
-        vertexBufferLayout.arrayStride = sizeof(int);
+        vertexBufferLayout.arrayStride = sizeof(VertexAttributes);
         vertexBufferLayout.stepMode = VertexStepMode::Vertex;
 
         pipelineDesc.vertex.bufferCount = 1;

@@ -26,6 +26,67 @@ bool WebGPURenderer::initialize() {
 		if (!ubo) return false;
 	}
 
+	
+
+	std::array<VertexAttributes, 16> vertexData;
+	vertexData[0] = {0, 0, 0, 0, 0, 0, 1, 0};
+	vertexData[1] = {0, 0, 1, 0, 0, 0, 1, 0};
+	vertexData[2] = {1, 0, 0, 0, 0, 0, 1, 0};
+	vertexData[3] = {1, 0, 1, 0, 0, 0, 1, 0};
+
+	vertexData[4] = {0, 1, 0, 0, 0, 0, 0, 0};
+	vertexData[5] = {0, 1, 1, 0, 0, 0, 0, 0};
+	vertexData[6] = {1, 1, 0, 0, 0, 0, 0, 0};
+	vertexData[7] = {1, 1, 1, 0, 0, 0, 0, 0};
+
+	vertexData[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+	vertexData[9] = {0, 0, 1, 0, 0, 0, 0, 0};
+	vertexData[10] = {0, 1, 0, 0, 0, 0, 0, 0};
+	vertexData[11] = {0, 1, 1, 0, 0, 0, 0, 0};
+
+	vertexData[12] = {1, 0, 0, 0, 0, 0, 0, 0};
+	vertexData[13] = {1, 0, 1, 0, 0, 0, 0, 0};
+	vertexData[14] = {1, 1, 0, 0, 0, 0, 0, 0};
+	vertexData[15] = {1, 1, 1, 0, 0, 0, 0, 0};
+
+	// vertexData[16] = {0, 0, 0, 0, 0, 0, 0, 0};
+	// vertexData[17] = {0, 0, 1, 0, 0, 0, 0, 0};
+	// vertexData[18] = {1, 0, 0, 0, 0, 0, 0, 0};
+	// vertexData[19] = {1, 0, 1, 0, 0, 0, 0, 0};
+
+	// vertexData[20] = {0, 0, 0, 0, 0, 0, 0, 0};
+	// vertexData[21] = {0, 0, 1, 0, 0, 0, 0, 0};
+	// vertexData[22] = {1, 0, 0, 0, 0, 0, 0, 0};
+	// vertexData[23] = {1, 0, 1, 0, 0, 0, 0, 0};
+
+	vertexCount = static_cast<uint32_t>(vertexData.size());
+
+	{
+		BufferDescriptor desc{};
+		desc.label = StringView("vertex buffer");
+		desc.size = sizeof(VertexAttributes) * vertexCount;
+		desc.usage = BufferUsage::CopyDst | BufferUsage::Vertex;
+		desc.mappedAtCreation = false;
+		Buffer vbo = bufferManager->createBuffer("vertex_buffer", desc);
+		if (!vbo) return false;
+	}
+
+	std::array<uint16_t, 24> indexData = {0, 1, 2, 1, 3, 2, 4, 5, 6, 5, 7, 6, 8, 9, 10, 9, 11, 10, 12, 13, 14, 13, 15, 14};
+	indexCount = static_cast<uint32_t>(indexData.size());
+
+	{
+		BufferDescriptor desc{};
+		desc.label = StringView("index buffer");
+		desc.size = sizeof(uint16_t) * indexCount;
+		desc.usage = BufferUsage::CopyDst | BufferUsage::Index;
+		desc.mappedAtCreation = false;
+		Buffer ibo = bufferManager->createBuffer("index_buffer", desc);
+		if (!ibo) return false;
+	}
+
+	bufferManager->writeBuffer("vertex_buffer", 0, vertexData.data(), vertexCount * sizeof(VertexAttributes));
+	bufferManager->writeBuffer("index_buffer", 0, indexData.data(), indexCount * sizeof(uint16_t));
+
 	voxelPipeline.init(bufferManager.get(), textureManager.get(), pipelineManager.get(), context.get());
 	voxelPipeline.createResources();
 	voxelPipeline.createPipeline();
