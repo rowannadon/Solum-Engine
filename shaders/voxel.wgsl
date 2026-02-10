@@ -22,11 +22,9 @@ struct VertexOutput {
     @location(1) uv: vec2f,
 };
 
-struct FragmentInput {
-    @builtin(position) position: vec4f,
-    @location(0) normal: vec3f,
-    @location(1) uv: vec2f,
-};
+fn decodeNormalComponent(value: u32) -> f32 {
+    return (f32(value) / 255.0) * 2.0 - 1.0;
+}
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
@@ -38,10 +36,23 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let view_position = frameUniforms.viewMatrix * world_position;
     out.position = frameUniforms.projectionMatrix * view_position;
 
+    out.normal = vec3f(
+        decodeNormalComponent(in.n_x),
+        decodeNormalComponent(in.n_y),
+        decodeNormalComponent(in.n_z)
+    );
+
+    out.uv = vec2f(f32(in.u) / 65535.0, f32(in.v) / 65535.0);
+
     return out;
 }
 
 @fragment
-fn fs_main(in: FragmentInput) -> @location(0) vec4f {
-    return vec4f(0.0, 0.4, 1.0, 1.0);
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    let lightDir = normalize(vec3f(0.45, 0.8, 0.35));
+    let ndotl = max(dot(normalize(in.normal), lightDir), 0.0);
+    let ambient = 0.3;
+    let shade = ambient + (1.0 - ambient) * ndotl;
+    let baseColor = vec3f(0.0, 0.4, 1.0);
+    return vec4f(baseColor * shade, 1.0);
 }

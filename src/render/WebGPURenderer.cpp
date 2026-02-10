@@ -26,38 +26,35 @@ bool WebGPURenderer::initialize() {
 		if (!ubo) return false;
 	}
 
-	
+	UnpackedBlockMaterial mat;
+	mat.id = 1;
 
-	std::array<VertexAttributes, 16> vertexData;
-	vertexData[0] = {0, 0, 0, 0, 0, 0, 1, 0};
-	vertexData[1] = {0, 0, 1, 0, 0, 0, 1, 0};
-	vertexData[2] = {1, 0, 0, 0, 0, 0, 1, 0};
-	vertexData[3] = {1, 0, 1, 0, 0, 0, 1, 0};
 
-	vertexData[4] = {0, 1, 0, 0, 0, 0, 0, 0};
-	vertexData[5] = {0, 1, 1, 0, 0, 0, 0, 0};
-	vertexData[6] = {1, 1, 0, 0, 0, 0, 0, 0};
-	vertexData[7] = {1, 1, 1, 0, 0, 0, 0, 0};
+	UnpackedBlockMaterial air;
+	air.id = 0;
 
-	vertexData[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-	vertexData[9] = {0, 0, 1, 0, 0, 0, 0, 0};
-	vertexData[10] = {0, 1, 0, 0, 0, 0, 0, 0};
-	vertexData[11] = {0, 1, 1, 0, 0, 0, 0, 0};
+	for (int x = 0; x < CHUNK_SIZE; x++) {
+		for (int y = 0; y < CHUNK_SIZE; y++) {
+			for (int z = 0; z < CHUNK_SIZE; z++) {
+				if (rand() > 31000) {
+					chunk.setBlock(ivec3(x, y, z), mat);
+				}
+				else {
+					chunk.setBlock(ivec3(x, y, z), air);
+				}
+			}
+		}
+	}
 
-	vertexData[12] = {1, 0, 0, 0, 0, 0, 0, 0};
-	vertexData[13] = {1, 0, 1, 0, 0, 0, 0, 0};
-	vertexData[14] = {1, 1, 0, 0, 0, 0, 0, 0};
-	vertexData[15] = {1, 1, 1, 0, 0, 0, 0, 0};
+	std::vector<Chunk*> neighbors;
+	neighbors.push_back(nullptr);
+	neighbors.push_back(nullptr);
+	neighbors.push_back(nullptr);
+	neighbors.push_back(nullptr);
+	neighbors.push_back(nullptr);
+	neighbors.push_back(nullptr);
 
-	// vertexData[16] = {0, 0, 0, 0, 0, 0, 0, 0};
-	// vertexData[17] = {0, 0, 1, 0, 0, 0, 0, 0};
-	// vertexData[18] = {1, 0, 0, 0, 0, 0, 0, 0};
-	// vertexData[19] = {1, 0, 1, 0, 0, 0, 0, 0};
-
-	// vertexData[20] = {0, 0, 0, 0, 0, 0, 0, 0};
-	// vertexData[21] = {0, 0, 1, 0, 0, 0, 0, 0};
-	// vertexData[22] = {1, 0, 0, 0, 0, 0, 0, 0};
-	// vertexData[23] = {1, 0, 1, 0, 0, 0, 0, 0};
+	auto [vertexData, indexData] = mesher.mesh(chunk, neighbors);
 
 	vertexCount = static_cast<uint32_t>(vertexData.size());
 
@@ -71,7 +68,6 @@ bool WebGPURenderer::initialize() {
 		if (!vbo) return false;
 	}
 
-	std::array<uint16_t, 24> indexData = {0, 1, 2, 1, 3, 2, 4, 5, 6, 5, 7, 6, 8, 9, 10, 9, 11, 10, 12, 13, 14, 13, 15, 14};
 	indexCount = static_cast<uint32_t>(indexData.size());
 
 	{

@@ -1,20 +1,20 @@
+#pragma once
+
 #include <cstdint>
 #include <solum_engine/resources/Constants.h>
 
 struct BlockMaterial;
 
 struct UnpackedBlockMaterial {
-    uint16_t id;
-    int waterLevel; // 0-15
-    Direction dir;
+    uint16_t id = 0;
+    int waterLevel = 0; // 0-15
+    Direction dir = Direction::PlusY;
 
     BlockMaterial pack() const;
 };
 
 struct BlockMaterial {
-    uint32_t data;
+    uint32_t data = 0;
 
     UnpackedBlockMaterial unpack() const;
 };
-
-

@@ -12,6 +12,8 @@
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 #include "solum_engine/render/VertexAttributes.h"
+#include "solum_engine/voxel/Chunk.h"
+#include "solum_engine/voxel/ChunkMesher.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
@@ -24,6 +26,10 @@ private:
     std::unique_ptr<TextureManager> textureManager;
 
     FrameUniforms uniforms;
+
+    Chunk chunk;
+    Chunk chunk2;
+    ChunkMesher mesher;
 
     VoxelPipeline voxelPipeline;
 
