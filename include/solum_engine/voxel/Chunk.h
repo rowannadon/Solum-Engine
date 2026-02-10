@@ -3,13 +3,14 @@
 #include <vector>
 #include "solum_engine/voxel/BlockMaterial.h"
 #include "solum_engine/resources/Constants.h"
+#include "solum_engine/resources/Coords.h"
 #include <glm/glm.hpp>
 
 class ChunkMesher;
 
 class Chunk {
     friend class ChunkMesher;
-    glm::ivec3 worldPos;
+    ChunkCoord pos;
     std::array<BlockMaterial, CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE> data;
     
 public:

@@ -29,7 +29,7 @@ file(GLOB_RECURSE SOLUM_ENGINE_SRC CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
 
-add_executable(solum_engine ${SOLUM_ENGINE_SRC} "include/solum_engine/voxel/ChunkMesher.h")
+add_executable(solum_engine ${SOLUM_ENGINE_SRC})
 
 # We add an option to enable different settings when developing the app than
 # when distributing it.
