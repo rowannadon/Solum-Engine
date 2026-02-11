@@ -1,0 +1,31 @@
+{
+    "version": 8,
+    "configurePresets": [
+        {
+            "name": "macos",
+            "generator": "Xcode",
+            "displayName": "Clang 16.0.0 arm64-apple-darwin23.5.0",
+            "description": "Using compilers: C = /usr/bin/clang, CXX = /usr/bin/clang++",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_C_COMPILER": "/usr/bin/clang",
+                "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+                "CMAKE_CXX_STANDARD": "20",
+                "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+                "CMAKE_CXX_EXTENSIONS": "OFF"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+        "name": "macos-debug",
+        "displayName": "macOS Debug",
+        "configurePreset": "macos",
+        "configuration": "Debug",
+        "targets": [
+            "solum_engine"
+        ]
+        }
+    ]
+}

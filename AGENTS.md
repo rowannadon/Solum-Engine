@@ -1,5 +1,6 @@
 This is an in progress project for a flexible, high performance voxel game engine built using WebGPU and C++. The engine is designed to render simple, minecraft style graphics and blocks.
 
+Testing: Testing will be performed manually, do NOT attempt any build or verification steps after making changes.
 
 Directory structure:
 /include/solum_engine - header files (directory structure mirrors src)
