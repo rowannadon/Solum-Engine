@@ -48,7 +48,7 @@ public:
 
 private:
     uint32_t bit_width(uint32_t m);
-    void TextureManager::writeMipMaps(
+    void writeMipMaps(
         Texture texture,
         Extent3D textureSize,
         uint32_t mipLevelCount,

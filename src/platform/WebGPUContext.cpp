@@ -1,4 +1,5 @@
 #include "solum_engine/platform/WebGPUContext.h"
+#include "solum_engine/render/VertexAttributes.h"
 
 bool WebGPUContext::initialize(const RenderConfig& config) {
     // Create instance descriptor
@@ -12,7 +13,7 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     toggles.chain.sType = SType::DawnTogglesDescriptor;
 
     std::vector<const char*> enabledToggles = {
-    "allow_unsafe_apis",
+    //"allow_unsafe_apis",
     "enable_immediate_error_handling",
     };
 
@@ -49,8 +50,6 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
 
     surface = glfwGetWGPUSurface(instance, window);
 
-    //surface = glfwCreateWindowWGPUSurface(instance, window);
-
     if (!surface) {
         std::cerr << "Could not create surface" << std::endl;
         glfwDestroyWindow(window);
@@ -65,7 +64,17 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     adapterOpts.nextInChain = nullptr;
     adapterOpts.compatibleSurface = surface;
     adapterOpts.powerPreference = WGPUPowerPreference_HighPerformance;
-    adapterOpts.backendType = WGPUBackendType_Vulkan;
+
+    #ifdef _WIN32
+        adapterOpts.backendType = WGPUBackendType_Vulkan;
+    #elif __linux__
+        adapterOpts.backendType = WGPUBackendType_Vulkan
+    #elif __APPLE__
+        adapterOpts.backendType = WGPUBackendType_Metal;
+    #else
+        std::cout << "Unknown or unsupported platform." << std::endl;
+        return false;
+    #endif
 
     RequestAdapterCallbackInfo callbackInfo = {};
     callbackInfo.nextInChain = nullptr;
@@ -103,7 +112,7 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     deviceDesc.defaultQueue.label = StringView("Main Queue");
     std::vector<FeatureName> requiredFeatures = {
         FeatureName::IndirectFirstInstance,
-        FeatureName::MultiDrawIndirect,
+        //FeatureName::MultiDrawIndirect,
         FeatureName::Unorm16TextureFormats
     };
     deviceDesc.requiredFeatures = (const WGPUFeatureName*)requiredFeatures.data();
@@ -213,14 +222,11 @@ Limits WebGPUContext::GetRequiredLimits(Adapter adapter) const {
     // Don't forget to = Default
     Limits requiredLimits = Default;
 
-    // We use at most 1 vertex attribute for now
-    requiredLimits.maxVertexAttributes = 1;
-    // We should also tell that we use 1 vertex buffers
+    requiredLimits.maxVertexAttributes = 9;
     requiredLimits.maxVertexBuffers = 1;
-    // Maximum size of a buffer is 6 vertices of 2 float each
-    requiredLimits.maxBufferSize = 36000 * 32768 * sizeof(int);
+    requiredLimits.maxVertexBufferArrayStride = sizeof(VertexAttributes);
 
-    requiredLimits.maxStorageBufferBindingSize = 4294967295;
+    requiredLimits.maxStorageBufferBindingSize = 500000;
     // Maximum stride between 2 consecutive vertices in the vertex buffer
     requiredLimits.maxVertexBufferArrayStride = sizeof(int);
 

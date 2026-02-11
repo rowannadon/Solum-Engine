@@ -160,9 +160,9 @@ void TextureManager::writeMipMaps(
                                 };
                             acc(p00, a00); acc(p01, a01); acc(p10, a10); acc(p11, a11);
                             if (total > 0) {
-                                p[0] = unsigned char(wr / total);
-                                p[1] = unsigned char(wg / total);
-                                p[2] = unsigned char(wb / total);
+                                p[0] = (unsigned char)(wr / total);
+                                p[1] = (unsigned char)(wg / total);
+                                p[2] = (unsigned char)(wb / total);
                             }
                             else {
                                 p[0] = (p00[0] + p01[0] + p10[0] + p11[0]) / 4;
@@ -302,7 +302,7 @@ void TextureManager::writeMipMapsArray(
                         float total = 0.f, wr = 0.f, wg = 0.f, wb = 0.f;
                         auto acc = [&](unsigned char* s, float a) { if (a >= 0.5f) { wr += s[0] * a; wg += s[1] * a; wb += s[2] * a; total += a; } };
                         acc(p00, a00); acc(p01, a01); acc(p10, a10); acc(p11, a11);
-                        if (total > 0) { p[0] = unsigned char(wr / total); p[1] = unsigned char(wg / total); p[2] = unsigned char(wb / total); }
+                        if (total > 0) { p[0] = (unsigned char)(wr / total); p[1] = (unsigned char)(wg / total); p[2] = (unsigned char)(wb / total); }
                         else { p[0] = (p00[0] + p01[0] + p10[0] + p11[0]) / 4; p[1] = (p00[1] + p01[1] + p10[1] + p11[1]) / 4; p[2] = (p00[2] + p01[2] + p10[2] + p11[2]) / 4; }
                     }
                     else { p[0] = p[1] = p[2] = 0; }

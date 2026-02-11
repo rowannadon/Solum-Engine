@@ -2,6 +2,8 @@
 
 #include <vector>
 #include "solum_engine/voxel/BlockMaterial.h"
+#include "solum_engine/voxel/BlockStorage.h"
+#include "solum_engine/voxel/LightStorage.h"
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/resources/Coords.h"
 #include <glm/glm.hpp>
@@ -9,16 +11,17 @@
 class ChunkMesher;
 
 class Chunk {
-    friend class ChunkMesher;
     ChunkCoord pos;
     std::array<BlockMaterial, CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE> data;
+
+    friend class ChunkMesher;
     
 public:
-    //Chunk(glm::ivec3 pos);
-    bool setBlock(glm::ivec3 pos, UnpackedBlockMaterial mat);
-    UnpackedBlockMaterial getBlock(glm::ivec3 pos);
+    Chunk(ChunkCoord p);
+    bool setBlock(BlockCoord pos, UnpackedBlockMaterial mat);
+    UnpackedBlockMaterial getBlock(BlockCoord pos);
 
 private:
-    bool validatePos(glm::ivec3 pos);
-    int getIndex(glm::ivec3 pos);
+    bool validatePos(BlockCoord pos);
+    int getIndex(BlockCoord pos);
 };

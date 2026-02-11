@@ -1,3 +1,6 @@
+#include <random>
+#include <thread>
+#include <chrono>
 #include "solum_engine/render/WebGPURenderer.h"
 
 bool WebGPURenderer::initialize() {
@@ -26,9 +29,13 @@ bool WebGPURenderer::initialize() {
 		if (!ubo) return false;
 	}
 
+    std::random_device dev;
+    std::mt19937 rng(dev());
+    std::uniform_int_distribution<std::mt19937::result_type> dist(1,30);
+    std::uniform_int_distribution<std::mt19937::result_type> dist2(1,10);
+
 	UnpackedBlockMaterial mat;
 	mat.id = 1;
-
 
 	UnpackedBlockMaterial air;
 	air.id = 0;
@@ -36,18 +43,37 @@ bool WebGPURenderer::initialize() {
 	for (int x = 0; x < CHUNK_SIZE; x++) {
 		for (int y = 0; y < CHUNK_SIZE; y++) {
 			for (int z = 0; z < CHUNK_SIZE; z++) {
-				if (rand() > 31000) {
-					chunk.setBlock(ivec3(x, y, z), mat);
+				mat.id = dist2(rng);
+				BlockCoord coord(glm::ivec3(x, y, z));
+				if (true) {
+					chunk.setBlock(coord, mat);
 				}
 				else {
-					chunk.setBlock(ivec3(x, y, z), air);
+					chunk.setBlock(coord, air);
 				}
 			}
 		}
 	}
 
+	for (int x = 0; x < CHUNK_SIZE; x++) {
+		for (int y = 0; y < CHUNK_SIZE; y++) {
+			for (int z = 0; z < CHUNK_SIZE; z++) {
+				mat.id = dist2(rng);
+				BlockCoord coord(glm::ivec3(x, y, z));
+				if (dist(rng) == 1) {
+					chunk2.setBlock(coord, mat);
+				}
+				else {
+					chunk2.setBlock(coord, air);
+				}
+			}
+		}
+	}
+    
+    
+
 	std::vector<Chunk*> neighbors;
-	neighbors.push_back(nullptr);
+	neighbors.push_back(&chunk2);
 	neighbors.push_back(nullptr);
 	neighbors.push_back(nullptr);
 	neighbors.push_back(nullptr);
@@ -56,7 +82,19 @@ bool WebGPURenderer::initialize() {
 
 	auto [vertexData, indexData] = mesher.mesh(chunk, neighbors);
 
+	std::vector<Chunk*> neighbors2;
+	neighbors2.push_back(nullptr);
+	neighbors2.push_back(&chunk);
+	neighbors2.push_back(nullptr);
+	neighbors2.push_back(nullptr);
+	neighbors2.push_back(nullptr);
+	neighbors2.push_back(nullptr);
+
+	auto [vertexData2, indexData2] = mesher.mesh(chunk2, neighbors2);
+
 	vertexCount = static_cast<uint32_t>(vertexData.size());
+    vertexCount2 = static_cast<uint32_t>(vertexData2.size());
+
 
 	{
 		BufferDescriptor desc{};
@@ -68,7 +106,18 @@ bool WebGPURenderer::initialize() {
 		if (!vbo) return false;
 	}
 
-	indexCount = static_cast<uint32_t>(indexData.size());
+    {
+        BufferDescriptor desc{};
+        desc.label = StringView("vertex buffer2");
+        desc.size = sizeof(VertexAttributes) * vertexCount2;
+        desc.usage = BufferUsage::CopyDst | BufferUsage::Vertex;
+        desc.mappedAtCreation = false;
+        Buffer vbo = bufferManager->createBuffer("vertex_buffer2", desc);
+        if (!vbo) return false;
+    }
+
+    indexCount = static_cast<uint32_t>(indexData.size());
+    indexCount2 = static_cast<uint32_t>(indexData2.size());
 
 	{
 		BufferDescriptor desc{};
@@ -79,9 +128,22 @@ bool WebGPURenderer::initialize() {
 		Buffer ibo = bufferManager->createBuffer("index_buffer", desc);
 		if (!ibo) return false;
 	}
-
+    
+    {
+        BufferDescriptor desc{};
+        desc.label = StringView("index buffer2");
+        desc.size = sizeof(uint16_t) * indexCount2;
+        desc.usage = BufferUsage::CopyDst | BufferUsage::Index;
+        desc.mappedAtCreation = false;
+        Buffer ibo = bufferManager->createBuffer("index_buffer2", desc);
+        if (!ibo) return false;
+    }
+    
 	bufferManager->writeBuffer("vertex_buffer", 0, vertexData.data(), vertexCount * sizeof(VertexAttributes));
 	bufferManager->writeBuffer("index_buffer", 0, indexData.data(), indexCount * sizeof(uint16_t));
+    
+    bufferManager->writeBuffer("vertex_buffer2", 0, vertexData2.data(), vertexCount2 * sizeof(VertexAttributes));
+    bufferManager->writeBuffer("index_buffer2", 0, indexData2.data(), indexCount2 * sizeof(uint16_t));
 
 	voxelPipeline.init(bufferManager.get(), textureManager.get(), pipelineManager.get(), context.get());
 	voxelPipeline.createResources();

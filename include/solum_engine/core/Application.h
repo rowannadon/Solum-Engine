@@ -30,6 +30,8 @@
 
 class Application {
 public:
+    Application() = default;
+
     bool Initialize();
     void Terminate();
     void MainLoop();

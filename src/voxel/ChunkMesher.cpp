@@ -1,5 +1,6 @@
 #include "solum_engine/voxel/ChunkMesher.h"
 #include "solum_engine/resources/Constants.h"
+#include "solum_engine/resources/Coords.h"
 #include "solum_engine/voxel/BlockMaterial.h"
 
 #include <algorithm>
@@ -62,6 +63,8 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mes
 	std::array<BlockMaterial, kPaddedBlockCount> paddedBlockData;
 	paddedBlockData.fill(BlockMaterial{ 0 });
 	indices.clear();
+
+	BlockCoord chunkOrigin = chunk_to_block_origin(chunk.pos);
 
 	auto paddedIndex = [&](int x, int y, int z) {
 		return (x * kPaddedPlaneArea) + (y * kChunkSizePadded) + z;
@@ -176,9 +179,10 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mes
 					uint16_t baseIndex = static_cast<uint16_t>(vertices.size());
 					for (const glm::ivec3& vertexOffset : kFaceVertexOffsets[dir]) {
 						VertexAttributes vertex{};
-						vertex.x = static_cast<uint16_t>(x + vertexOffset.x);
-						vertex.y = static_cast<uint16_t>(y + vertexOffset.y);
-						vertex.z = static_cast<uint16_t>(z + vertexOffset.z);
+
+						vertex.x = static_cast<uint16_t>(x + vertexOffset.x + chunkOrigin.x());
+						vertex.y = static_cast<uint16_t>(y + vertexOffset.y + chunkOrigin.y());
+						vertex.z = static_cast<uint16_t>(z + vertexOffset.z + chunkOrigin.z());
 
 						switch (static_cast<Direction>(dir)) {
 						case Direction::PlusX:

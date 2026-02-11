@@ -1,5 +1,4 @@
-#ifndef WEBGPU_CONTEXT_H
-#define WEBGPU_CONTEXT_H
+#pragma once
 
 #include <GLFW/glfw3.h>
 #include <glfw3webgpu.h>
@@ -48,5 +47,3 @@ public:
     uint32_t ceilToNextMultiple(uint32_t value, uint32_t step) const;
     void terminate();
 };
-
-#endif // WEBGPU_CONTEXT_H

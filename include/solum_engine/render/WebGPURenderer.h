@@ -9,6 +9,7 @@
 #include "solum_engine/render/TextureManager.h"
 #include "solum_engine/platform/WebGPUContext.h"
 #include "solum_engine/resources/Constants.h"
+#include "solum_engine/resources/Coords.h"
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 #include "solum_engine/render/VertexAttributes.h"
@@ -36,10 +37,18 @@ private:
     // Add this for ImGUI support
     RenderPassEncoder currentCommandEncoder = nullptr;
 
-    uint16_t vertexCount;
-    uint16_t indexCount;
+    uint32_t vertexCount;
+    uint32_t indexCount;
+
+    uint32_t vertexCount2;
+    uint32_t indexCount2;
 
 public:
+    WebGPURenderer()
+            : chunk(ChunkCoord{0, 0, 0})
+            , chunk2(ChunkCoord{1, 0, 0})
+        {}
+
     bool initialize();
 
     PipelineManager* getPipelineManager();

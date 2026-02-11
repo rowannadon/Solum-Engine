@@ -5,7 +5,7 @@ bool VoxelPipeline::createResources() {
     glfwGetFramebufferSize(context->getWindow(), &width, &height);
 
     TextureFormat depthTextureFormat = TextureFormat::Depth24Plus;
-    TextureDescriptor depthTextureDesc;
+    TextureDescriptor depthTextureDesc = Default;
     depthTextureDesc.dimension = TextureDimension::_2D;
     depthTextureDesc.format = depthTextureFormat;
     depthTextureDesc.mipLevelCount = 1;
@@ -16,7 +16,7 @@ bool VoxelPipeline::createResources() {
     depthTextureDesc.viewFormats = nullptr;
     Texture depthTexture = tex->createTexture("depth_texture", depthTextureDesc);
 
-    TextureViewDescriptor depthTextureViewDesc;
+    TextureViewDescriptor depthTextureViewDesc = Default;
     depthTextureViewDesc.aspect = TextureAspect::DepthOnly;
     depthTextureViewDesc.baseArrayLayer = 0;
     depthTextureViewDesc.arrayLayerCount = 1;
@@ -28,7 +28,7 @@ bool VoxelPipeline::createResources() {
 
     TextureFormat multiSampleTextureFormat = context->getSurfaceFormat();
 
-    TextureDescriptor multiSampleTextureDesc;
+    TextureDescriptor multiSampleTextureDesc = Default;
     multiSampleTextureDesc.dimension = TextureDimension::_2D;
     multiSampleTextureDesc.format = multiSampleTextureFormat;
     multiSampleTextureDesc.mipLevelCount = 1;
@@ -39,7 +39,7 @@ bool VoxelPipeline::createResources() {
     multiSampleTextureDesc.viewFormats = nullptr;
     Texture multiSampleTexture = tex->createTexture("multisample_texture", multiSampleTextureDesc);
 
-    TextureViewDescriptor multiSampleTextureViewDesc;
+    TextureViewDescriptor multiSampleTextureViewDesc = Default;
     multiSampleTextureViewDesc.aspect = TextureAspect::All;
     multiSampleTextureViewDesc.baseArrayLayer = 0;
     multiSampleTextureViewDesc.arrayLayerCount = 1;
@@ -105,7 +105,7 @@ bool VoxelPipeline::createPipeline() {
 
 
     config.shaderPath = SHADER_DIR "/voxel.wgsl";
-    config.colorFormat = TextureFormat::BGRA8Unorm;
+    config.colorFormat = context->getSurfaceFormat();
     config.depthFormat = TextureFormat::Depth24Plus;
     config.sampleCount = 4;
     config.cullMode = CullMode::None;
@@ -151,7 +151,7 @@ bool VoxelPipeline::createBindGroup() {
 }
 
 bool VoxelPipeline::render(TextureView targetView, CommandEncoder encoder) {
-    RenderPassDescriptor renderPassDesc = {};
+    RenderPassDescriptor renderPassDesc = Default;
     RenderPassColorAttachment renderPassColorAttachment = {};
     renderPassColorAttachment.view = tex->getTextureView("multisample_view");
     renderPassColorAttachment.resolveTarget = targetView;
@@ -165,7 +165,7 @@ bool VoxelPipeline::render(TextureView targetView, CommandEncoder encoder) {
     renderPassDesc.colorAttachmentCount = 1;
     renderPassDesc.colorAttachments = &renderPassColorAttachment;
 
-    RenderPassDepthStencilAttachment depthStencilAttachment;
+    RenderPassDepthStencilAttachment depthStencilAttachment = Default;
     depthStencilAttachment.view = tex->getTextureView("depth_view");
     depthStencilAttachment.depthClearValue = 1.0f;
     depthStencilAttachment.depthLoadOp = LoadOp::Clear;
@@ -182,14 +182,21 @@ bool VoxelPipeline::render(TextureView targetView, CommandEncoder encoder) {
     RenderPassEncoder voxelRenderPass = encoder.beginRenderPass(renderPassDesc);
     voxelRenderPass.setPipeline(pip->getPipeline("voxel_pipeline"));
 
+    voxelRenderPass.setBindGroup(0, pip->getBindGroup("global_uniforms_bg"), 0, nullptr);
+
     Buffer vertexBuffer = buf->getBuffer("vertex_buffer");
     Buffer indexBuffer = buf->getBuffer("index_buffer");
     voxelRenderPass.setVertexBuffer(0, vertexBuffer, 0, vertexBuffer.getSize());
     voxelRenderPass.setIndexBuffer(indexBuffer, IndexFormat::Uint16, 0, indexBuffer.getSize());
 
-    voxelRenderPass.setBindGroup(0, pip->getBindGroup("global_uniforms_bg"), 0, nullptr);
-
     voxelRenderPass.drawIndexed(indexBuffer.getSize() / sizeof(uint16_t), 1, 0, 0, 0);
+
+    Buffer vertexBuffer2 = buf->getBuffer("vertex_buffer2");
+    Buffer indexBuffer2 = buf->getBuffer("index_buffer2");
+    voxelRenderPass.setVertexBuffer(0, vertexBuffer2, 0, vertexBuffer2.getSize());
+    voxelRenderPass.setIndexBuffer(indexBuffer2, IndexFormat::Uint16, 0, indexBuffer2.getSize());
+
+    voxelRenderPass.drawIndexed(indexBuffer2.getSize() / sizeof(uint16_t), 1, 0, 0, 0);
 
     voxelRenderPass.end();
     voxelRenderPass.release();
