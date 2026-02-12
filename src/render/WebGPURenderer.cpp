@@ -204,36 +204,10 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 
 	// GEOMETRY RENDER PASS
 	{
-		voxelPipeline.render(targetView, encoder);
-	}
-
-	// GUI RENDER PASS
-	{
-		RenderPassDescriptor renderPassDesc = Default;
-		RenderPassColorAttachment renderPassColorAttachment = Default;
-		renderPassColorAttachment.view = targetView;
-		//renderPassColorAttachment.resolveTarget = targetView;
-		renderPassColorAttachment.loadOp = LoadOp::Load;  // Keep existing terrain rendering
-		renderPassColorAttachment.storeOp = StoreOp::Store;
-		renderPassColorAttachment.clearValue = Color{ 0.0, 0.0, 0.0, 1.0 };
-#ifndef WEBGPU_BACKEND_WGPU
-		renderPassColorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-#endif
-
-		renderPassDesc.colorAttachmentCount = 1;
-		renderPassDesc.colorAttachments = &renderPassColorAttachment;
-
-		renderPassDesc.depthStencilAttachment = nullptr;
-		renderPassDesc.timestampWrites = nullptr;
-
-		RenderPassEncoder imguiRenderPass = encoder.beginRenderPass(renderPassDesc);
-
-		// Render ImGUI
-		ImGui::Render();
-		ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), imguiRenderPass);
-
-		imguiRenderPass.end();
-		imguiRenderPass.release();
+		voxelPipeline.render(targetView, encoder, [&](RenderPassEncoder& pass) {
+			ImGui::Render();
+			ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
+		});
 	}
 
 	// End frame timing
@@ -278,7 +252,13 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 	context->getSurface().getCurrentTexture(&surfaceTexture);
 	Texture texture = surfaceTexture.texture;
 
-	if (surfaceTexture.status != SurfaceGetCurrentTextureStatus::SuccessOptimal) {
+	if (surfaceTexture.status != SurfaceGetCurrentTextureStatus::SuccessOptimal &&
+		surfaceTexture.status != SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
+		if (surfaceTexture.status == SurfaceGetCurrentTextureStatus::Outdated ||
+			surfaceTexture.status == SurfaceGetCurrentTextureStatus::Lost) {
+			context->unconfigureSurface();
+			context->configureSurface();
+		}
 		return { surfaceTexture, nullptr };
 	}
 
@@ -308,5 +288,3 @@ void WebGPURenderer::terminate() {
 	pipelineManager->terminate();
 	bufferManager->terminate();
 }
-
-

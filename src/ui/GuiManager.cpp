@@ -28,18 +28,15 @@ bool GuiManager:: initImGUI(GLFWwindow* window, Device device, TextureFormat for
     webgpu_init_info.Device = device;
     webgpu_init_info.NumFramesInFlight = 3;
     webgpu_init_info.RenderTargetFormat = format;
-    webgpu_init_info.DepthStencilFormat = TextureFormat::Undefined;
+    // Match the main voxel pass so ImGui can be drawn in the same render pass.
+    webgpu_init_info.DepthStencilFormat = TextureFormat::Depth32Float;
 
-    webgpu_init_info.PipelineMultisampleState.count = 1;
+    // Must match voxel pass sample count.
+    webgpu_init_info.PipelineMultisampleState.count = 4;
     webgpu_init_info.PipelineMultisampleState.alphaToCoverageEnabled = false;
 
     if (!ImGui_ImplWGPU_Init(&webgpu_init_info)) {
         std::cerr << "Failed to initialize ImGui WebGPU backend" << std::endl;
-        return false;
-    }
-
-    if (!ImGui_ImplWGPU_CreateDeviceObjects()) {
-        std::cerr << "Failed to create ImGui WebGPU device objects" << std::endl;
         return false;
     }
 

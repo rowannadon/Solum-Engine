@@ -150,7 +150,11 @@ bool VoxelPipeline::createBindGroup() {
     return bindGroup != nullptr;
 }
 
-bool VoxelPipeline::render(TextureView targetView, CommandEncoder encoder) {
+bool VoxelPipeline::render(
+    TextureView targetView,
+    CommandEncoder encoder,
+    const std::function<void(RenderPassEncoder&)>& overlayCallback
+) {
     RenderPassDescriptor renderPassDesc = Default;
     RenderPassColorAttachment renderPassColorAttachment = {};
     renderPassColorAttachment.view = tex->getTextureView("multisample_view");
@@ -197,6 +201,10 @@ bool VoxelPipeline::render(TextureView targetView, CommandEncoder encoder) {
     voxelRenderPass.setIndexBuffer(indexBuffer2, IndexFormat::Uint16, 0, indexBuffer2.getSize());
 
     voxelRenderPass.drawIndexed(indexBuffer2.getSize() / sizeof(uint16_t), 1, 0, 0, 0);
+
+    if (overlayCallback) {
+        overlayCallback(voxelRenderPass);
+    }
 
     voxelRenderPass.end();
     voxelRenderPass.release();

@@ -2,6 +2,7 @@
 #include "solum_engine/render/TextureManager.h"
 #include "solum_engine/render/PipelineManager.h"
 #include "solum_engine/platform/WebGPUContext.h"
+#include <functional>
 
 class AbstractRenderPipeline {
 public:
@@ -25,6 +26,10 @@ public:
 
     virtual bool createBindGroup() = 0;
 
-    virtual bool render(TextureView targetView, CommandEncoder encoder) = 0;
+    virtual bool render(
+        TextureView targetView,
+        CommandEncoder encoder,
+        const std::function<void(RenderPassEncoder&)>& overlayCallback = {}
+    ) = 0;
 
 };

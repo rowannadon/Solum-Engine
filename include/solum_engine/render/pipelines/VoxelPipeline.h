@@ -10,6 +10,10 @@ public:
 
     bool createBindGroup() override;
 
-    bool render(TextureView targetView, CommandEncoder encoder) override;
+    bool render(
+        TextureView targetView,
+        CommandEncoder encoder,
+        const std::function<void(RenderPassEncoder&)>& overlayCallback = {}
+    ) override;
 
 };
