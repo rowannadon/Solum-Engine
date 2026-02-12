@@ -1,9 +1,11 @@
 #include "solum_engine/platform/WebGPUContext.h"
 #include "solum_engine/render/VertexAttributes.h"
+#include <chrono>
+#include <thread>
 
 bool WebGPUContext::initialize(const RenderConfig& config) {
     // Create instance descriptor
-    InstanceDescriptor desc = {};
+    InstanceDescriptor desc = Default;
     desc.nextInChain = nullptr;
 
     // Make sure the uncaptured error callback is called as soon as an error
@@ -45,7 +47,7 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     if (!window) {
         std::cerr << "Could not open window!" << std::endl;
         glfwTerminate();
-        return 1;
+        return false;
     }
 
     surface = glfwGetWGPUSurface(instance, window);
@@ -60,7 +62,7 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
 
     std::cout << "Requesting adapter..." << std::endl;
 
-    RequestAdapterOptions adapterOpts = {};
+    RequestAdapterOptions adapterOpts = Default;
     adapterOpts.nextInChain = nullptr;
     adapterOpts.compatibleSurface = surface;
     adapterOpts.powerPreference = WGPUPowerPreference_HighPerformance;
@@ -68,7 +70,7 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     #ifdef _WIN32
         adapterOpts.backendType = WGPUBackendType_Vulkan;
     #elif __linux__
-        adapterOpts.backendType = WGPUBackendType_Vulkan
+        adapterOpts.backendType = WGPUBackendType_Vulkan;
     #elif __APPLE__
         adapterOpts.backendType = WGPUBackendType_Metal;
     #else
@@ -96,14 +98,12 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
 
     std::cout << "Got adapter: " << adapter << std::endl;
 
-    instance.release();
-
     Limits supportedLimits;
     adapter.getLimits(&supportedLimits);
 
     std::cout << "Requesting device..." << std::endl;
 
-    DeviceDescriptor deviceDesc = {};
+    DeviceDescriptor deviceDesc = Default;
     Limits requiredLimits = GetRequiredLimits(adapter);
     deviceDesc.nextInChain = nullptr;
     deviceDesc.label = StringView("The Device"); // anything works here, that's your call
@@ -118,7 +118,7 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     deviceDesc.requiredFeatures = (const WGPUFeatureName*)requiredFeatures.data();
     deviceDesc.requiredFeatureCount = (uint32_t)requiredFeatures.size();
 
-    DeviceLostCallbackInfo deviceLostCallbackInfo = {};
+    DeviceLostCallbackInfo deviceLostCallbackInfo = Default;
     deviceLostCallbackInfo.nextInChain = nullptr;
     deviceLostCallbackInfo.mode = CallbackMode::AllowSpontaneous;
     deviceLostCallbackInfo.callback = [](const WGPUDevice *device, WGPUDeviceLostReason reason, WGPUStringView msg, void* userdata1, void* userdata2) {
@@ -131,7 +131,7 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     // A function that is invoked whenever the device stops being available.
     deviceDesc.deviceLostCallbackInfo = deviceLostCallbackInfo;
 
-    UncapturedErrorCallbackInfo errorCallbackInfo = {};
+    UncapturedErrorCallbackInfo errorCallbackInfo = Default;
     errorCallbackInfo.nextInChain = nullptr;
     errorCallbackInfo.callback = [](const WGPUDevice *device, WGPUErrorType type, WGPUStringView msg, void* userdata1, void* userdata2) {
         std::string message(static_cast<const char*>(msg.data), msg.length);
@@ -151,7 +151,10 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
 
     queue = device.getQueue();
 
-    configureSurface();
+    if (!configureSurface()) {
+        std::cerr << "Could not configure surface during initialization." << std::endl;
+        return false;
+    }
 
     return true;
 }
@@ -162,6 +165,7 @@ void WebGPUContext::terminate() {
     device.release();
     surface.release();
     adapter.release();
+    instance.release();
 
     glfwDestroyWindow(window);
     glfwTerminate();
@@ -170,11 +174,17 @@ void WebGPUContext::terminate() {
 bool WebGPUContext::configureSurface() {
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
+    if (width <= 0 || height <= 0) {
+        std::cerr << "configureSurface skipped invalid size " << width << "x" << height << std::endl;
+        return false;
+    }
+    this->width = width;
+    this->height = height;
 
-    SurfaceConfiguration config = {};
+    SurfaceConfiguration config = Default;
     config.nextInChain = nullptr;
-    config.width = static_cast<uint32_t>(width);
-    config.height = static_cast<uint32_t>(height);
+    config.width = static_cast<uint32_t>(this->width);
+    config.height = static_cast<uint32_t>(this->height);
 
     SurfaceCapabilities capabilities = {};
     surface.getCapabilities(adapter, &capabilities);
@@ -219,48 +229,9 @@ Limits WebGPUContext::GetRequiredLimits(Adapter adapter) const {
         (uint32_t)deviceLimits.minUniformBufferOffsetAlignment
     );
 
-    // Don't forget to = Default
-    Limits requiredLimits = Default;
-
-    requiredLimits.maxVertexAttributes = 9;
-    requiredLimits.maxVertexBuffers = 1;
-    requiredLimits.maxVertexBufferArrayStride = sizeof(VertexAttributes);
-
-    requiredLimits.maxStorageBufferBindingSize = 500000;
-    // Maximum stride between 2 consecutive vertices in the vertex buffer
-    requiredLimits.maxVertexBufferArrayStride = sizeof(int);
-
-    // These two limits are different because they are "minimum" limits,
-    // they are the only ones we may forward from the adapter's supported
-    // limits.
-    requiredLimits.minUniformBufferOffsetAlignment = deviceLimits.minUniformBufferOffsetAlignment;
-    requiredLimits.minStorageBufferOffsetAlignment = deviceLimits.minStorageBufferOffsetAlignment;
-
-    // There is a maximum of 3 float forwarded from vertex to fragment shader
-    requiredLimits.maxInterStageShaderVariables = 21;
-
-    // We use at most 1 bind group for now
-    requiredLimits.maxBindGroups = 4;
-    requiredLimits.maxBindGroupsPlusVertexBuffers = 8;
-    // We use at most 1 uniform buffer per stage
-    requiredLimits.maxUniformBuffersPerShaderStage = 1;
-    // Add the possibility to sample a texture in a shader
-    requiredLimits.maxSampledTexturesPerShaderStage = 1;
-    // Uniform structs have a size of maximum 16 float (more than what we need)
-    requiredLimits.maxUniformBufferBindingSize = 16 * 4 * sizeof(float);
-    // Extra limit requirement
-    requiredLimits.maxDynamicUniformBuffersPerPipelineLayout = 1;
-
-    requiredLimits.maxComputeInvocationsPerWorkgroup = 1024;
-
-    requiredLimits.maxSamplersPerShaderStage = 1;
-
-    // For the depth buffer, we enable textures (up to the size of the window):
-    requiredLimits.maxTextureDimension1D = 2048;
-    requiredLimits.maxTextureDimension2D = 16384;
-    requiredLimits.maxTextureDimension3D = 2048;
-    requiredLimits.maxTextureArrayLayers = 1;
-
+    // Request full adapter-supported limits to avoid accidentally constraining
+    // secondary pipelines (e.g. ImGui) below what they require.
+    Limits requiredLimits = deviceLimits;
 
     return requiredLimits;
 }
@@ -269,4 +240,3 @@ uint32_t WebGPUContext::ceilToNextMultiple(uint32_t value, uint32_t step) const 
     uint32_t divide_and_ceil = value / step + (value % step == 0 ? 0 : 1);
     return step * divide_and_ceil;
 }
-

@@ -328,6 +328,7 @@ void TextureManager::removeTextureView(const std::string& name) {
     auto it = textureViews.find(name);
     if (it != textureViews.end()) {
         it->second.release();
+        textureViews.erase(it);
     }
 }
 

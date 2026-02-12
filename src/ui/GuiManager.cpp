@@ -3,13 +3,17 @@
 #include <iostream>
 #include <numeric>
 
+namespace { constexpr bool kEnableImGuiGamepadNav = false; }
+
 bool GuiManager:: initImGUI(GLFWwindow* window, Device device, TextureFormat format) {
 // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+    if (kEnableImGuiGamepadNav) {
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    }
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
@@ -31,6 +35,11 @@ bool GuiManager:: initImGUI(GLFWwindow* window, Device device, TextureFormat for
 
     if (!ImGui_ImplWGPU_Init(&webgpu_init_info)) {
         std::cerr << "Failed to initialize ImGui WebGPU backend" << std::endl;
+        return false;
+    }
+
+    if (!ImGui_ImplWGPU_CreateDeviceObjects()) {
+        std::cerr << "Failed to create ImGui WebGPU device objects" << std::endl;
         return false;
     }
 

@@ -5,8 +5,6 @@
 #include <cfloat>
 
 bool Application::Initialize() {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
     if (!gpu.initialize()) return false;
     pip = gpu.getPipelineManager();
     buf = gpu.getBufferManager();
@@ -16,18 +14,25 @@ bool Application::Initialize() {
 
     GLFWmonitor* monitor = glfwGetPrimaryMonitor();
     const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-	std::cout << "Monitor refresh rate: " << mode->refreshRate << " Hz" << std::endl;
-
     if (mode) {
+        std::cout << "Monitor refresh rate: " << mode->refreshRate << " Hz" << std::endl;
         refreshRate = mode->refreshRate;
+    } else {
+        std::cout << "Monitor refresh rate unavailable, using default: " << refreshRate << " Hz" << std::endl;
     }
 
     // initialize uniforms
     uniforms.modelMatrix = glm::mat4x4(1.0);
+    uniforms.projectionMatrix = glm::mat4x4(1.0);
+    uniforms.inverseProjectionMatrix = glm::mat4x4(1.0);
+    uniforms.viewMatrix = glm::mat4x4(1.0);
+    uniforms.inverseViewMatrix = glm::mat4x4(1.0);
 
     camera.updateCameraVectors();
     updateProjectionMatrix(camera.zoom);
     updateViewMatrix();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
 
@@ -38,7 +43,7 @@ bool Application::Initialize() {
 
     registerMovementCallbacks();
 
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     return true;
 }
@@ -218,6 +223,9 @@ void Application::processInput() {
 void Application::updateProjectionMatrix(int zoom) {
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
     float ratio = width / (float)height;
     uniforms.projectionMatrix = glm::perspective(zoom * PI / 180, ratio, 0.1f, 2500.0f);
     uniforms.inverseProjectionMatrix = glm::inverse(uniforms.projectionMatrix);

@@ -4,7 +4,7 @@ bool VoxelPipeline::createResources() {
     int width, height;
     glfwGetFramebufferSize(context->getWindow(), &width, &height);
 
-    TextureFormat depthTextureFormat = TextureFormat::Depth24Plus;
+    TextureFormat depthTextureFormat = TextureFormat::Depth32Float;
     TextureDescriptor depthTextureDesc = Default;
     depthTextureDesc.dimension = TextureDimension::_2D;
     depthTextureDesc.format = depthTextureFormat;
@@ -26,38 +26,38 @@ bool VoxelPipeline::createResources() {
     depthTextureViewDesc.format = depthTextureFormat;
     TextureView depthTextureView = tex->createTextureView("depth_texture", "depth_view", depthTextureViewDesc);
 
-    TextureFormat multiSampleTextureFormat = context->getSurfaceFormat();
+        TextureFormat multiSampleTextureFormat = context->getSurfaceFormat();
 
-    TextureDescriptor multiSampleTextureDesc = Default;
-    multiSampleTextureDesc.dimension = TextureDimension::_2D;
-    multiSampleTextureDesc.format = multiSampleTextureFormat;
-    multiSampleTextureDesc.mipLevelCount = 1;
+        TextureDescriptor multiSampleTextureDesc = Default;
+        multiSampleTextureDesc.dimension = TextureDimension::_2D;
+        multiSampleTextureDesc.format = multiSampleTextureFormat;
+        multiSampleTextureDesc.mipLevelCount = 1;
     multiSampleTextureDesc.sampleCount = 4;
-    multiSampleTextureDesc.size = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
-    multiSampleTextureDesc.usage = TextureUsage::RenderAttachment;
-    multiSampleTextureDesc.viewFormatCount = 0;
-    multiSampleTextureDesc.viewFormats = nullptr;
+        multiSampleTextureDesc.size = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+        multiSampleTextureDesc.usage = TextureUsage::RenderAttachment;
+        multiSampleTextureDesc.viewFormatCount = 0;
+        multiSampleTextureDesc.viewFormats = nullptr;
     Texture multiSampleTexture = tex->createTexture("multisample_texture", multiSampleTextureDesc);
 
-    TextureViewDescriptor multiSampleTextureViewDesc = Default;
-    multiSampleTextureViewDesc.aspect = TextureAspect::All;
-    multiSampleTextureViewDesc.baseArrayLayer = 0;
-    multiSampleTextureViewDesc.arrayLayerCount = 1;
-    multiSampleTextureViewDesc.baseMipLevel = 0;
-    multiSampleTextureViewDesc.mipLevelCount = 1;
-    multiSampleTextureViewDesc.dimension = TextureViewDimension::_2D;
-    multiSampleTextureViewDesc.format = multiSampleTextureFormat;
-    TextureView multiSampleTextureView = tex->createTextureView("multisample_texture", "multisample_view", multiSampleTextureViewDesc);
+        TextureViewDescriptor multiSampleTextureViewDesc = Default;
+        multiSampleTextureViewDesc.aspect = TextureAspect::All;
+        multiSampleTextureViewDesc.baseArrayLayer = 0;
+        multiSampleTextureViewDesc.arrayLayerCount = 1;
+        multiSampleTextureViewDesc.baseMipLevel = 0;
+        multiSampleTextureViewDesc.mipLevelCount = 1;
+        multiSampleTextureViewDesc.dimension = TextureViewDimension::_2D;
+        multiSampleTextureViewDesc.format = multiSampleTextureFormat;
+        TextureView multiSampleTextureView = tex->createTextureView("multisample_texture", "multisample_view", multiSampleTextureViewDesc);
 
-    return multiSampleTextureView != nullptr;
+    return multiSampleTextureView != nullptr && depthTextureView != nullptr;
 };
 
 void VoxelPipeline::removeResources() {
-    tex->removeTexture("multisample_texture");
     tex->removeTextureView("multisample_view");
+    tex->removeTexture("multisample_texture");
 
-    tex->removeTexture("depth_texture");
     tex->removeTextureView("depth_view");
+    tex->removeTexture("depth_texture");
 
     pip->deleteBindGroup("global_uniforms_bg");
 };
@@ -106,7 +106,7 @@ bool VoxelPipeline::createPipeline() {
 
     config.shaderPath = SHADER_DIR "/voxel.wgsl";
     config.colorFormat = context->getSurfaceFormat();
-    config.depthFormat = TextureFormat::Depth24Plus;
+    config.depthFormat = TextureFormat::Depth32Float;
     config.sampleCount = 4;
     config.cullMode = CullMode::None;
     config.depthWriteEnabled = true;

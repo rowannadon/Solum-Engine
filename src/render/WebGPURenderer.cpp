@@ -1,6 +1,7 @@
 #include <random>
 #include <thread>
 #include <chrono>
+#include <iostream>
 #include "solum_engine/render/WebGPURenderer.h"
 
 bool WebGPURenderer::initialize() {
@@ -11,6 +12,8 @@ bool WebGPURenderer::initialize() {
 		return false;
 	}
 
+	std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
 	pipelineManager = std::make_unique<PipelineManager>(context->getDevice(), context->getSurfaceFormat());
 	bufferManager = std::make_unique<BufferManager>(context->getDevice(), context->getQueue());
 	textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
@@ -20,7 +23,7 @@ bool WebGPURenderer::initialize() {
 	PipelineManager* pip = pipelineManager.get();
 
 	{
-		BufferDescriptor desc{};
+		BufferDescriptor desc = Default;
 		desc.label = StringView("uniform buffer");
 		desc.size = sizeof(FrameUniforms);
 		desc.usage = BufferUsage::CopyDst | BufferUsage::Uniform;
@@ -31,8 +34,8 @@ bool WebGPURenderer::initialize() {
 
     std::random_device dev;
     std::mt19937 rng(dev());
-    std::uniform_int_distribution<std::mt19937::result_type> dist(1,30);
-    std::uniform_int_distribution<std::mt19937::result_type> dist2(1,10);
+    std::uniform_int_distribution<std::mt19937::result_type> dist(1,10);
+    std::uniform_int_distribution<std::mt19937::result_type> dist2(1,1000);
 
 	UnpackedBlockMaterial mat;
 	mat.id = 1;
@@ -97,7 +100,7 @@ bool WebGPURenderer::initialize() {
 
 
 	{
-		BufferDescriptor desc{};
+		BufferDescriptor desc = Default;
 		desc.label = StringView("vertex buffer");
 		desc.size = sizeof(VertexAttributes) * vertexCount;
 		desc.usage = BufferUsage::CopyDst | BufferUsage::Vertex;
@@ -107,7 +110,7 @@ bool WebGPURenderer::initialize() {
 	}
 
     {
-        BufferDescriptor desc{};
+        BufferDescriptor desc = Default;
         desc.label = StringView("vertex buffer2");
         desc.size = sizeof(VertexAttributes) * vertexCount2;
         desc.usage = BufferUsage::CopyDst | BufferUsage::Vertex;
@@ -120,7 +123,7 @@ bool WebGPURenderer::initialize() {
     indexCount2 = static_cast<uint32_t>(indexData2.size());
 
 	{
-		BufferDescriptor desc{};
+		BufferDescriptor desc = Default;
 		desc.label = StringView("index buffer");
 		desc.size = sizeof(uint16_t) * indexCount;
 		desc.usage = BufferUsage::CopyDst | BufferUsage::Index;
@@ -130,7 +133,7 @@ bool WebGPURenderer::initialize() {
 	}
     
     {
-        BufferDescriptor desc{};
+        BufferDescriptor desc = Default;
         desc.label = StringView("index buffer2");
         desc.size = sizeof(uint16_t) * indexCount2;
         desc.usage = BufferUsage::CopyDst | BufferUsage::Index;
@@ -146,16 +149,30 @@ bool WebGPURenderer::initialize() {
     bufferManager->writeBuffer("index_buffer2", 0, indexData2.data(), indexCount2 * sizeof(uint16_t));
 
 	voxelPipeline.init(bufferManager.get(), textureManager.get(), pipelineManager.get(), context.get());
-	voxelPipeline.createResources();
-	voxelPipeline.createPipeline();
-	voxelPipeline.createBindGroup();
+	if (!voxelPipeline.createResources()) {
+		std::cerr << "Failed to create voxel rendering resources." << std::endl;
+		return false;
+	}
+	if (!voxelPipeline.createPipeline()) {
+		std::cerr << "Failed to create voxel render pipeline." << std::endl;
+		return false;
+	}
+	if (!voxelPipeline.createBindGroup()) {
+		std::cerr << "Failed to create voxel bind group." << std::endl;
+		return false;
+	}
 
 	return true;
 }
 
 void WebGPURenderer::createRenderingTextures() {
-	voxelPipeline.createResources();
-	voxelPipeline.createBindGroup();
+	if (!voxelPipeline.createResources()) {
+		std::cerr << "Failed to recreate voxel rendering resources." << std::endl;
+		return;
+	}
+	if (!voxelPipeline.createBindGroup()) {
+		std::cerr << "Failed to recreate voxel bind group." << std::endl;
+	}
 }
 
 void WebGPURenderer::removeRenderingTextures() {
@@ -194,8 +211,8 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 
 	// GUI RENDER PASS
 	{
-		RenderPassDescriptor renderPassDesc = {};
-		RenderPassColorAttachment renderPassColorAttachment = {};
+		RenderPassDescriptor renderPassDesc = Default;
+		RenderPassColorAttachment renderPassColorAttachment = Default;
 		renderPassColorAttachment.view = targetView;
 		//renderPassColorAttachment.resolveTarget = targetView;
 		renderPassColorAttachment.loadOp = LoadOp::Load;  // Keep existing terrain rendering
@@ -217,14 +234,14 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 		ImGui::Render();
 		ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), imguiRenderPass);
 
-		imguiRenderPass.end();
-		imguiRenderPass.release();
-	}
+			imguiRenderPass.end();
+			imguiRenderPass.release();
+		}
 
 	// End frame timing
 	//benchmarkManager->endFrame("frame_timer", encoder);
 
-	CommandBufferDescriptor cmdBufferDescriptor = {};
+	CommandBufferDescriptor cmdBufferDescriptor = Default;
 	cmdBufferDescriptor.label = StringView("Frame command buffer");
 	CommandBuffer command = encoder.finish(cmdBufferDescriptor);
 	encoder.release();

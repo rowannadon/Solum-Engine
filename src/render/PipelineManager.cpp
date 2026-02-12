@@ -11,12 +11,11 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineN
         std::cout << "Failed to load shader: " << config.shaderPath << std::endl;
     }
 
-    RenderPipelineDescriptor pipelineDesc;
-    pipelineDesc.nextInChain = nullptr;
+    RenderPipelineDescriptor pipelineDesc = Default;
     pipelineDesc.label = StringView(pipelineName);
 
     // Handle vertex buffer configuration
-    VertexBufferLayout vertexBufferLayout;
+    VertexBufferLayout vertexBufferLayout = Default;
     if (config.useVertexBuffers && !config.vertexAttributes.empty()) {
         vertexBufferLayout.attributeCount = static_cast<uint32_t>(config.vertexAttributes.size());
         vertexBufferLayout.attributes = config.vertexAttributes.data();
@@ -49,25 +48,28 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineN
     pipelineDesc.multisample.alphaToCoverageEnabled = config.alphaToCoverageEnabled;
 
     // Fragment state
-    FragmentState fragmentState;
+    FragmentState fragmentState = Default;
     pipelineDesc.fragment = &fragmentState;
     fragmentState.module = shaderModule;
     fragmentState.entryPoint = StringView(config.fragmentShaderName);
     fragmentState.constantCount = 0;
     fragmentState.constants = nullptr;
 
-    BlendState blendState;
-    ColorTargetState colorTarget;
+    BlendState blendState = Default;
+    ColorTargetState colorTarget = Default;
 
     if (config.useColorTarget) {
         // Blend state
         if (config.useCustomBlending) {
             blendState = config.blendState;
+            colorTarget.blend = &blendState;
+        }
+        else {
+            colorTarget.blend = nullptr;
         }
 
         // Color target state
         colorTarget.format = config.useCustomColorFormat ? config.colorFormat : surfaceFormat;
-        colorTarget.blend = &blendState;
         colorTarget.writeMask = ColorWriteMask::All;
 
         fragmentState.targetCount = 1;
@@ -95,7 +97,7 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineN
     }
 
     // Pipeline layout
-    PipelineLayoutDescriptor layoutDesc{};
+    PipelineLayoutDescriptor layoutDesc = Default;
     layoutDesc.bindGroupLayoutCount = (uint32_t)config.bindGroupLayouts.size();
     layoutDesc.bindGroupLayouts = reinterpret_cast<WGPUBindGroupLayout*>(config.bindGroupLayouts.data());
     PipelineLayout layout = device.createPipelineLayout(layoutDesc);
@@ -126,7 +128,7 @@ ComputePipeline PipelineManager::createComputePipeline(const std::string pipelin
 	pipelineDesc.compute.module = shaderModule;
 
     // Pipeline layout
-    PipelineLayoutDescriptor layoutDesc{};
+    PipelineLayoutDescriptor layoutDesc = Default;
     layoutDesc.bindGroupLayoutCount = (uint32_t)config.bindGroupLayouts.size();
     layoutDesc.bindGroupLayouts = reinterpret_cast<WGPUBindGroupLayout*>(config.bindGroupLayouts.data());
     PipelineLayout layout = device.createPipelineLayout(layoutDesc);
@@ -146,7 +148,7 @@ ComputePipeline PipelineManager::createComputePipeline(const std::string pipelin
 }
 
 BindGroupLayout PipelineManager::createBindGroupLayout(const std::string bindGroupLayoutName, const std::vector<BindGroupLayoutEntry>& entries) {
-    BindGroupLayoutDescriptor chunkDataBindGroupLayoutDesc{};
+    BindGroupLayoutDescriptor chunkDataBindGroupLayoutDesc = Default;
     chunkDataBindGroupLayoutDesc.entryCount = (uint32_t)entries.size();
     chunkDataBindGroupLayoutDesc.entries = entries.data();
 
@@ -169,7 +171,7 @@ BindGroup PipelineManager::createBindGroup(const std::string bindGroupName, cons
 		return nullptr;
     }
 
-    BindGroupDescriptor bindGroupDesc;
+    BindGroupDescriptor bindGroupDesc = Default;
     bindGroupDesc.label = StringView(bindGroupName);
     bindGroupDesc.layout = layout;
     bindGroupDesc.entryCount = (uint32_t)bindings.size();
@@ -336,7 +338,7 @@ ShaderModule PipelineManager::loadShaderModule(const std::filesystem::path& path
     shaderCodeDesc.chain.sType = SType::ShaderSourceWGSL;
     shaderCodeDesc.code        = StringView(shaderSource);
 
-    ShaderModuleDescriptor shaderDesc{};
+    ShaderModuleDescriptor shaderDesc = Default;
 #ifdef WEBGPU_BACKEND_WGPU
     shaderDesc.hintCount = 0;
     shaderDesc.hints     = nullptr;
@@ -345,4 +347,3 @@ ShaderModule PipelineManager::loadShaderModule(const std::filesystem::path& path
 
     return device.createShaderModule(shaderDesc);
 }
-

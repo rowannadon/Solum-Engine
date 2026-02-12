@@ -62,6 +62,7 @@ namespace {
 std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mesh(Chunk& chunk, const std::vector<Chunk*>& neighbors) {
 	std::array<BlockMaterial, kPaddedBlockCount> paddedBlockData;
 	paddedBlockData.fill(BlockMaterial{ 0 });
+	vertices.clear();
 	indices.clear();
 
 	BlockCoord chunkOrigin = chunk_to_block_origin(chunk.pos);
