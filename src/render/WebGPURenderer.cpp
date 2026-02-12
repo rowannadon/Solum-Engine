@@ -12,8 +12,6 @@ bool WebGPURenderer::initialize() {
 		return false;
 	}
 
-	std::this_thread::sleep_for(std::chrono::milliseconds(150));
-
 	pipelineManager = std::make_unique<PipelineManager>(context->getDevice(), context->getSurfaceFormat());
 	bufferManager = std::make_unique<BufferManager>(context->getDevice(), context->getQueue());
 	textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
@@ -234,9 +232,9 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 		ImGui::Render();
 		ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), imguiRenderPass);
 
-			imguiRenderPass.end();
-			imguiRenderPass.release();
-		}
+		imguiRenderPass.end();
+		imguiRenderPass.release();
+	}
 
 	// End frame timing
 	//benchmarkManager->endFrame("frame_timer", encoder);

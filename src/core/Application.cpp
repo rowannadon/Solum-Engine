@@ -28,11 +28,10 @@ bool Application::Initialize() {
     uniforms.viewMatrix = glm::mat4x4(1.0);
     uniforms.inverseViewMatrix = glm::mat4x4(1.0);
 
+    camera.position = glm::vec3(10.0, 10.0, 0.0);
     camera.updateCameraVectors();
     updateProjectionMatrix(camera.zoom);
     updateViewMatrix();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
 
@@ -42,8 +41,6 @@ bool Application::Initialize() {
     }
 
     registerMovementCallbacks();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     return true;
 }
