@@ -172,16 +172,7 @@ void Application::registerMovementCallbacks() {
 
 
 void Application::onResize() {
-    // Wait for any pending GPU operations to complete before destroying resources
-    gpu.getContext()->getDevice().tick();
-
-    gpu.removeRenderingTextures();
-
-    // Reconfigure surface
-    gpu.getContext()->unconfigureSurface();
-    gpu.getContext()->configureSurface();
-
-    gpu.createRenderingTextures();
+    gpu.requestResize();
 
     // Update projection matrix
     updateProjectionMatrix(camera.zoom);

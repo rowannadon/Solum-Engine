@@ -177,6 +177,28 @@ void WebGPURenderer::removeRenderingTextures() {
 	voxelPipeline.removeResources();
 }
 
+bool WebGPURenderer::resizeSurfaceAndAttachments() {
+	int width = 0;
+	int height = 0;
+	glfwGetFramebufferSize(context->getWindow(), &width, &height);
+	if (width <= 0 || height <= 0) {
+		return false;
+	}
+
+	removeRenderingTextures();
+	context->unconfigureSurface();
+	if (!context->configureSurface()) {
+		return false;
+	}
+	createRenderingTextures();
+	resizePending = false;
+	return true;
+}
+
+void WebGPURenderer::requestResize() {
+	resizePending = true;
+}
+
 WebGPUContext* WebGPURenderer::getContext() {
 	return context.get();
 }
@@ -195,6 +217,20 @@ BufferManager* WebGPURenderer::getBufferManager() {
 
 
 void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
+	int fbWidth = 0;
+	int fbHeight = 0;
+	glfwGetFramebufferSize(context->getWindow(), &fbWidth, &fbHeight);
+	if (fbWidth > 0 && fbHeight > 0 &&
+		(fbWidth != context->width || fbHeight != context->height)) {
+		requestResize();
+	}
+
+	if (resizePending) {
+		if (!resizeSurfaceAndAttachments()) {
+			return;
+		}
+	}
+
 	auto [surfaceTexture, targetView] = GetNextSurfaceViewData();
 	if (!targetView) return;
 
@@ -252,12 +288,21 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 	context->getSurface().getCurrentTexture(&surfaceTexture);
 	Texture texture = surfaceTexture.texture;
 
-	if (surfaceTexture.status != SurfaceGetCurrentTextureStatus::SuccessOptimal &&
-		surfaceTexture.status != SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
+	if (surfaceTexture.status == SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
+		requestResize();
+		if (texture) {
+			texture.release();
+		}
+		return { surfaceTexture, nullptr };
+	}
+
+	if (surfaceTexture.status != SurfaceGetCurrentTextureStatus::SuccessOptimal) {
 		if (surfaceTexture.status == SurfaceGetCurrentTextureStatus::Outdated ||
 			surfaceTexture.status == SurfaceGetCurrentTextureStatus::Lost) {
-			context->unconfigureSurface();
-			context->configureSurface();
+			requestResize();
+		}
+		if (texture) {
+			texture.release();
 		}
 		return { surfaceTexture, nullptr };
 	}

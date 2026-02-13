@@ -3,6 +3,9 @@
 bool VoxelPipeline::createResources() {
     int width, height;
     glfwGetFramebufferSize(context->getWindow(), &width, &height);
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
 
     TextureFormat depthTextureFormat = TextureFormat::Depth32Float;
     TextureDescriptor depthTextureDesc = Default;

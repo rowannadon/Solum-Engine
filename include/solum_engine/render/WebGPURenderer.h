@@ -33,6 +33,7 @@ private:
     ChunkMesher mesher;
 
     VoxelPipeline voxelPipeline;
+    bool resizePending = false;
 
     // Add this for ImGUI support
     RenderPassEncoder currentCommandEncoder = nullptr;
@@ -59,6 +60,8 @@ public:
 
     void removeRenderingTextures();
     void createRenderingTextures();
+    bool resizeSurfaceAndAttachments();
+    void requestResize();
 
     std::pair<SurfaceTexture, TextureView> GetNextSurfaceViewData();
 
@@ -66,4 +69,3 @@ public:
 
     void terminate();
 };
-
