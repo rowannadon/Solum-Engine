@@ -10,6 +10,8 @@
 
 static constexpr int32_t REGION_BLOCKS_XY = REGION_COLS * CHUNK_SIZE; // 512 blocks
 
+static constexpr int32_t CHUNK_BLOCKS = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
+
 static constexpr float PI = 3.14159265359f;
 
 enum Direction {

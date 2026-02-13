@@ -71,7 +71,7 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mes
 		return (x * kPaddedPlaneArea) + (y * kChunkSizePadded) + z;
 		};
 
-	const BlockMaterial* chunkData = chunk.data.data();
+	const BlockMaterial* chunkData = chunk.getBlockData();
 	auto paddedPtr = paddedBlockData.data();
 
 	for (int x = 0; x < kChunkSize; ++x) {
@@ -122,7 +122,7 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mes
 			continue;
 		}
 
-		const BlockMaterial* neighborData = neighbor->data.data();
+		const BlockMaterial* neighborData = neighbor->getBlockData();
 		switch (static_cast<Direction>(dir)) {
 		case Direction::PlusX:
 			copyXPlane(kChunkSize + 1, 0, neighborData);

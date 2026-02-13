@@ -12,7 +12,7 @@ class ChunkMesher;
 
 class Chunk {
     ChunkCoord pos;
-    std::array<BlockMaterial, CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE> data;
+    BlockStorage blocks;
 
     friend class ChunkMesher;
     
@@ -20,8 +20,6 @@ public:
     Chunk(ChunkCoord p);
     bool setBlock(BlockCoord pos, UnpackedBlockMaterial mat);
     UnpackedBlockMaterial getBlock(BlockCoord pos);
+    BlockMaterial* getBlockData();
 
-private:
-    bool validatePos(BlockCoord pos);
-    int getIndex(BlockCoord pos);
 };
