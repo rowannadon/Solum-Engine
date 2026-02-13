@@ -1,3 +1,5 @@
+#pragma once
+
 #include <webgpu/webgpu.hpp>
 #include <GLFW/glfw3.h>
 #include <unordered_map>
@@ -18,6 +20,10 @@
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
 
 class WebGPURenderer {
 private:
@@ -26,29 +32,19 @@ private:
     std::unique_ptr<BufferManager> bufferManager;
     std::unique_ptr<TextureManager> textureManager;
 
-    FrameUniforms uniforms;
-
-    Chunk chunk;
-    Chunk chunk2;
-    ChunkMesher mesher;
-
     VoxelPipeline voxelPipeline;
     bool resizePending = false;
 
     // Add this for ImGUI support
     RenderPassEncoder currentCommandEncoder = nullptr;
 
-    uint32_t vertexCount;
-    uint32_t indexCount;
+    uint32_t worldVertexCount = 0;
+    uint32_t worldIndexCount = 0;
 
-    uint32_t vertexCount2;
-    uint32_t indexCount2;
+    std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> buildDemoWorldMesh();
 
 public:
-    WebGPURenderer()
-            : chunk(ChunkCoord{0, 0, 0})
-            , chunk2(ChunkCoord{1, 0, 0})
-        {}
+    WebGPURenderer() = default;
 
     bool initialize();
 

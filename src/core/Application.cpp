@@ -28,7 +28,9 @@ bool Application::Initialize() {
     uniforms.viewMatrix = glm::mat4x4(1.0);
     uniforms.inverseViewMatrix = glm::mat4x4(1.0);
 
-    camera.position = glm::vec3(10.0, 10.0, 0.0);
+    camera.position = glm::vec3(64.0f, 140.0f, 40.0f);
+    camera.yaw = -90.0f;
+    camera.pitch = -12.0f;
     camera.updateCameraVectors();
     updateProjectionMatrix(camera.zoom);
     updateViewMatrix();
@@ -81,13 +83,6 @@ void Application::MainLoop() {
     if (!io.WantCaptureKeyboard && !io.WantCaptureMouse) {
         processInput();
     }
-
-    PlayerStreamingContext streamingContext{};
-    streamingContext.playerPosition = camera.position;
-    streamingContext.viewDistanceChunks = 8;
-    streamingContext.verticalChunkMin = 0;
-    streamingContext.verticalChunkMax = COLUMN_CHUNKS_Z - 1;
-    world.update(streamingContext);
 
     // Early exit if frame budget is already exceeded
     float frameStartTime = currentFrame;

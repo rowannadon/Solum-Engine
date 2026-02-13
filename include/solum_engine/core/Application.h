@@ -27,7 +27,6 @@
 #include "solum_engine/render/WebGPURenderer.h"
 #include "solum_engine/ui/GuiManager.h"
 #include "solum_engine/core/Camera.h"
-#include "solum_engine/voxel/World.h"
 
 class Application {
 public:
@@ -95,5 +94,4 @@ private:
     FrameUniforms uniforms;
 
     std::vector<float> frameTimes;
-    World world;
 };

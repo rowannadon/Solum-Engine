@@ -1,5 +1,7 @@
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 
+#include <cstdint>
+
 bool VoxelPipeline::createResources() {
     int width, height;
     glfwGetFramebufferSize(context->getWindow(), &width, &height);
@@ -191,19 +193,13 @@ bool VoxelPipeline::render(
 
     voxelRenderPass.setBindGroup(0, pip->getBindGroup("global_uniforms_bg"), 0, nullptr);
 
-    Buffer vertexBuffer = buf->getBuffer("vertex_buffer");
-    Buffer indexBuffer = buf->getBuffer("index_buffer");
-    voxelRenderPass.setVertexBuffer(0, vertexBuffer, 0, vertexBuffer.getSize());
-    voxelRenderPass.setIndexBuffer(indexBuffer, IndexFormat::Uint16, 0, indexBuffer.getSize());
-
-    voxelRenderPass.drawIndexed(indexBuffer.getSize() / sizeof(uint16_t), 1, 0, 0, 0);
-
-    Buffer vertexBuffer2 = buf->getBuffer("vertex_buffer2");
-    Buffer indexBuffer2 = buf->getBuffer("index_buffer2");
-    voxelRenderPass.setVertexBuffer(0, vertexBuffer2, 0, vertexBuffer2.getSize());
-    voxelRenderPass.setIndexBuffer(indexBuffer2, IndexFormat::Uint16, 0, indexBuffer2.getSize());
-
-    voxelRenderPass.drawIndexed(indexBuffer2.getSize() / sizeof(uint16_t), 1, 0, 0, 0);
+    Buffer vertexBuffer = buf->getBuffer("world_vertex_buffer");
+    Buffer indexBuffer = buf->getBuffer("world_index_buffer");
+    if (vertexBuffer && indexBuffer && indexBuffer.getSize() >= sizeof(uint32_t)) {
+        voxelRenderPass.setVertexBuffer(0, vertexBuffer, 0, vertexBuffer.getSize());
+        voxelRenderPass.setIndexBuffer(indexBuffer, IndexFormat::Uint32, 0, indexBuffer.getSize());
+        voxelRenderPass.drawIndexed(indexBuffer.getSize() / sizeof(uint32_t), 1, 0, 0, 0);
+    }
 
     if (overlayCallback) {
         overlayCallback(voxelRenderPass);
