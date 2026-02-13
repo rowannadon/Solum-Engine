@@ -1,17 +1,28 @@
-#include "solum_engine/voxel/BlockMaterial.h"
+#pragma once
+
+#include <array>
+#include <cstddef>
+
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/resources/Coords.h"
+#include "solum_engine/voxel/BlockMaterial.h"
+
 class BlockStorage {
-    std::array<BlockMaterial, CHUNK_BLOCKS> data;
 public:
     bool setBlock(BlockCoord pos, UnpackedBlockMaterial mat);
-    UnpackedBlockMaterial getBlock(BlockCoord pos);
+    UnpackedBlockMaterial getBlock(BlockCoord pos) const;
 
     BlockMaterial* getData() {
-        return data.data();
+        return data_.data();
+    }
+
+    const BlockMaterial* getData() const {
+        return data_.data();
     }
 
 private:
-    bool validatePos(BlockCoord pos);
-    int getIndex(BlockCoord pos);
+    bool validatePos(BlockCoord pos) const;
+    std::size_t getIndex(BlockCoord pos) const;
+
+    std::array<BlockMaterial, CHUNK_BLOCKS> data_{};
 };

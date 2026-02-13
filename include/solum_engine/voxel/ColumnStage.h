@@ -1,6 +1,10 @@
-enum ColumnStage {
+#pragma once
+
+#include <cstdint>
+
+enum class ColumnStage : uint8_t {
     Empty = 0,
-    GenTerrain = 1,
-    GenStructures = 2,
-    Complete = 3
+    TerrainReady = 1,
+    StructureReady = 2,
+    Completed = 3,
 };

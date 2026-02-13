@@ -82,6 +82,13 @@ void Application::MainLoop() {
         processInput();
     }
 
+    PlayerStreamingContext streamingContext{};
+    streamingContext.playerPosition = camera.position;
+    streamingContext.viewDistanceChunks = 8;
+    streamingContext.verticalChunkMin = 0;
+    streamingContext.verticalChunkMax = COLUMN_CHUNKS_Z - 1;
+    world.update(streamingContext);
+
     // Early exit if frame budget is already exceeded
     float frameStartTime = currentFrame;
 

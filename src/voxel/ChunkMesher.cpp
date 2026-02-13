@@ -65,7 +65,7 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mes
 	vertices.clear();
 	indices.clear();
 
-	BlockCoord chunkOrigin = chunk_to_block_origin(chunk.pos);
+	BlockCoord chunkOrigin = chunk_to_block_origin(chunk.coord());
 
 	auto paddedIndex = [&](int x, int y, int z) {
 		return (x * kPaddedPlaneArea) + (y * kChunkSizePadded) + z;
