@@ -29,15 +29,15 @@ struct WorldTuningParameters {
     // Region renderer LOD mesh decimation in blocks per cell (L0/L1/L2).
     std::array<int, 3> regionLodSteps{2, 4, 8};
     float regionLodDistance0 = REGION_BLOCKS_XY * 2.0f;
-    float regionLodDistance1 = REGION_BLOCKS_XY * 2.2f;
-    double regionBuildBudgetMs = 2.0;
+    float regionLodDistance1 = REGION_BLOCKS_XY * 4.0f;
+    double regionBuildBudgetMs = 4.0;
 
     // Heightmap terrain settings.
     const char* heightmapRelativePath = "heightmap.png";
-    int heightmapUpscaleFactor = 8;
+    int heightmapUpscaleFactor = 4;
     bool heightmapWrap = true;
-    int terrainMinHeightBlocks = CHUNK_SIZE * 4;
-    int terrainMaxHeightBlocks = CHUNK_SIZE * (COLUMN_CHUNKS_Z - 4);
+    int terrainMinHeightBlocks = CHUNK_SIZE * 2;
+    int terrainMaxHeightBlocks = CHUNK_SIZE * (COLUMN_CHUNKS_Z - 2);
 };
 
 inline constexpr WorldTuningParameters kDefaultWorldTuningParameters{};
@@ -50,8 +50,8 @@ struct PlayerStreamingContext {
 
     float lod0Distance = kDefaultWorldTuningParameters.regionLodDistance0;
     float lod1Distance = kDefaultWorldTuningParameters.regionLodDistance1;
-    float lod2Distance = kDefaultWorldTuningParameters.regionLodDistance1 * 1.5f;
-    float lod3Distance = kDefaultWorldTuningParameters.regionLodDistance1 * 2.0f;
+    float lod2Distance = kDefaultWorldTuningParameters.regionLodDistance1 * 2.0f;
+    float lod3Distance = kDefaultWorldTuningParameters.regionLodDistance1 * 4.0f;
 
     std::array<glm::vec4, 6> frustumPlanes{};
 };

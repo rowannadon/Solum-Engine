@@ -212,7 +212,7 @@ void Application::updateProjectionMatrix(int zoom) {
         return;
     }
     float ratio = width / (float)height;
-    uniforms.projectionMatrix = glm::perspective(zoom * PI / 180, ratio, 1.0f, 10000.0f);
+    uniforms.projectionMatrix = glm::perspective(zoom * PI / 180, ratio, 1.0f, 20000.0f);
     uniforms.inverseProjectionMatrix = glm::inverse(uniforms.projectionMatrix);
 
     buf->writeBuffer("uniform_buffer", offsetof(FrameUniforms, projectionMatrix), &uniforms.projectionMatrix, sizeof(FrameUniforms::projectionMatrix));
