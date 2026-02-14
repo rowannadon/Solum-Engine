@@ -21,16 +21,23 @@ struct JobResult;
 
 // Shared startup tuning for both world streaming defaults and renderer region/LOD behavior.
 // This is the single place to tweak for now (GUI controls can later drive these values at runtime).
+inline constexpr int kRegionLodCount = 5;
+
 struct WorldTuningParameters {
-    int viewDistanceChunks = 300;
+    int viewDistanceChunks = 75;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 
-    // Region renderer LOD mesh decimation in blocks per cell (L0/L1/L2).
-    std::array<int, 3> regionLodSteps{2, 4, 8};
-    float regionLodDistance0 = REGION_BLOCKS_XY * 2.0f;
-    float regionLodDistance1 = REGION_BLOCKS_XY * 4.0f;
-    double regionBuildBudgetMs = 4.0;
+    // Region renderer LOD mesh decimation in blocks per cell.
+    std::array<int, kRegionLodCount> regionLodSteps{2, 4, 8, 16, 32};
+    // Distance thresholds where LOD switches from i to i+1.
+    std::array<float, kRegionLodCount - 1> regionLodSwitchDistances{
+        REGION_BLOCKS_XY * 0.5f,
+        REGION_BLOCKS_XY * 1.0f,
+        REGION_BLOCKS_XY * 2.0f,
+        REGION_BLOCKS_XY * 4.0f,
+    };
+    double regionBuildBudgetMs = 2.0;
 
     // Heightmap terrain settings.
     const char* heightmapRelativePath = "heightmap.png";
@@ -47,11 +54,6 @@ struct PlayerStreamingContext {
     int viewDistanceChunks = kDefaultWorldTuningParameters.viewDistanceChunks;
     int verticalChunkMin = kDefaultWorldTuningParameters.verticalChunkMin;
     int verticalChunkMax = kDefaultWorldTuningParameters.verticalChunkMax;
-
-    float lod0Distance = kDefaultWorldTuningParameters.regionLodDistance0;
-    float lod1Distance = kDefaultWorldTuningParameters.regionLodDistance1;
-    float lod2Distance = kDefaultWorldTuningParameters.regionLodDistance1 * 2.0f;
-    float lod3Distance = kDefaultWorldTuningParameters.regionLodDistance1 * 4.0f;
 
     std::array<glm::vec4, 6> frustumPlanes{};
 };

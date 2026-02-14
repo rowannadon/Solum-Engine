@@ -15,6 +15,7 @@
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 #include "solum_engine/render/VertexAttributes.h"
+#include "solum_engine/voxel/World.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
@@ -43,7 +44,7 @@ private:
 
     struct RegionRenderEntry {
         RegionCoord coord;
-        std::array<MeshSlotRef, 3> lodMeshes;
+        std::array<MeshSlotRef, kRegionLodCount> lodMeshes;
     };
 
     struct BufferSlot {
@@ -74,9 +75,8 @@ private:
     int activeCenterRegionX = std::numeric_limits<int>::min();
     int activeCenterRegionY = std::numeric_limits<int>::min();
     int regionRadius_ = 1;
-    std::array<int, 3> lodSteps_{};
-    float lodDistance0_ = 0.0f;
-    float lodDistance1_ = 0.0f;
+    std::array<int, kRegionLodCount> lodSteps_{};
+    std::array<float, kRegionLodCount - 1> lodSwitchDistances_{};
     double buildBudgetMs_ = 0.0;
     std::vector<unsigned char> heightmapRgba_;
     uint32_t heightmapWidth_ = 0;

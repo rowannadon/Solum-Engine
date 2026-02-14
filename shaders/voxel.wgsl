@@ -74,9 +74,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let lightDir = normalize(vec3f(0.45, 0.6, 0.35));
-    let ndotl = abs(dot(normalize(in.normal), lightDir));
-    let ambient = 0.3;
+    let lightDir = normalize(vec3f(0.45, 1.0, 0.35));
+    let ndotl = dot(normalize(in.normal), lightDir);
+    let ambient = 0.4;
     let shade = ambient + (1.0 - ambient) * ndotl;
 
     let linearColor = in.color * shade;

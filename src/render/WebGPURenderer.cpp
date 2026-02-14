@@ -15,7 +15,7 @@
 #include <vector>
 
 namespace {
-constexpr int kLodCount = 3;
+constexpr int kLodCount = kRegionLodCount;
 
 constexpr std::array<uint64_t, 6> kSizeClasses = {
     64ull * 1024ull,
@@ -118,13 +118,12 @@ int WebGPURenderer::chooseSizeClass(uint64_t requiredBytes) const {
 }
 
 int WebGPURenderer::chooseLodByDistance(float distance) const {
-    if (distance < lodDistance0_) {
-        return 0;
+    for (int i = 0; i < kLodCount - 1; ++i) {
+        if (distance < lodSwitchDistances_[static_cast<std::size_t>(i)]) {
+            return i;
+        }
     }
-    if (distance < lodDistance1_) {
-        return 1;
-    }
-    return 2;
+    return kLodCount - 1;
 }
 
 bool WebGPURenderer::loadHeightmap(const std::string& path) {
@@ -530,21 +529,14 @@ void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerReg
 
             RegionRenderEntry& entry = renderedRegions_.find(coord)->second;
 
-            if (ring == 0) {
-                if (!entry.lodMeshes[2].valid) pendingBuilds_.push_back({coord, 2});
-                if (!entry.lodMeshes[1].valid) pendingBuilds_.push_back({coord, 1});
-                if (!entry.lodMeshes[0].valid) pendingBuilds_.push_back({coord, 0});
-                continue;
-            }
-
-            if (ring == 1) {
-                if (!entry.lodMeshes[2].valid) pendingBuilds_.push_back({coord, 2});
-                if (!entry.lodMeshes[1].valid) pendingBuilds_.push_back({coord, 1});
-                continue;
-            }
-
-            if (!entry.lodMeshes[2].valid) {
-                pendingBuilds_.push_back({coord, 2});
+            const float approxDistance = std::sqrt(
+                static_cast<float>(rx * rx + ry * ry)
+            ) * static_cast<float>(REGION_BLOCKS_XY);
+            const int minLod = chooseLodByDistance(approxDistance);
+            for (int lod = kLodCount - 1; lod >= minLod; --lod) {
+                if (!entry.lodMeshes[static_cast<std::size_t>(lod)].valid) {
+                    pendingBuilds_.push_back({coord, lod});
+                }
             }
         }
     }
@@ -665,8 +657,13 @@ bool WebGPURenderer::initialize() {
         }
     }
 
-    lodDistance0_ = std::max(1.0f, tuning.regionLodDistance0);
-    lodDistance1_ = std::max(lodDistance0_ + 1.0f, tuning.regionLodDistance1);
+    lodSwitchDistances_ = tuning.regionLodSwitchDistances;
+    for (int i = 0; i < kLodCount - 1; ++i) {
+        const float minAllowed = (i == 0)
+            ? 1.0f
+            : lodSwitchDistances_[static_cast<std::size_t>(i - 1)] + 1.0f;
+        lodSwitchDistances_[static_cast<std::size_t>(i)] = std::max(minAllowed, lodSwitchDistances_[static_cast<std::size_t>(i)]);
+    }
     buildBudgetMs_ = std::max(0.1, tuning.regionBuildBudgetMs);
 
     heightmapUpscaleFactor_ = std::max(1, tuning.heightmapUpscaleFactor);
