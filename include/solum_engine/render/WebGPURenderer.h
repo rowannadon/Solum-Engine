@@ -66,6 +66,7 @@ private:
 
     int activeCenterRegionX = std::numeric_limits<int>::min();
     int activeCenterRegionY = std::numeric_limits<int>::min();
+    int regionRadius_ = 1;
     std::vector<RegionRenderEntry> renderedRegions_;
     std::vector<BufferSlot> vertexSlots_;
     std::vector<BufferSlot> indexSlots_;

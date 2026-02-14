@@ -1,4 +1,5 @@
 #include "solum_engine/render/WebGPURenderer.h"
+#include "solum_engine/voxel/World.h"
 
 #include <algorithm>
 #include <array>
@@ -10,7 +11,6 @@
 #include <vector>
 
 namespace {
-constexpr int kRegionRadius = 1; // 3x3 regions around player
 constexpr int kLodCount = 3;
 constexpr std::array<int, kLodCount> kLodSteps = {2, 4, 8};
 constexpr float kLodDistance0 = REGION_BLOCKS_XY * 0.85f;
@@ -375,8 +375,8 @@ void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerReg
 
     releaseAllRegionMeshes();
 
-    for (int ry = -kRegionRadius; ry <= kRegionRadius; ++ry) {
-        for (int rx = -kRegionRadius; rx <= kRegionRadius; ++rx) {
+    for (int ry = -regionRadius_; ry <= regionRadius_; ++ry) {
+        for (int rx = -regionRadius_; rx <= regionRadius_; ++rx) {
             RegionRenderEntry entry;
             entry.coord = RegionCoord{centerRegionX + rx, centerRegionY + ry};
 
@@ -384,7 +384,8 @@ void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerReg
             for (int lod = 0; lod < kLodCount; ++lod) {
                 const bool shouldBuild =
                     (ring == 0) ||
-                    (ring == 1 && lod >= 1);
+                    (ring == 1 && lod >= 1) ||
+                    (ring >= 2 && lod >= 2);
                 if (!shouldBuild) {
                     continue;
                 }
@@ -457,6 +458,9 @@ bool WebGPURenderer::initialize() {
     pipelineManager = std::make_unique<PipelineManager>(context->getDevice(), context->getSurfaceFormat());
     bufferManager = std::make_unique<BufferManager>(context->getDevice(), context->getQueue());
     textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
+
+    const int configuredViewDistanceChunks = std::max(1, PlayerStreamingContext{}.viewDistanceChunks);
+    regionRadius_ = std::max(1, (configuredViewDistanceChunks + (REGION_COLS - 1)) / REGION_COLS);
 
     {
         BufferDescriptor desc = Default;

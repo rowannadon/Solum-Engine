@@ -21,7 +21,7 @@ struct JobResult;
 
 struct PlayerStreamingContext {
     glm::vec3 playerPosition{0.0f};
-    int viewDistanceChunks = 10;
+    int viewDistanceChunks = 40;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 
