@@ -73,15 +73,15 @@ bool VoxelPipeline::createPipeline() {
     // Allocate space for the 9 vertex attributes we actually use
     config.vertexAttributes.resize(9);
     config.vertexAttributes[0].shaderLocation = 0;
-    config.vertexAttributes[0].format = VertexFormat::Uint16;
+    config.vertexAttributes[0].format = VertexFormat::Sint32;
     config.vertexAttributes[0].offset = offsetof(VertexAttributes, x);
 
     config.vertexAttributes[1].shaderLocation = 1;
-    config.vertexAttributes[1].format = VertexFormat::Uint16;
+    config.vertexAttributes[1].format = VertexFormat::Sint32;
     config.vertexAttributes[1].offset = offsetof(VertexAttributes, y);
 
     config.vertexAttributes[2].shaderLocation = 2;
-    config.vertexAttributes[2].format = VertexFormat::Uint16;
+    config.vertexAttributes[2].format = VertexFormat::Sint32;
     config.vertexAttributes[2].offset = offsetof(VertexAttributes, z);
 
     config.vertexAttributes[3].shaderLocation = 3;
@@ -192,14 +192,6 @@ bool VoxelPipeline::render(
     voxelRenderPass.setPipeline(pip->getPipeline("voxel_pipeline"));
 
     voxelRenderPass.setBindGroup(0, pip->getBindGroup("global_uniforms_bg"), 0, nullptr);
-
-    Buffer vertexBuffer = buf->getBuffer("world_vertex_buffer");
-    Buffer indexBuffer = buf->getBuffer("world_index_buffer");
-    if (vertexBuffer && indexBuffer && indexBuffer.getSize() >= sizeof(uint32_t)) {
-        voxelRenderPass.setVertexBuffer(0, vertexBuffer, 0, vertexBuffer.getSize());
-        voxelRenderPass.setIndexBuffer(indexBuffer, IndexFormat::Uint32, 0, indexBuffer.getSize());
-        voxelRenderPass.drawIndexed(indexBuffer.getSize() / sizeof(uint32_t), 1, 0, 0, 0);
-    }
 
     if (overlayCallback) {
         overlayCallback(voxelRenderPass);

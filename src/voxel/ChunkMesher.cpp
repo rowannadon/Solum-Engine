@@ -181,9 +181,9 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mes
 					for (const glm::ivec3& vertexOffset : kFaceVertexOffsets[dir]) {
 						VertexAttributes vertex{};
 
-						vertex.x = static_cast<uint16_t>(x + vertexOffset.x + chunkOrigin.x());
-						vertex.y = static_cast<uint16_t>(y + vertexOffset.y + chunkOrigin.y());
-						vertex.z = static_cast<uint16_t>(z + vertexOffset.z + chunkOrigin.z());
+						vertex.x = x + vertexOffset.x + chunkOrigin.x();
+						vertex.y = y + vertexOffset.y + chunkOrigin.y();
+						vertex.z = z + vertexOffset.z + chunkOrigin.z();
 
 						switch (static_cast<Direction>(dir)) {
 						case Direction::PlusX:

@@ -5,9 +5,9 @@
 struct VertexInput {
     @builtin(instance_index) instance_idx: u32,
     @builtin(vertex_index) vertex_idx: u32,
-    @location(0) x: u32,
-    @location(1) y: u32,
-    @location(2) z: u32,
+    @location(0) x: i32,
+    @location(1) y: i32,
+    @location(2) z: i32,
     @location(3) u: u32,
     @location(4) v: u32,
     @location(5) material: u32,

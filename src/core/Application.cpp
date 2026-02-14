@@ -28,9 +28,9 @@ bool Application::Initialize() {
     uniforms.viewMatrix = glm::mat4x4(1.0);
     uniforms.inverseViewMatrix = glm::mat4x4(1.0);
 
-    camera.position = glm::vec3(64.0f, 140.0f, 40.0f);
+    camera.position = glm::vec3(768.0f, 768.0f, 900.0f);
     camera.yaw = -90.0f;
-    camera.pitch = -12.0f;
+    camera.pitch = -55.0f;
     camera.updateCameraVectors();
     updateProjectionMatrix(camera.zoom);
     updateViewMatrix();
