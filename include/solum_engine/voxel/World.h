@@ -24,7 +24,7 @@ struct JobResult;
 inline constexpr int kRegionLodCount = 5;
 
 struct WorldTuningParameters {
-    int viewDistanceChunks = 200;
+    int viewDistanceChunks = 255;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 
@@ -32,10 +32,10 @@ struct WorldTuningParameters {
     std::array<int, kRegionLodCount> regionLodSteps{2, 4, 8, 16, 32};
     // Distance thresholds where LOD switches from i to i+1.
     std::array<float, kRegionLodCount - 1> regionLodSwitchDistances{
-        REGION_BLOCKS_XY * 1.0f,
-        REGION_BLOCKS_XY * 2.0f,
         REGION_BLOCKS_XY * 4.0f,
         REGION_BLOCKS_XY * 8.0f,
+        REGION_BLOCKS_XY * 16.0f,
+        REGION_BLOCKS_XY * 32.0f,
     };
     double regionBuildBudgetMs = 4.0f;
 
@@ -68,7 +68,7 @@ struct WorldInterestSet {
 
 class World {
 public:
-    explicit World(std::size_t chunkPoolCapacity = 2048, std::size_t workerThreads = 0);
+    explicit World(std::size_t chunkPoolCapacity = 16384, std::size_t workerThreads = 0);
     ~World();
 
     void update(const PlayerStreamingContext& context);

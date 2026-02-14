@@ -548,14 +548,44 @@ void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerReg
 }
 
 void WebGPURenderer::processPendingRegionBuilds() {
-    if (pendingBuilds_.empty()) {
+    if (buildInFlight_ && activeBuildFuture_.valid()) {
+        if (activeBuildFuture_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+            try {
+                CompletedRegionBuild completed = activeBuildFuture_.get();
+                buildInFlight_ = false;
+
+                const int lodLevel = completed.lodLevel;
+                if (lodLevel >= 0 && lodLevel < kLodCount) {
+                    auto regionIt = renderedRegions_.find(completed.coord);
+                    if (regionIt != renderedRegions_.end()) {
+                        RegionRenderEntry& entry = regionIt->second;
+                        MeshSlotRef& mesh = entry.lodMeshes[static_cast<std::size_t>(lodLevel)];
+                        if (!mesh.valid) {
+                            uploadMesh(std::move(completed.vertices), std::move(completed.indices), mesh);
+                        }
+                    }
+                }
+            } catch (const std::exception& ex) {
+                std::cerr << "Background region build failed: " << ex.what() << std::endl;
+                buildInFlight_ = false;
+            } catch (...) {
+                std::cerr << "Background region build failed with unknown error." << std::endl;
+                buildInFlight_ = false;
+            }
+        }
+    }
+
+    if (buildInFlight_) {
         return;
     }
 
-    const auto start = std::chrono::steady_clock::now();
     while (!pendingBuilds_.empty()) {
         const PendingRegionBuild build = pendingBuilds_.front();
         pendingBuilds_.pop_front();
+
+        if (build.lodLevel < 0 || build.lodLevel >= kLodCount) {
+            continue;
+        }
 
         auto regionIt = renderedRegions_.find(build.coord);
         if (regionIt == renderedRegions_.end()) {
@@ -567,14 +597,19 @@ void WebGPURenderer::processPendingRegionBuilds() {
             continue;
         }
 
-        auto [vertices, indices] = buildRegionLodMesh(build.coord, build.lodLevel);
-        uploadMesh(std::move(vertices), std::move(indices), entry.lodMeshes[static_cast<std::size_t>(build.lodLevel)]);
-
-        const auto now = std::chrono::steady_clock::now();
-        const double elapsedMs = std::chrono::duration<double, std::milli>(now - start).count();
-        if (elapsedMs >= buildBudgetMs_) {
-            break;
-        }
+        const RegionCoord coord = build.coord;
+        const int lodLevel = build.lodLevel;
+        activeBuildFuture_ = std::async(std::launch::async, [this, coord, lodLevel]() {
+            auto [vertices, indices] = buildRegionLodMesh(coord, lodLevel);
+            CompletedRegionBuild completed;
+            completed.coord = coord;
+            completed.lodLevel = lodLevel;
+            completed.vertices = std::move(vertices);
+            completed.indices = std::move(indices);
+            return completed;
+        });
+        buildInFlight_ = true;
+        break;
     }
 }
 
@@ -904,6 +939,14 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 }
 
 void WebGPURenderer::terminate() {
+    if (activeBuildFuture_.valid()) {
+        try {
+            activeBuildFuture_.wait();
+            (void)activeBuildFuture_.get();
+        } catch (...) {
+        }
+    }
+    buildInFlight_ = false;
     releaseAllRegionMeshes();
     textureManager->terminate();
     pipelineManager->terminate();

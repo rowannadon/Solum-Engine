@@ -67,6 +67,13 @@ private:
         int lodLevel = 0;
     };
 
+    struct CompletedRegionBuild {
+        RegionCoord coord;
+        int lodLevel = 0;
+        std::vector<VertexAttributes> vertices;
+        std::vector<uint32_t> indices;
+    };
+
     std::unique_ptr<WebGPUContext> context;
     std::unique_ptr<PipelineManager> pipelineManager;
     std::unique_ptr<BufferManager> bufferManager;
@@ -94,6 +101,8 @@ private:
     std::unordered_map<RegionCoord, RegionRenderEntry, RegionCoordHash> renderedRegions_;
     std::vector<RegionCoord> drawOrder_;
     std::deque<PendingRegionBuild> pendingBuilds_;
+    std::future<CompletedRegionBuild> activeBuildFuture_;
+    bool buildInFlight_ = false;
     std::vector<BufferSlot> vertexSlots_;
     std::vector<BufferSlot> indexSlots_;
     uint64_t nextBufferId_ = 0;

@@ -14,7 +14,7 @@ struct FirstPersonCamera {
     float pitch = 0.0f;  // Rotation around X axis (up/down)
 
     // Camera options
-    float movementSpeed = 350.0f;
+    float movementSpeed = 12.0f;
     float mouseSensitivity = 0.1f;
     float zoom = 85.f;
 
