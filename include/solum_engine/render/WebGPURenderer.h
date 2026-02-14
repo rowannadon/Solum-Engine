@@ -78,6 +78,13 @@ private:
     float lodDistance0_ = 0.0f;
     float lodDistance1_ = 0.0f;
     double buildBudgetMs_ = 0.0;
+    std::vector<unsigned char> heightmapRgba_;
+    uint32_t heightmapWidth_ = 0;
+    uint32_t heightmapHeight_ = 0;
+    int heightmapUpscaleFactor_ = 8;
+    bool heightmapWrap_ = true;
+    int terrainHeightMinBlocks_ = 0;
+    int terrainHeightMaxBlocks_ = CHUNK_SIZE * COLUMN_CHUNKS_Z - 1;
     std::unordered_map<RegionCoord, RegionRenderEntry, RegionCoordHash> renderedRegions_;
     std::vector<RegionCoord> drawOrder_;
     std::deque<PendingRegionBuild> pendingBuilds_;
@@ -92,6 +99,9 @@ private:
     void rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY);
     void processPendingRegionBuilds();
     int chooseLodByDistance(float distance) const;
+    bool loadHeightmap(const std::string& path);
+    float sampleHeightmap01(int blockX, int blockY) const;
+    int sampleHeightBlocks(int blockX, int blockY) const;
     void drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cameraPos);
 
     BufferSlot* acquireSlot(std::vector<BufferSlot>& slots, bool isVertex, uint64_t requiredBytes);

@@ -1,5 +1,6 @@
 #include "solum_engine/render/WebGPURenderer.h"
 #include "solum_engine/voxel/World.h"
+#include "lodepng.h"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <unordered_set>
 #include <vector>
@@ -28,10 +30,7 @@ constexpr std::array<uint32_t, 6> kSlotsPerPage = { 64u, 32u, 16u, 8u, 2u, 1u };
 constexpr uint16_t kUvMin = 0;
 constexpr uint16_t kUvMax = 65535;
 
-int sampleHeightBlocks(int blockX, int blockY) {
-    const int worldHeight = CHUNK_SIZE * COLUMN_CHUNKS_Z;
-    const int mid = worldHeight / 2;
-
+float sampleFallbackHeight01(int blockX, int blockY) {
     const float x = static_cast<float>(blockX);
     const float y = static_cast<float>(blockY);
 
@@ -40,8 +39,8 @@ int sampleHeightBlocks(int blockX, int blockY) {
     const float waveC = std::sin((x + y) * 0.0037f) * 80.0f;
     const float waveD = std::cos((x - y) * 0.0049f) * 48.0f;
 
-    const int height = mid + static_cast<int>(waveA + waveB + waveC + waveD);
-    return std::clamp(height, CHUNK_SIZE * 4, worldHeight - CHUNK_SIZE * 4);
+    const float normalized = 0.5f + (waveA + waveB + waveC + waveD) / 800.0f;
+    return std::clamp(normalized, 0.0f, 1.0f);
 }
 
 uint8_t encodeNormalComponent(int component) {
@@ -126,6 +125,113 @@ int WebGPURenderer::chooseLodByDistance(float distance) const {
         return 1;
     }
     return 2;
+}
+
+bool WebGPURenderer::loadHeightmap(const std::string& path) {
+    std::vector<unsigned char> pixels;
+    unsigned width = 0;
+    unsigned height = 0;
+    const unsigned error = lodepng::decode(pixels, width, height, path);
+    if (error != 0 || width == 0 || height == 0) {
+        std::cerr << "Failed to load heightmap: " << path
+                  << " (" << lodepng_error_text(error) << ")" << std::endl;
+        heightmapRgba_.clear();
+        heightmapWidth_ = 0;
+        heightmapHeight_ = 0;
+        return false;
+    }
+
+    heightmapRgba_ = std::move(pixels);
+    heightmapWidth_ = static_cast<uint32_t>(width);
+    heightmapHeight_ = static_cast<uint32_t>(height);
+    return true;
+}
+
+float WebGPURenderer::sampleHeightmap01(int blockX, int blockY) const {
+    if (heightmapRgba_.empty() || heightmapWidth_ == 0 || heightmapHeight_ == 0) {
+        return sampleFallbackHeight01(blockX, blockY);
+    }
+
+    const int upscale = std::max(1, heightmapUpscaleFactor_);
+    const int worldSpanX = static_cast<int>(heightmapWidth_) * upscale;
+    const int worldSpanY = static_cast<int>(heightmapHeight_) * upscale;
+    if (worldSpanX <= 0 || worldSpanY <= 0) {
+        return sampleFallbackHeight01(blockX, blockY);
+    }
+
+    float xInMapBlocks = static_cast<float>(blockX);
+    float yInMapBlocks = static_cast<float>(blockY);
+
+    if (heightmapWrap_) {
+        xInMapBlocks = std::fmod(xInMapBlocks, static_cast<float>(worldSpanX));
+        yInMapBlocks = std::fmod(yInMapBlocks, static_cast<float>(worldSpanY));
+        if (xInMapBlocks < 0.0f) {
+            xInMapBlocks += static_cast<float>(worldSpanX);
+        }
+        if (yInMapBlocks < 0.0f) {
+            yInMapBlocks += static_cast<float>(worldSpanY);
+        }
+    } else {
+        xInMapBlocks = std::clamp(xInMapBlocks, 0.0f, static_cast<float>(worldSpanX - 1));
+        yInMapBlocks = std::clamp(yInMapBlocks, 0.0f, static_cast<float>(worldSpanY - 1));
+    }
+
+    const float sampleX = xInMapBlocks / static_cast<float>(upscale);
+    const float sampleY = yInMapBlocks / static_cast<float>(upscale);
+
+    int x0 = static_cast<int>(std::floor(sampleX));
+    int y0 = static_cast<int>(std::floor(sampleY));
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+
+    auto wrapOrClamp = [this](int value, uint32_t dimension) {
+        if (dimension == 0) {
+            return 0;
+        }
+        if (heightmapWrap_) {
+            int v = value % static_cast<int>(dimension);
+            if (v < 0) {
+                v += static_cast<int>(dimension);
+            }
+            return v;
+        }
+        return std::clamp(value, 0, static_cast<int>(dimension) - 1);
+    };
+
+    x0 = wrapOrClamp(x0, heightmapWidth_);
+    x1 = wrapOrClamp(x1, heightmapWidth_);
+    y0 = wrapOrClamp(y0, heightmapHeight_);
+    y1 = wrapOrClamp(y1, heightmapHeight_);
+
+    auto samplePixel01 = [this](int px, int py) {
+        const std::size_t index = (static_cast<std::size_t>(py) * static_cast<std::size_t>(heightmapWidth_) + static_cast<std::size_t>(px)) * 4ull;
+        const float r = static_cast<float>(heightmapRgba_[index + 0]) / 255.0f;
+        const float g = static_cast<float>(heightmapRgba_[index + 1]) / 255.0f;
+        const float b = static_cast<float>(heightmapRgba_[index + 2]) / 255.0f;
+        return 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    };
+
+    const float tx = sampleX - std::floor(sampleX);
+    const float ty = sampleY - std::floor(sampleY);
+
+    const float h00 = samplePixel01(x0, y0);
+    const float h10 = samplePixel01(x1, y0);
+    const float h01 = samplePixel01(x0, y1);
+    const float h11 = samplePixel01(x1, y1);
+
+    const float hx0 = h00 + (h10 - h00) * tx;
+    const float hx1 = h01 + (h11 - h01) * tx;
+    const float h = hx0 + (hx1 - hx0) * ty;
+    return std::clamp(h, 0.0f, 1.0f);
+}
+
+int WebGPURenderer::sampleHeightBlocks(int blockX, int blockY) const {
+    const float h01 = sampleHeightmap01(blockX, blockY);
+    const int minHeight = terrainHeightMinBlocks_;
+    const int maxHeight = terrainHeightMaxBlocks_;
+    const int range = std::max(1, maxHeight - minHeight);
+    const int h = minHeight + static_cast<int>(std::round(h01 * static_cast<float>(range)));
+    return std::clamp(h, minHeight, maxHeight);
 }
 
 WebGPURenderer::BufferSlot* WebGPURenderer::acquireSlot(std::vector<BufferSlot>& slots, bool isVertex, uint64_t requiredBytes) {
@@ -254,7 +360,7 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::
     const int globalCellOriginX = floor_div(originX, step);
     const int globalCellOriginY = floor_div(originY, step);
 
-    auto sampleQuantizedCellHeight = [step](int globalCellX, int globalCellY) {
+    auto sampleQuantizedCellHeight = [this, step](int globalCellX, int globalCellY) {
         const int sampleX = globalCellX * step + step / 2;
         const int sampleY = globalCellY * step + step / 2;
         const int h = sampleHeightBlocks(sampleX, sampleY);
@@ -562,6 +668,23 @@ bool WebGPURenderer::initialize() {
     lodDistance0_ = std::max(1.0f, tuning.regionLodDistance0);
     lodDistance1_ = std::max(lodDistance0_ + 1.0f, tuning.regionLodDistance1);
     buildBudgetMs_ = std::max(0.1, tuning.regionBuildBudgetMs);
+
+    heightmapUpscaleFactor_ = std::max(1, tuning.heightmapUpscaleFactor);
+    heightmapWrap_ = tuning.heightmapWrap;
+    const int worldHeightMaxBlock = CHUNK_SIZE * COLUMN_CHUNKS_Z - 1;
+    terrainHeightMinBlocks_ = std::clamp(tuning.terrainMinHeightBlocks, 0, worldHeightMaxBlock);
+    terrainHeightMaxBlocks_ = std::clamp(tuning.terrainMaxHeightBlocks, 0, worldHeightMaxBlock);
+    if (terrainHeightMaxBlocks_ <= terrainHeightMinBlocks_) {
+        if (terrainHeightMinBlocks_ > 0) {
+            terrainHeightMinBlocks_ -= 1;
+        } else if (terrainHeightMaxBlocks_ < worldHeightMaxBlock) {
+            terrainHeightMaxBlocks_ += 1;
+        }
+    }
+
+    const char* heightmapRelativePath = (tuning.heightmapRelativePath != nullptr) ? tuning.heightmapRelativePath : "heightmap.png";
+    const std::filesystem::path heightmapPath = std::filesystem::path(RESOURCE_DIR) / heightmapRelativePath;
+    loadHeightmap(heightmapPath.string());
 
     const std::size_t expectedRegionCount = static_cast<std::size_t>((regionRadius_ * 2 + 1) * (regionRadius_ * 2 + 1));
     renderedRegions_.reserve(expectedRegionCount * 2);

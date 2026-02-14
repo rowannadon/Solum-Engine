@@ -31,6 +31,13 @@ struct WorldTuningParameters {
     float regionLodDistance0 = REGION_BLOCKS_XY * 2.0f;
     float regionLodDistance1 = REGION_BLOCKS_XY * 2.2f;
     double regionBuildBudgetMs = 2.0;
+
+    // Heightmap terrain settings.
+    const char* heightmapRelativePath = "heightmap.png";
+    int heightmapUpscaleFactor = 8;
+    bool heightmapWrap = true;
+    int terrainMinHeightBlocks = CHUNK_SIZE * 4;
+    int terrainMaxHeightBlocks = CHUNK_SIZE * (COLUMN_CHUNKS_Z - 4);
 };
 
 inline constexpr WorldTuningParameters kDefaultWorldTuningParameters{};
