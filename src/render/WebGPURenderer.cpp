@@ -14,10 +14,6 @@
 
 namespace {
 constexpr int kLodCount = 3;
-constexpr std::array<int, kLodCount> kLodSteps = {2, 4, 8};
-constexpr float kLodDistance0 = REGION_BLOCKS_XY * 0.85f;
-constexpr float kLodDistance1 = REGION_BLOCKS_XY * 1.2f;
-constexpr double kBuildBudgetMs = 2.0;
 
 constexpr std::array<uint64_t, 6> kSizeClasses = {
     64ull * 1024ull,
@@ -111,16 +107,6 @@ void emitFace(
     indices.push_back(base + 3);
     indices.push_back(base + 2);
 }
-
-int chooseLodByDistance(float distance) {
-    if (distance < kLodDistance0) {
-        return 0;
-    }
-    if (distance < kLodDistance1) {
-        return 1;
-    }
-    return 2;
-}
 }
 
 int WebGPURenderer::chooseSizeClass(uint64_t requiredBytes) const {
@@ -130,6 +116,16 @@ int WebGPURenderer::chooseSizeClass(uint64_t requiredBytes) const {
         }
     }
     return -1;
+}
+
+int WebGPURenderer::chooseLodByDistance(float distance) const {
+    if (distance < lodDistance0_) {
+        return 0;
+    }
+    if (distance < lodDistance1_) {
+        return 1;
+    }
+    return 2;
 }
 
 WebGPURenderer::BufferSlot* WebGPURenderer::acquireSlot(std::vector<BufferSlot>& slots, bool isVertex, uint64_t requiredBytes) {
@@ -249,7 +245,7 @@ void WebGPURenderer::releaseAllRegionMeshes() {
 }
 
 std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::buildRegionLodMesh(RegionCoord regionCoord, int lodLevel) const {
-    const int step = kLodSteps[static_cast<std::size_t>(std::clamp(lodLevel, 0, kLodCount - 1))];
+    const int step = lodSteps_[static_cast<std::size_t>(std::clamp(lodLevel, 0, kLodCount - 1))];
     const int cells = REGION_BLOCKS_XY / step;
 
     const int originX = regionCoord.x() * REGION_BLOCKS_XY;
@@ -476,7 +472,7 @@ void WebGPURenderer::processPendingRegionBuilds() {
 
         const auto now = std::chrono::steady_clock::now();
         const double elapsedMs = std::chrono::duration<double, std::milli>(now - start).count();
-        if (elapsedMs >= kBuildBudgetMs) {
+        if (elapsedMs >= buildBudgetMs_) {
             break;
         }
     }
@@ -545,8 +541,28 @@ bool WebGPURenderer::initialize() {
     bufferManager = std::make_unique<BufferManager>(context->getDevice(), context->getQueue());
     textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
 
-    const int configuredViewDistanceChunks = std::max(1, PlayerStreamingContext{}.viewDistanceChunks);
+    const WorldTuningParameters tuning = kDefaultWorldTuningParameters;
+
+    const int configuredViewDistanceChunks = std::max(1, tuning.viewDistanceChunks);
     regionRadius_ = std::max(1, (configuredViewDistanceChunks + (REGION_COLS - 1)) / REGION_COLS);
+
+    lodSteps_ = tuning.regionLodSteps;
+    for (int i = 0; i < kLodCount; ++i) {
+        if (lodSteps_[static_cast<std::size_t>(i)] < 1) {
+            lodSteps_[static_cast<std::size_t>(i)] = 1;
+        }
+        if (i > 0) {
+            const int prev = lodSteps_[static_cast<std::size_t>(i - 1)];
+            if (lodSteps_[static_cast<std::size_t>(i)] < prev) {
+                lodSteps_[static_cast<std::size_t>(i)] = prev;
+            }
+        }
+    }
+
+    lodDistance0_ = std::max(1.0f, tuning.regionLodDistance0);
+    lodDistance1_ = std::max(lodDistance0_ + 1.0f, tuning.regionLodDistance1);
+    buildBudgetMs_ = std::max(0.1, tuning.regionBuildBudgetMs);
+
     const std::size_t expectedRegionCount = static_cast<std::size_t>((regionRadius_ * 2 + 1) * (regionRadius_ * 2 + 1));
     renderedRegions_.reserve(expectedRegionCount * 2);
     drawOrder_.reserve(expectedRegionCount);

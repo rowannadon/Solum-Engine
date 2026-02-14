@@ -74,6 +74,10 @@ private:
     int activeCenterRegionX = std::numeric_limits<int>::min();
     int activeCenterRegionY = std::numeric_limits<int>::min();
     int regionRadius_ = 1;
+    std::array<int, 3> lodSteps_{};
+    float lodDistance0_ = 0.0f;
+    float lodDistance1_ = 0.0f;
+    double buildBudgetMs_ = 0.0;
     std::unordered_map<RegionCoord, RegionRenderEntry, RegionCoordHash> renderedRegions_;
     std::vector<RegionCoord> drawOrder_;
     std::deque<PendingRegionBuild> pendingBuilds_;
@@ -87,6 +91,7 @@ private:
     void releaseAllRegionMeshes();
     void rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY);
     void processPendingRegionBuilds();
+    int chooseLodByDistance(float distance) const;
     void drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cameraPos);
 
     BufferSlot* acquireSlot(std::vector<BufferSlot>& slots, bool isVertex, uint64_t requiredBytes);

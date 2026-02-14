@@ -19,16 +19,32 @@ class JobScheduler;
 struct VoxelJob;
 struct JobResult;
 
-struct PlayerStreamingContext {
-    glm::vec3 playerPosition{0.0f};
+// Shared startup tuning for both world streaming defaults and renderer region/LOD behavior.
+// This is the single place to tweak for now (GUI controls can later drive these values at runtime).
+struct WorldTuningParameters {
     int viewDistanceChunks = 40;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 
-    float lod0Distance = 10.0f;
-    float lod1Distance = 20.0f;
-    float lod2Distance = 35.0f;
-    float lod3Distance = 50.0f;
+    // Region renderer LOD mesh decimation in blocks per cell (L0/L1/L2).
+    std::array<int, 3> regionLodSteps{2, 4, 8};
+    float regionLodDistance0 = REGION_BLOCKS_XY * 0.85f;
+    float regionLodDistance1 = REGION_BLOCKS_XY * 1.2f;
+    double regionBuildBudgetMs = 2.0;
+};
+
+inline constexpr WorldTuningParameters kDefaultWorldTuningParameters{};
+
+struct PlayerStreamingContext {
+    glm::vec3 playerPosition{0.0f};
+    int viewDistanceChunks = kDefaultWorldTuningParameters.viewDistanceChunks;
+    int verticalChunkMin = kDefaultWorldTuningParameters.verticalChunkMin;
+    int verticalChunkMax = kDefaultWorldTuningParameters.verticalChunkMax;
+
+    float lod0Distance = kDefaultWorldTuningParameters.regionLodDistance0;
+    float lod1Distance = kDefaultWorldTuningParameters.regionLodDistance1;
+    float lod2Distance = kDefaultWorldTuningParameters.regionLodDistance1 * 1.5f;
+    float lod3Distance = kDefaultWorldTuningParameters.regionLodDistance1 * 2.0f;
 
     std::array<glm::vec4, 6> frustumPlanes{};
 };
