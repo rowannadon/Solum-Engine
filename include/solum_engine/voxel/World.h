@@ -22,14 +22,14 @@ struct JobResult;
 // Shared startup tuning for both world streaming defaults and renderer region/LOD behavior.
 // This is the single place to tweak for now (GUI controls can later drive these values at runtime).
 struct WorldTuningParameters {
-    int viewDistanceChunks = 40;
+    int viewDistanceChunks = 300;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 
     // Region renderer LOD mesh decimation in blocks per cell (L0/L1/L2).
     std::array<int, 3> regionLodSteps{2, 4, 8};
-    float regionLodDistance0 = REGION_BLOCKS_XY * 0.85f;
-    float regionLodDistance1 = REGION_BLOCKS_XY * 1.2f;
+    float regionLodDistance0 = REGION_BLOCKS_XY * 2.0f;
+    float regionLodDistance1 = REGION_BLOCKS_XY * 2.2f;
     double regionBuildBudgetMs = 2.0;
 };
 
