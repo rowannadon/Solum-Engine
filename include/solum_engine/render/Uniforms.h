@@ -9,4 +9,6 @@ struct FrameUniforms {
 
 	glm::mat4 inverseProjectionMatrix;
 	glm::mat4 inverseViewMatrix;
+
+    glm::uvec4 debugParams{0u, 0u, 0u, 0u};
 };

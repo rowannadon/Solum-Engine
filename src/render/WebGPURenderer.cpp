@@ -58,7 +58,8 @@ void emitFace(
     std::vector<uint32_t>& indices,
     const std::array<glm::ivec3, 4>& corners,
     const glm::ivec3& normal,
-    uint16_t materialId
+    uint16_t materialId,
+    uint8_t lodLevel
 ) {
     const uint32_t base = static_cast<uint32_t>(vertices.size());
 
@@ -72,6 +73,7 @@ void emitFace(
     v0.n_x = encodeNormalComponent(normal.x);
     v0.n_y = encodeNormalComponent(normal.y);
     v0.n_z = encodeNormalComponent(normal.z);
+    v0.lodLevel = lodLevel;
 
     VertexAttributes v1 = v0;
     v1.x = corners[1].x;
@@ -406,7 +408,7 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::
                 std::array<glm::ivec3, 4>{
                     glm::ivec3{x0, y0, z1}, glm::ivec3{x1, y0, z1}, glm::ivec3{x0, y1, z1}, glm::ivec3{x1, y1, z1}
                 },
-                glm::ivec3{0, 0, 1}, topMaterial);
+                glm::ivec3{0, 0, 1}, topMaterial, static_cast<uint8_t>(lodLevel));
 
             const int globalCellX = globalCellOriginX + x;
             const int globalCellY = globalCellOriginY + y;
@@ -429,28 +431,28 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::
                     std::array<glm::ivec3, 4>{
                         glm::ivec3{x1, y0, hPosX}, glm::ivec3{x1, y1, hPosX}, glm::ivec3{x1, y0, h}, glm::ivec3{x1, y1, h}
                     },
-                    glm::ivec3{1, 0, 0}, sideMaterial);
+                    glm::ivec3{1, 0, 0}, sideMaterial, static_cast<uint8_t>(lodLevel));
             }
             if (h > hNegX) {
                 emitFace(vertices, indices,
                     std::array<glm::ivec3, 4>{
                         glm::ivec3{x0, y0, hNegX}, glm::ivec3{x0, y0, h}, glm::ivec3{x0, y1, hNegX}, glm::ivec3{x0, y1, h}
                     },
-                    glm::ivec3{-1, 0, 0}, sideMaterial);
+                    glm::ivec3{-1, 0, 0}, sideMaterial, static_cast<uint8_t>(lodLevel));
             }
             if (h > hPosY) {
                 emitFace(vertices, indices,
                     std::array<glm::ivec3, 4>{
                         glm::ivec3{x0, y1, hPosY}, glm::ivec3{x0, y1, h}, glm::ivec3{x1, y1, hPosY}, glm::ivec3{x1, y1, h}
                     },
-                    glm::ivec3{0, 1, 0}, sideMaterial);
+                    glm::ivec3{0, 1, 0}, sideMaterial, static_cast<uint8_t>(lodLevel));
             }
             if (h > hNegY) {
                 emitFace(vertices, indices,
                     std::array<glm::ivec3, 4>{
                         glm::ivec3{x0, y0, hNegY}, glm::ivec3{x1, y0, hNegY}, glm::ivec3{x0, y0, h}, glm::ivec3{x1, y0, h}
                     },
-                    glm::ivec3{0, -1, 0}, sideMaterial);
+                    glm::ivec3{0, -1, 0}, sideMaterial, static_cast<uint8_t>(lodLevel));
             }
 
             if (lodLevel == 0 && z0 == 0) {
@@ -458,7 +460,7 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::
                     std::array<glm::ivec3, 4>{
                         glm::ivec3{x0, y0, 0}, glm::ivec3{x0, y1, 0}, glm::ivec3{x1, y0, 0}, glm::ivec3{x1, y1, 0}
                     },
-                    glm::ivec3{0, 0, -1}, 7);
+                    glm::ivec3{0, 0, -1}, 7, static_cast<uint8_t>(lodLevel));
             }
         }
     }
@@ -470,7 +472,7 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::
             glm::ivec3{originX + REGION_BLOCKS_XY, originY, 0},
             glm::ivec3{originX + REGION_BLOCKS_XY, originY + REGION_BLOCKS_XY, 0}
         },
-        glm::ivec3{0, 0, -1}, 7);
+        glm::ivec3{0, 0, -1}, 7, static_cast<uint8_t>(lodLevel));
 
     return {std::move(vertices), std::move(indices)};
 }
@@ -768,7 +770,35 @@ BufferManager* WebGPURenderer::getBufferManager() {
     return bufferManager.get();
 }
 
+void WebGPURenderer::toggleRegionDebugColors() {
+    debugRenderFlags_ ^= DebugRegionColors;
+}
+
+void WebGPURenderer::toggleLodDebugColors() {
+    debugRenderFlags_ ^= DebugLodColors;
+}
+
+void WebGPURenderer::toggleChunkDebugColors() {
+    debugRenderFlags_ ^= DebugChunkColors;
+}
+
+void WebGPURenderer::clearDebugColors() {
+    debugRenderFlags_ = 0u;
+}
+
+uint32_t WebGPURenderer::debugRenderFlags() const {
+    return debugRenderFlags_;
+}
+
 void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
+    uniforms.debugParams = glm::uvec4{debugRenderFlags_, 0u, 0u, 0u};
+    bufferManager->writeBuffer(
+        "uniform_buffer",
+        offsetof(FrameUniforms, debugParams),
+        &uniforms.debugParams,
+        sizeof(FrameUniforms::debugParams)
+    );
+
     const glm::vec3 cameraPos = glm::vec3(uniforms.inverseViewMatrix * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
     const int regionX = floor_div(static_cast<int>(std::floor(cameraPos.x)), REGION_BLOCKS_XY);
     const int regionY = floor_div(static_cast<int>(std::floor(cameraPos.y)), REGION_BLOCKS_XY);

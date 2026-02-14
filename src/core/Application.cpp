@@ -307,6 +307,7 @@ void Application::onKey(int key, int scancode, int action, int mods) {
 
     bool keyPressed = (action == GLFW_PRESS || action == GLFW_REPEAT);
     bool keyReleased = (action == GLFW_RELEASE);
+    bool keyJustPressed = (action == GLFW_PRESS);
 
     switch (key) {
     case GLFW_KEY_W:
@@ -338,6 +339,30 @@ void Application::onKey(int key, int scancode, int action, int mods) {
             cursorCaptured = false;
             mouseState.firstMouse = true;
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        }
+        break;
+    case GLFW_KEY_F5:
+        if (keyJustPressed) {
+            gpu.clearDebugColors();
+            std::cout << "Debug colors cleared" << std::endl;
+        }
+        break;
+    case GLFW_KEY_F6:
+        if (keyJustPressed) {
+            gpu.toggleRegionDebugColors();
+            std::cout << "Region debug colors toggled (flags=" << gpu.debugRenderFlags() << ")" << std::endl;
+        }
+        break;
+    case GLFW_KEY_F7:
+        if (keyJustPressed) {
+            gpu.toggleLodDebugColors();
+            std::cout << "LOD debug colors toggled (flags=" << gpu.debugRenderFlags() << ")" << std::endl;
+        }
+        break;
+    case GLFW_KEY_F8:
+        if (keyJustPressed) {
+            gpu.toggleChunkDebugColors();
+            std::cout << "Chunk debug colors toggled (flags=" << gpu.debugRenderFlags() << ")" << std::endl;
         }
         break;
     }

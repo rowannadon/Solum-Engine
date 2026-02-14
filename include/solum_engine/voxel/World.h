@@ -24,7 +24,7 @@ struct JobResult;
 inline constexpr int kRegionLodCount = 5;
 
 struct WorldTuningParameters {
-    int viewDistanceChunks = 75;
+    int viewDistanceChunks = 200;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 
@@ -32,12 +32,12 @@ struct WorldTuningParameters {
     std::array<int, kRegionLodCount> regionLodSteps{2, 4, 8, 16, 32};
     // Distance thresholds where LOD switches from i to i+1.
     std::array<float, kRegionLodCount - 1> regionLodSwitchDistances{
-        REGION_BLOCKS_XY * 0.5f,
         REGION_BLOCKS_XY * 1.0f,
         REGION_BLOCKS_XY * 2.0f,
         REGION_BLOCKS_XY * 4.0f,
+        REGION_BLOCKS_XY * 8.0f,
     };
-    double regionBuildBudgetMs = 2.0;
+    double regionBuildBudgetMs = 4.0f;
 
     // Heightmap terrain settings.
     const char* heightmapRelativePath = "heightmap.png";

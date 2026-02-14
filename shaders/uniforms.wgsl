@@ -5,4 +5,5 @@ struct FrameUniforms {
 
     inverseProjectionMatrix: mat4x4f,
     inverseViewMatrix: mat4x4f,
+    debugParams: vec4u,
 };

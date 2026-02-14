@@ -70,8 +70,8 @@ void VoxelPipeline::removeResources() {
 bool VoxelPipeline::createPipeline() {
     PipelineConfig config;
 
-    // Allocate space for the 9 vertex attributes we actually use
-    config.vertexAttributes.resize(9);
+    // Allocate space for the 10 vertex attributes we actually use.
+    config.vertexAttributes.resize(10);
     config.vertexAttributes[0].shaderLocation = 0;
     config.vertexAttributes[0].format = VertexFormat::Sint32;
     config.vertexAttributes[0].offset = offsetof(VertexAttributes, x);
@@ -108,12 +108,16 @@ bool VoxelPipeline::createPipeline() {
     config.vertexAttributes[8].format = VertexFormat::Uint8;
     config.vertexAttributes[8].offset = offsetof(VertexAttributes, n_z);
 
+    config.vertexAttributes[9].shaderLocation = 9;
+    config.vertexAttributes[9].format = VertexFormat::Uint8;
+    config.vertexAttributes[9].offset = offsetof(VertexAttributes, lodLevel);
+
 
     config.shaderPath = SHADER_DIR "/voxel.wgsl";
     config.colorFormat = context->getSurfaceFormat();
     config.depthFormat = TextureFormat::Depth32Float;
     config.sampleCount = 4;
-    config.cullMode = CullMode::None;
+    config.cullMode = CullMode::Back;
     config.depthWriteEnabled = true;
     config.depthCompare = CompareFunction::Less;
     config.fragmentShaderName = "fs_main";  // Fragment shader entry point

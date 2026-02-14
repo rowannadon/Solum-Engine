@@ -31,6 +31,12 @@
 
 class WebGPURenderer {
 private:
+    enum DebugRenderFlags : uint32_t {
+        DebugRegionColors = 1u << 0u,
+        DebugLodColors = 1u << 1u,
+        DebugChunkColors = 1u << 2u,
+    };
+
     struct MeshSlotRef {
         std::string vertexBufferName;
         uint64_t vertexOffset = 0;
@@ -91,6 +97,7 @@ private:
     std::vector<BufferSlot> vertexSlots_;
     std::vector<BufferSlot> indexSlots_;
     uint64_t nextBufferId_ = 0;
+    uint32_t debugRenderFlags_ = 0;
 
     std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> buildRegionLodMesh(RegionCoord regionCoord, int lodLevel) const;
     bool uploadMesh(std::vector<VertexAttributes>&& vertices, std::vector<uint32_t>&& indices, MeshSlotRef& outMeshSlot);
@@ -127,6 +134,11 @@ public:
     std::pair<SurfaceTexture, TextureView> GetNextSurfaceViewData();
 
     void renderFrame(FrameUniforms& uniforms);
+    void toggleRegionDebugColors();
+    void toggleLodDebugColors();
+    void toggleChunkDebugColors();
+    void clearDebugColors();
+    uint32_t debugRenderFlags() const;
 
     void terminate();
 };

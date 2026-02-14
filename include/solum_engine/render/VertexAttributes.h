@@ -12,5 +12,5 @@ struct VertexAttributes {
     uint8_t n_x;
     uint8_t n_y;
     uint8_t n_z;
-    uint8_t _pad0;
+    uint8_t lodLevel;
 };

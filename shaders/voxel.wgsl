@@ -14,6 +14,7 @@ struct VertexInput {
     @location(6) n_x: u32,
     @location(7) n_y: u32,
     @location(8) n_z: u32,
+    @location(9) lod_level: u32,
 };
 
 struct VertexOutput {
@@ -21,6 +22,8 @@ struct VertexOutput {
     @location(0) normal: vec3f,
     @location(1) uv: vec2f,
     @location(2) color: vec3f,
+    @location(3) world_pos: vec3f,
+    @location(4) @interpolate(flat) lod_level: u32,
 };
 
 fn decodeNormalComponent(value: u32) -> f32 {
@@ -49,6 +52,24 @@ fn hash_to_color(id: u32) -> vec3f {
     );
 }
 
+fn hash_i2_to_color(ix: i32, iy: i32) -> vec3f {
+    let ux = bitcast<u32>(ix);
+    let uy = bitcast<u32>(iy);
+    let packed = (ux * 0x9e3779b9u) ^ (uy * 0x85ebca6bu);
+    return hash_to_color(packed);
+}
+
+fn lod_debug_color(lod_level: u32) -> vec3f {
+    switch lod_level {
+        case 0u: { return vec3f(0.95, 0.15, 0.15); } // red
+        case 1u: { return vec3f(0.95, 0.55, 0.15); } // orange
+        case 2u: { return vec3f(0.95, 0.9, 0.15); } // yellow
+        case 3u: { return vec3f(0.2, 0.85, 0.25); } // green
+        case 4u: { return vec3f(0.2, 0.45, 0.95); } // blue
+        default: { return vec3f(0.8, 0.2, 0.85); }
+    }
+}
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -68,18 +89,46 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.uv = vec2f(f32(in.u) / 65535.0, f32(in.v) / 65535.0);
 
     out.color = hash_to_color(in.material);
+    out.world_pos = position;
+    out.lod_level = in.lod_level;
 
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    let debug_flags = frameUniforms.debugParams.x;
+
+    var debugColor = vec3f(0.0, 0.0, 0.0);
+    var debugContribs: f32 = 0.0;
+
+    if ((debug_flags & 0x1u) != 0u) {
+        let regionX = i32(floor(in.world_pos.x / 512.0));
+        let regionY = i32(floor(in.world_pos.y / 512.0));
+        debugColor += hash_i2_to_color(regionX, regionY);
+        debugContribs += 1.0;
+    }
+
+    if ((debug_flags & 0x2u) != 0u) {
+        debugColor += lod_debug_color(in.lod_level);
+        debugContribs += 1.0;
+    }
+
+    if ((debug_flags & 0x4u) != 0u) {
+        let chunkX = i32(floor(in.world_pos.x / 32.0));
+        let chunkY = i32(floor(in.world_pos.y / 32.0));
+        debugColor += hash_i2_to_color(chunkX, chunkY);
+        debugContribs += 1.0;
+    }
+
+    let baseColor = select(in.color, debugColor / max(debugContribs, 1.0), debugContribs > 0.0);
+
     let lightDir = normalize(vec3f(0.45, 1.0, 0.35));
     let ndotl = dot(normalize(in.normal), lightDir);
     let ambient = 0.4;
     let shade = ambient + (1.0 - ambient) * ndotl;
 
-    let linearColor = in.color * shade;
+    let linearColor = baseColor * shade;
 
     return vec4f(linearColor, 1.0);
 }
