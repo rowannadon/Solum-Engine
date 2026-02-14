@@ -3,11 +3,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -15,6 +17,7 @@ constexpr int kLodCount = 3;
 constexpr std::array<int, kLodCount> kLodSteps = {2, 4, 8};
 constexpr float kLodDistance0 = REGION_BLOCKS_XY * 0.85f;
 constexpr float kLodDistance1 = REGION_BLOCKS_XY * 1.2f;
+constexpr double kBuildBudgetMs = 2.0;
 
 constexpr std::array<uint64_t, 6> kSizeClasses = {
     64ull * 1024ull,
@@ -234,12 +237,15 @@ void WebGPURenderer::releaseMesh(MeshSlotRef& meshSlot) {
 }
 
 void WebGPURenderer::releaseAllRegionMeshes() {
-    for (RegionRenderEntry& region : renderedRegions_) {
+    for (auto& regionPair : renderedRegions_) {
+        RegionRenderEntry& region = regionPair.second;
         for (MeshSlotRef& mesh : region.lodMeshes) {
             releaseMesh(mesh);
         }
     }
     renderedRegions_.clear();
+    drawOrder_.clear();
+    pendingBuilds_.clear();
 }
 
 std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::buildRegionLodMesh(RegionCoord regionCoord, int lodLevel) const {
@@ -369,32 +375,75 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::
 }
 
 void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY) {
-    if (centerRegionX == activeCenterRegionX && centerRegionY == activeCenterRegionY && !renderedRegions_.empty()) {
+    if (centerRegionX == activeCenterRegionX && centerRegionY == activeCenterRegionY) {
         return;
     }
 
-    releaseAllRegionMeshes();
+    std::vector<RegionCoord> desiredOrder;
+    desiredOrder.reserve(static_cast<std::size_t>((regionRadius_ * 2 + 1) * (regionRadius_ * 2 + 1)));
 
     for (int ry = -regionRadius_; ry <= regionRadius_; ++ry) {
         for (int rx = -regionRadius_; rx <= regionRadius_; ++rx) {
+            desiredOrder.emplace_back(centerRegionX + rx, centerRegionY + ry);
+        }
+    }
+
+    std::unordered_set<RegionCoord, RegionCoordHash> desiredSet;
+    desiredSet.reserve(desiredOrder.size() * 2);
+    for (const RegionCoord& coord : desiredOrder) {
+        desiredSet.insert(coord);
+    }
+
+    for (auto it = renderedRegions_.begin(); it != renderedRegions_.end();) {
+        if (desiredSet.find(it->first) == desiredSet.end()) {
+            RegionRenderEntry& region = it->second;
+            for (MeshSlotRef& mesh : region.lodMeshes) {
+                releaseMesh(mesh);
+            }
+            it = renderedRegions_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    for (const RegionCoord& coord : desiredOrder) {
+        if (renderedRegions_.find(coord) == renderedRegions_.end()) {
             RegionRenderEntry entry;
-            entry.coord = RegionCoord{centerRegionX + rx, centerRegionY + ry};
+            entry.coord = coord;
+            renderedRegions_.emplace(coord, std::move(entry));
+        }
+    }
 
-            const int ring = std::max(std::abs(rx), std::abs(ry));
-            for (int lod = 0; lod < kLodCount; ++lod) {
-                const bool shouldBuild =
-                    (ring == 0) ||
-                    (ring == 1 && lod >= 1) ||
-                    (ring >= 2 && lod >= 2);
-                if (!shouldBuild) {
-                    continue;
-                }
+    drawOrder_ = desiredOrder;
+    pendingBuilds_.clear();
 
-                auto [vertices, indices] = buildRegionLodMesh(entry.coord, lod);
-                uploadMesh(std::move(vertices), std::move(indices), entry.lodMeshes[static_cast<std::size_t>(lod)]);
+    for (int ring = 0; ring <= regionRadius_; ++ring) {
+        for (const RegionCoord& coord : desiredOrder) {
+            const int rx = coord.x() - centerRegionX;
+            const int ry = coord.y() - centerRegionY;
+            const int coordRing = std::max(std::abs(rx), std::abs(ry));
+            if (coordRing != ring) {
+                continue;
             }
 
-            renderedRegions_.push_back(std::move(entry));
+            RegionRenderEntry& entry = renderedRegions_.find(coord)->second;
+
+            if (ring == 0) {
+                if (!entry.lodMeshes[2].valid) pendingBuilds_.push_back({coord, 2});
+                if (!entry.lodMeshes[1].valid) pendingBuilds_.push_back({coord, 1});
+                if (!entry.lodMeshes[0].valid) pendingBuilds_.push_back({coord, 0});
+                continue;
+            }
+
+            if (ring == 1) {
+                if (!entry.lodMeshes[2].valid) pendingBuilds_.push_back({coord, 2});
+                if (!entry.lodMeshes[1].valid) pendingBuilds_.push_back({coord, 1});
+                continue;
+            }
+
+            if (!entry.lodMeshes[2].valid) {
+                pendingBuilds_.push_back({coord, 2});
+            }
         }
     }
 
@@ -402,10 +451,47 @@ void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerReg
     activeCenterRegionY = centerRegionY;
 }
 
+void WebGPURenderer::processPendingRegionBuilds() {
+    if (pendingBuilds_.empty()) {
+        return;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    while (!pendingBuilds_.empty()) {
+        const PendingRegionBuild build = pendingBuilds_.front();
+        pendingBuilds_.pop_front();
+
+        auto regionIt = renderedRegions_.find(build.coord);
+        if (regionIt == renderedRegions_.end()) {
+            continue;
+        }
+
+        RegionRenderEntry& entry = regionIt->second;
+        if (entry.lodMeshes[static_cast<std::size_t>(build.lodLevel)].valid) {
+            continue;
+        }
+
+        auto [vertices, indices] = buildRegionLodMesh(build.coord, build.lodLevel);
+        uploadMesh(std::move(vertices), std::move(indices), entry.lodMeshes[static_cast<std::size_t>(build.lodLevel)]);
+
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsedMs = std::chrono::duration<double, std::milli>(now - start).count();
+        if (elapsedMs >= kBuildBudgetMs) {
+            break;
+        }
+    }
+}
+
 void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cameraPos) {
     const glm::vec2 cameraXY{cameraPos.x, cameraPos.y};
 
-    for (const RegionRenderEntry& entry : renderedRegions_) {
+    for (const RegionCoord& coord : drawOrder_) {
+        const auto regionIt = renderedRegions_.find(coord);
+        if (regionIt == renderedRegions_.end()) {
+            continue;
+        }
+
+        const RegionRenderEntry& entry = regionIt->second;
         const glm::vec2 regionCenter{
             (static_cast<float>(entry.coord.x()) + 0.5f) * static_cast<float>(REGION_BLOCKS_XY),
             (static_cast<float>(entry.coord.y()) + 0.5f) * static_cast<float>(REGION_BLOCKS_XY),
@@ -461,6 +547,9 @@ bool WebGPURenderer::initialize() {
 
     const int configuredViewDistanceChunks = std::max(1, PlayerStreamingContext{}.viewDistanceChunks);
     regionRadius_ = std::max(1, (configuredViewDistanceChunks + (REGION_COLS - 1)) / REGION_COLS);
+    const std::size_t expectedRegionCount = static_cast<std::size_t>((regionRadius_ * 2 + 1) * (regionRadius_ * 2 + 1));
+    renderedRegions_.reserve(expectedRegionCount * 2);
+    drawOrder_.reserve(expectedRegionCount);
 
     {
         BufferDescriptor desc = Default;
@@ -548,6 +637,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
     const int regionX = floor_div(static_cast<int>(std::floor(cameraPos.x)), REGION_BLOCKS_XY);
     const int regionY = floor_div(static_cast<int>(std::floor(cameraPos.y)), REGION_BLOCKS_XY);
     rebuildRegionsAroundPlayer(regionX, regionY);
+    processPendingRegionBuilds();
 
     int fbWidth = 0;
     int fbHeight = 0;

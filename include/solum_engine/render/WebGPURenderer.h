@@ -20,9 +20,11 @@
 #include <imgui/backends/imgui_impl_wgpu.h>
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -53,6 +55,11 @@ private:
         bool inUse = false;
     };
 
+    struct PendingRegionBuild {
+        RegionCoord coord;
+        int lodLevel = 0;
+    };
+
     std::unique_ptr<WebGPUContext> context;
     std::unique_ptr<PipelineManager> pipelineManager;
     std::unique_ptr<BufferManager> bufferManager;
@@ -67,7 +74,9 @@ private:
     int activeCenterRegionX = std::numeric_limits<int>::min();
     int activeCenterRegionY = std::numeric_limits<int>::min();
     int regionRadius_ = 1;
-    std::vector<RegionRenderEntry> renderedRegions_;
+    std::unordered_map<RegionCoord, RegionRenderEntry, RegionCoordHash> renderedRegions_;
+    std::vector<RegionCoord> drawOrder_;
+    std::deque<PendingRegionBuild> pendingBuilds_;
     std::vector<BufferSlot> vertexSlots_;
     std::vector<BufferSlot> indexSlots_;
     uint64_t nextBufferId_ = 0;
@@ -77,6 +86,7 @@ private:
     void releaseMesh(MeshSlotRef& meshSlot);
     void releaseAllRegionMeshes();
     void rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY);
+    void processPendingRegionBuilds();
     void drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cameraPos);
 
     BufferSlot* acquireSlot(std::vector<BufferSlot>& slots, bool isVertex, uint64_t requiredBytes);
