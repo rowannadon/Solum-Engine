@@ -3,25 +3,24 @@
 #include <webgpu/webgpu.hpp>
 #include <GLFW/glfw3.h>
 #include <unordered_map>
-#include <future>
 #include <glm/glm.hpp>
 #include <glm/ext.hpp>
 #include "solum_engine/render/PipelineManager.h"
 #include "solum_engine/render/BufferManager.h"
 #include "solum_engine/render/TextureManager.h"
+#include "solum_engine/render/RegionBuildQueue.h"
 #include "solum_engine/platform/WebGPUContext.h"
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/resources/Coords.h"
+#include "solum_engine/resources/EngineTuning.h"
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
-#include "solum_engine/voxel/World.h"
 #include "solum_engine/voxel/ChunkMeshes.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
 #include <array>
 #include <cstdint>
-#include <deque>
 #include <limits>
 #include <memory>
 #include <string>
@@ -75,17 +74,6 @@ private:
         std::array<MeshSlotRef, kRegionLodCount> lodMeshes;
     };
 
-    struct PendingRegionBuild {
-        RegionCoord coord;
-        int lodLevel = 0;
-    };
-
-    struct CompletedRegionBuild {
-        RegionCoord coord;
-        int lodLevel = 0;
-        MeshData meshData;
-    };
-
     std::unique_ptr<WebGPUContext> context;
     std::unique_ptr<PipelineManager> pipelineManager;
     std::unique_ptr<BufferManager> bufferManager;
@@ -94,15 +82,11 @@ private:
     VoxelPipeline voxelPipeline;
     bool resizePending = false;
 
-    // Add this for ImGUI support
-    RenderPassEncoder currentCommandEncoder = nullptr;
-
     int activeCenterRegionX = std::numeric_limits<int>::min();
     int activeCenterRegionY = std::numeric_limits<int>::min();
     int regionRadius_ = 1;
     std::array<int, kRegionLodCount> lodSteps_{};
     std::array<float, kRegionLodCount - 1> lodSwitchDistances_{};
-    double buildBudgetMs_ = 0.0;
     std::vector<unsigned char> heightmapRgba_;
     uint32_t heightmapWidth_ = 0;
     uint32_t heightmapHeight_ = 0;
@@ -112,11 +96,7 @@ private:
     int terrainHeightMaxBlocks_ = CHUNK_SIZE * COLUMN_CHUNKS_Z - 1;
     std::unordered_map<RegionCoord, RegionRenderEntry, RegionCoordHash> renderedRegions_;
     std::vector<RegionCoord> drawOrder_;
-    std::deque<PendingRegionBuild> pendingBuilds_;
-    std::future<CompletedRegionBuild> activeBuildFuture_;
-    bool buildInFlight_ = false;
-    RegionCoord activeBuildCoord_{0, 0};
-    int activeBuildLodLevel_ = -1;
+    RegionBuildQueue regionBuildQueue_;
     std::vector<MeshletPage> meshletPages_;
     uint32_t meshletSlotsPerPage_ = 0;
     uint32_t meshletMetadataCapacity_ = 0;
@@ -149,9 +129,7 @@ public:
 
     bool initialize();
 
-    PipelineManager* getPipelineManager();
     BufferManager* getBufferManager();
-    TextureManager* getTextureManager();
     WebGPUContext* getContext();
     GLFWwindow* getWindow();
 

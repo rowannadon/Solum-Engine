@@ -1,7 +1,8 @@
 #include "solum_engine/platform/WebGPUContext.h"
-#include "solum_engine/render/VertexAttributes.h"
-#include <chrono>
-#include <thread>
+
+#include <iostream>
+#include <string>
+#include <vector>
 
 bool WebGPUContext::initialize(const RenderConfig& config) {
     // Create instance descriptor
@@ -77,22 +78,6 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
         std::cout << "Unknown or unsupported platform." << std::endl;
         return false;
     #endif
-
-    RequestAdapterCallbackInfo callbackInfo = {};
-    callbackInfo.nextInChain = nullptr;
-    callbackInfo.mode = CallbackMode::WaitAnyOnly;
-    callbackInfo.callback = [](WGPURequestAdapterStatus status, WGPUAdapter adapter, WGPUStringView msg, void* userdata1, void* userdata2) {
-        std::string message(static_cast<const char*>(msg.data), msg.length);
-        
-        if (status == WGPURequestAdapterStatus_Success) {
-            *static_cast<WGPUAdapter*>(userdata1) = adapter;
-        }
-        else {
-            std::cerr << "Could not get WebGPU adapter: " << message << std::endl;
-            *static_cast<WGPUAdapter*>(userdata1) = nullptr;
-        }
-        };
-    callbackInfo.userdata1 = &adapter;
 
     adapter = instance.requestAdapter(adapterOpts);
 

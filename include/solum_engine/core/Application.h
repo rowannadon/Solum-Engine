@@ -1,29 +1,10 @@
+#pragma once
+
 // Application.h
-#include <webgpu/webgpu.hpp>
 #include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
-#include <glm/ext.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-
-
-
-#include <set>
-#include <queue>
-#include <iostream>
-#include <cassert>
 #include <vector>
-#include <filesystem>
-#include <fstream>
-#include <sstream>
-#include <string>
-#include <chrono>
-#include <array>
-#include <thread>
-#include <numeric>
-#include <mutex>
 
 #include "solum_engine/render/Uniforms.h"
-#include "solum_engine/resources/Constants.h"
 #include "solum_engine/render/WebGPURenderer.h"
 #include "solum_engine/ui/GuiManager.h"
 #include "solum_engine/core/Camera.h"
@@ -54,8 +35,6 @@ private:
     // Mouse state for first person look
     struct MouseState {
         bool firstMouse = true;
-        bool leftMousePressed = false;
-        bool rightMousePressed = false;
         float lastX = 640.0f;  // Half of initial window width
         float lastY = 360.0f;  // Half of initial window height
     };
@@ -74,12 +53,9 @@ private:
     GuiManager gui;
 
     WebGPURenderer gpu;
-    PipelineManager *pip;
-    BufferManager *buf;
-    TextureManager *tex;
+    BufferManager* buf = nullptr;
 
     FirstPersonCamera camera;
-    std::mutex cameraMutex;
 
     MouseState mouseState;
     KeyStates keyStates;

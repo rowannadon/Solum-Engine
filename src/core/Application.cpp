@@ -1,14 +1,18 @@
 // Application.cpp
 
 #include "solum_engine/core/Application.h"
+#include "solum_engine/resources/EngineTuning.h"
 
+#include <chrono>
 #include <cfloat>
+#include <cstddef>
+#include <iostream>
+#include <numeric>
+#include <thread>
 
 bool Application::Initialize() {
     if (!gpu.initialize()) return false;
-    pip = gpu.getPipelineManager();
     buf = gpu.getBufferManager();
-    tex = gpu.getTextureManager();
 
     window = gpu.getWindow();
 
@@ -53,6 +57,7 @@ bool Application::Initialize() {
 void Application::Terminate() {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     gui.terminateImGUI();
+    gpu.terminate();
 }
 
 void Application::MainLoop() {
@@ -103,7 +108,7 @@ void Application::MainLoop() {
     frameTime = frameEndTime - frameStartTime;
 
     frameTimes.push_back(frameTime);
-    if (frameTimes.size() > 100) {
+    if (frameTimes.size() > kDefaultApplicationTuningParameters.frameTimeHistorySize) {
         frameTimes.erase(frameTimes.begin());
     }
 
@@ -133,7 +138,7 @@ void Application::MainLoop() {
     if (workTime < TARGET_FRAME_TIME) {
         float remainingTime = TARGET_FRAME_TIME - workTime;
 
-        const float SLEEP_BUFFER = 0.0005f;
+        const float SLEEP_BUFFER = kDefaultApplicationTuningParameters.frameSleepBufferSeconds;
 
         if (remainingTime > SLEEP_BUFFER) {
             float sleepTime = remainingTime - SLEEP_BUFFER;
@@ -181,8 +186,6 @@ void Application::onResize() {
 }
 
 void Application::processInput() {
-    std::unique_lock<std::mutex> lock(cameraMutex);
-
     float velocity = camera.movementSpeed * deltaTime;
 
     // WASD movement
@@ -273,14 +276,6 @@ void Application::onMouseButton(int button, int action, int /* modifiers */) {
             glfwSetCursorPos(window, mouseState.lastX, mouseState.lastY);
         }
     }
-    if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-        if (action == GLFW_PRESS) {
-            mouseState.rightMousePressed = true;
-        }
-        else if (action == GLFW_RELEASE) {
-            mouseState.rightMousePressed = false;
-        }
-    }
 }
 
 void Application::onScroll(double /* xoffset */, double yoffset) {
@@ -299,7 +294,7 @@ void Application::onScroll(double /* xoffset */, double yoffset) {
     updateProjectionMatrix(camera.zoom);
 }
 
-void Application::onKey(int key, int scancode, int action, int mods) {
+void Application::onKey(int key, int /* scancode */, int action, int /* mods */) {
     //ImGuiIO& io = ImGui::GetIO();
     //if (io.WantCaptureKeyboard) {
     //    return; // ImGUI is handling this input
