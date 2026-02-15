@@ -21,21 +21,22 @@ struct JobResult;
 
 // Shared startup tuning for both world streaming defaults and renderer region/LOD behavior.
 // This is the single place to tweak for now (GUI controls can later drive these values at runtime).
-inline constexpr int kRegionLodCount = 5;
+inline constexpr int kRegionLodCount = 6;
 
 struct WorldTuningParameters {
-    int viewDistanceChunks = 255;
+    int viewDistanceChunks = 200;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 
     // Region renderer LOD mesh decimation in blocks per cell.
-    std::array<int, kRegionLodCount> regionLodSteps{2, 4, 8, 16, 32};
+    std::array<int, kRegionLodCount> regionLodSteps{1, 2, 4, 8, 16, 32};
     // Distance thresholds where LOD switches from i to i+1.
     std::array<float, kRegionLodCount - 1> regionLodSwitchDistances{
+        REGION_BLOCKS_XY * 1.0f,
+        REGION_BLOCKS_XY * 2.0f,
         REGION_BLOCKS_XY * 4.0f,
         REGION_BLOCKS_XY * 8.0f,
         REGION_BLOCKS_XY * 16.0f,
-        REGION_BLOCKS_XY * 32.0f,
     };
     double regionBuildBudgetMs = 4.0f;
 

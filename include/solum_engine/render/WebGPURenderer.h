@@ -14,8 +14,8 @@
 #include "solum_engine/resources/Coords.h"
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
-#include "solum_engine/render/VertexAttributes.h"
 #include "solum_engine/voxel/World.h"
+#include "solum_engine/voxel/ChunkMeshes.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
@@ -31,35 +31,47 @@
 
 class WebGPURenderer {
 private:
+    struct GpuMeshletMetadata {
+        int32_t originX = 0;
+        int32_t originY = 0;
+        int32_t originZ = 0;
+        int32_t lodLevel = 0;
+        uint32_t vertexBase = 0;
+        uint32_t indexBase = 0;
+        uint32_t quadCount = 0;
+        uint32_t _padding = 0;
+    };
+
+    struct UploadedMeshletRef {
+        uint32_t pageIndex = 0;
+        uint32_t slotInPage = 0;
+        glm::ivec3 origin{0};
+        uint32_t lodLevel = 0;
+        uint32_t quadCount = 0;
+    };
+
     enum DebugRenderFlags : uint32_t {
         DebugRegionColors = 1u << 0u,
         DebugLodColors = 1u << 1u,
         DebugChunkColors = 1u << 2u,
+        DebugMeshletColors = 1u << 3u,
+    };
+
+    struct MeshletPage {
+        std::string vertexBufferName;
+        std::string indexBufferName;
+        std::string bindGroupName;
+        std::vector<uint32_t> freeSlots;
     };
 
     struct MeshSlotRef {
-        std::string vertexBufferName;
-        uint64_t vertexOffset = 0;
-        uint64_t vertexBytes = 0;
-        std::string indexBufferName;
-        uint64_t indexOffset = 0;
-        uint64_t indexBytes = 0;
-        uint32_t indexCount = 0;
+        std::vector<UploadedMeshletRef> meshlets;
         bool valid = false;
     };
 
     struct RegionRenderEntry {
         RegionCoord coord;
         std::array<MeshSlotRef, kRegionLodCount> lodMeshes;
-    };
-
-    struct BufferSlot {
-        std::string bufferName;
-        uint64_t offset = 0;
-        uint64_t capacity = 0;
-        uint64_t usedBytes = 0;
-        int classIndex = 0;
-        bool inUse = false;
     };
 
     struct PendingRegionBuild {
@@ -70,8 +82,7 @@ private:
     struct CompletedRegionBuild {
         RegionCoord coord;
         int lodLevel = 0;
-        std::vector<VertexAttributes> vertices;
-        std::vector<uint32_t> indices;
+        MeshData meshData;
     };
 
     std::unique_ptr<WebGPUContext> context;
@@ -103,13 +114,16 @@ private:
     std::deque<PendingRegionBuild> pendingBuilds_;
     std::future<CompletedRegionBuild> activeBuildFuture_;
     bool buildInFlight_ = false;
-    std::vector<BufferSlot> vertexSlots_;
-    std::vector<BufferSlot> indexSlots_;
-    uint64_t nextBufferId_ = 0;
+    std::vector<MeshletPage> meshletPages_;
+    uint32_t meshletSlotsPerPage_ = 0;
+    std::vector<GpuMeshletMetadata> frameMeshletMetadata_;
+    uint32_t meshletMetadataCapacity_ = 0;
+    bool meshletCapacityWarningEmitted_ = false;
+    bool metadataCapacityWarningEmitted_ = false;
     uint32_t debugRenderFlags_ = 0;
 
-    std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> buildRegionLodMesh(RegionCoord regionCoord, int lodLevel) const;
-    bool uploadMesh(std::vector<VertexAttributes>&& vertices, std::vector<uint32_t>&& indices, MeshSlotRef& outMeshSlot);
+    MeshData buildRegionLodMesh(RegionCoord regionCoord, int lodLevel) const;
+    bool uploadMesh(MeshData&& meshData, MeshSlotRef& outMeshSlot);
     void releaseMesh(MeshSlotRef& meshSlot);
     void releaseAllRegionMeshes();
     void rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY);
@@ -120,9 +134,11 @@ private:
     int sampleHeightBlocks(int blockX, int blockY) const;
     void drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cameraPos);
 
-    BufferSlot* acquireSlot(std::vector<BufferSlot>& slots, bool isVertex, uint64_t requiredBytes);
-    void releaseSlot(std::vector<BufferSlot>& slots, const std::string& bufferName, uint64_t offset);
-    int chooseSizeClass(uint64_t requiredBytes) const;
+    bool createMeshletPage(uint32_t pageIndex);
+    bool initializeMeshletBuffers(uint32_t meshletCapacity, uint32_t metadataCapacity);
+    uint32_t acquireMeshletSlot(uint32_t& outPageIndex);
+    void releaseMeshletSlot(uint32_t pageIndex, uint32_t slotInPage);
+    bool refreshVoxelBindGroup();
 
 public:
     WebGPURenderer() = default;
@@ -146,6 +162,7 @@ public:
     void toggleRegionDebugColors();
     void toggleLodDebugColors();
     void toggleChunkDebugColors();
+    void toggleMeshletDebugColors();
     void clearDebugColors();
     uint32_t debugRenderFlags() const;
 

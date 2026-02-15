@@ -11,37 +11,20 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <unordered_set>
 #include <vector>
 
 namespace {
 constexpr int kLodCount = kRegionLodCount;
-
-constexpr std::array<uint64_t, 6> kSizeClasses = {
-    64ull * 1024ull,
-    256ull * 1024ull,
-    1024ull * 1024ull,
-    4ull * 1024ull * 1024ull,
-    16ull * 1024ull * 1024ull,
-    64ull * 1024ull * 1024ull,
-};
-constexpr std::array<uint32_t, 6> kSlotsPerPage = { 64u, 32u, 16u, 8u, 2u, 1u };
+constexpr uint32_t kMeshletsPerPage = 8192u;
+constexpr uint32_t kInitialMeshletPageCount = 2u;
+constexpr uint32_t kMaxMeshletPages = 16u;
+constexpr uint32_t kInitialMeshletMetadataCapacity = 65536u;
+constexpr uint32_t kMaxDrawMeshletsPerFrame = 16384u;
 
 constexpr uint16_t kUvMin = 0;
 constexpr uint16_t kUvMax = 65535;
-
-float sampleFallbackHeight01(int blockX, int blockY) {
-    const float x = static_cast<float>(blockX);
-    const float y = static_cast<float>(blockY);
-
-    const float waveA = std::sin(x * 0.0065f) * 140.0f;
-    const float waveB = std::cos(y * 0.0081f) * 120.0f;
-    const float waveC = std::sin((x + y) * 0.0037f) * 80.0f;
-    const float waveD = std::cos((x - y) * 0.0049f) * 48.0f;
-
-    const float normalized = 0.5f + (waveA + waveB + waveC + waveD) / 800.0f;
-    return std::clamp(normalized, 0.0f, 1.0f);
-}
 
 uint8_t encodeNormalComponent(int component) {
     if (component > 0) {
@@ -108,15 +91,123 @@ void emitFace(
     indices.push_back(base + 3);
     indices.push_back(base + 2);
 }
+
+uint16_t clampU16(int32_t value) {
+    return static_cast<uint16_t>(std::clamp(value, 0, 65535));
 }
 
-int WebGPURenderer::chooseSizeClass(uint64_t requiredBytes) const {
-    for (int i = 0; i < static_cast<int>(kSizeClasses.size()); ++i) {
-        if (requiredBytes <= kSizeClasses[static_cast<std::size_t>(i)]) {
-            return i;
-        }
+uint8_t decodeNormalSign(uint8_t encoded) {
+    if (encoded > 170u) {
+        return 2u; // +1
     }
-    return -1;
+    if (encoded < 85u) {
+        return 0u; // -1
+    }
+    return 1u; // 0
+}
+
+uint8_t encodeNormalAxisIndex(const VertexAttributes& vertex) {
+    const uint8_t sx = decodeNormalSign(vertex.n_x);
+    const uint8_t sy = decodeNormalSign(vertex.n_y);
+    const uint8_t sz = decodeNormalSign(vertex.n_z);
+
+    if (sx == 2u) return 0u; // +X
+    if (sx == 0u) return 1u; // -X
+    if (sy == 2u) return 2u; // +Y
+    if (sy == 0u) return 3u; // -Y
+    if (sz == 2u) return 4u; // +Z
+    return 5u;               // -Z
+}
+
+PackedVertexAttributes packVertex(const VertexAttributes& vertex, const glm::ivec3& origin) {
+    const uint16_t relX = clampU16(vertex.x - origin.x);
+    const uint16_t relY = clampU16(vertex.y - origin.y);
+    const uint16_t relZ = clampU16(vertex.z - origin.z);
+    const uint32_t uBit = (vertex.u > 32767u) ? 1u : 0u;
+    const uint32_t vBit = (vertex.v > 32767u) ? 1u : 0u;
+    const uint32_t normalBits = static_cast<uint32_t>(encodeNormalAxisIndex(vertex)) & 0x7u;
+    const uint32_t lodBits = static_cast<uint32_t>(vertex.lodLevel) & 0xFFu;
+
+    PackedVertexAttributes packed{};
+    packed.xy = static_cast<uint32_t>(relX) | (static_cast<uint32_t>(relY) << 16u);
+    packed.zMaterial = static_cast<uint32_t>(relZ) | (static_cast<uint32_t>(vertex.material) << 16u);
+    packed.packedFlags = uBit | (vBit << 1u) | (normalBits << 2u) | (lodBits << 5u);
+    return packed;
+}
+
+MeshData buildMeshletsFromTriangles(const std::vector<VertexAttributes>& vertices, const std::vector<uint32_t>& indices) {
+    MeshData meshData;
+    if (vertices.empty() || indices.empty()) {
+        return meshData;
+    }
+
+    const std::size_t quadCount = indices.size() / 6ull;
+    if (quadCount == 0) {
+        return meshData;
+    }
+
+    const std::size_t meshletCount = (quadCount + MeshData::kMeshletQuadCapacity - 1ull) / MeshData::kMeshletQuadCapacity;
+    meshData.meshlets.reserve(meshletCount);
+    meshData.packedVertices.reserve(meshletCount * MeshData::kMeshletVertexCapacity);
+    meshData.packedIndices.reserve(meshletCount * MeshData::kMeshletIndexCapacity);
+
+    for (std::size_t quadBase = 0; quadBase < quadCount; quadBase += MeshData::kMeshletQuadCapacity) {
+        const uint32_t quadsInMeshlet = static_cast<uint32_t>(std::min<std::size_t>(MeshData::kMeshletQuadCapacity, quadCount - quadBase));
+        const std::size_t globalVertexBase = quadBase * 4ull;
+        if (globalVertexBase >= vertices.size()) {
+            break;
+        }
+
+        const std::size_t requestedVertexCount = static_cast<std::size_t>(quadsInMeshlet) * 4ull;
+        const std::size_t availableVertexCount = std::min<std::size_t>(requestedVertexCount, vertices.size() - globalVertexBase);
+        if (availableVertexCount == 0) {
+            continue;
+        }
+
+        glm::ivec3 origin{std::numeric_limits<int>::max(), std::numeric_limits<int>::max(), std::numeric_limits<int>::max()};
+        for (std::size_t i = 0; i < availableVertexCount; ++i) {
+            const VertexAttributes& v = vertices[globalVertexBase + i];
+            origin.x = std::min(origin.x, v.x);
+            origin.y = std::min(origin.y, v.y);
+            origin.z = std::min(origin.z, v.z);
+        }
+
+        MeshletInfo info{};
+        info.origin = origin;
+        info.lodLevel = static_cast<uint32_t>(vertices[globalVertexBase].lodLevel);
+        info.quadCount = quadsInMeshlet;
+        info.vertexOffset = static_cast<uint32_t>(meshData.packedVertices.size());
+        info.indexOffset = static_cast<uint32_t>(meshData.packedIndices.size());
+
+        for (std::size_t i = 0; i < availableVertexCount; ++i) {
+            meshData.packedVertices.push_back(packVertex(vertices[globalVertexBase + i], origin));
+        }
+        while ((meshData.packedVertices.size() - info.vertexOffset) < MeshData::kMeshletVertexCapacity) {
+            meshData.packedVertices.push_back(PackedVertexAttributes{});
+        }
+
+        const std::size_t globalIndexBase = quadBase * 6ull;
+        const std::size_t indexCount = static_cast<std::size_t>(quadsInMeshlet) * 6ull;
+        for (std::size_t i = 0; i < indexCount; ++i) {
+            uint32_t localIndex = 0u;
+            const std::size_t globalIndexPos = globalIndexBase + i;
+            if (globalIndexPos < indices.size()) {
+                const uint32_t globalIndex = indices[globalIndexPos];
+                if (globalIndex >= globalVertexBase && globalIndex < (globalVertexBase + availableVertexCount)) {
+                    localIndex = static_cast<uint32_t>(globalIndex - globalVertexBase);
+                }
+            }
+            meshData.packedIndices.push_back(localIndex);
+        }
+        while ((meshData.packedIndices.size() - info.indexOffset) < MeshData::kMeshletIndexCapacity) {
+            meshData.packedIndices.push_back(0u);
+        }
+
+        meshData.meshlets.push_back(info);
+    }
+
+    return meshData;
+}
 }
 
 int WebGPURenderer::chooseLodByDistance(float distance) const {
@@ -150,14 +241,14 @@ bool WebGPURenderer::loadHeightmap(const std::string& path) {
 
 float WebGPURenderer::sampleHeightmap01(int blockX, int blockY) const {
     if (heightmapRgba_.empty() || heightmapWidth_ == 0 || heightmapHeight_ == 0) {
-        return sampleFallbackHeight01(blockX, blockY);
+        return 0.0f;
     }
 
     const int upscale = std::max(1, heightmapUpscaleFactor_);
     const int worldSpanX = static_cast<int>(heightmapWidth_) * upscale;
     const int worldSpanY = static_cast<int>(heightmapHeight_) * upscale;
     if (worldSpanX <= 0 || worldSpanY <= 0) {
-        return sampleFallbackHeight01(blockX, blockY);
+        return 0.0f;
     }
 
     float xInMapBlocks = static_cast<float>(blockX);
@@ -235,96 +326,207 @@ int WebGPURenderer::sampleHeightBlocks(int blockX, int blockY) const {
     return std::clamp(h, minHeight, maxHeight);
 }
 
-WebGPURenderer::BufferSlot* WebGPURenderer::acquireSlot(std::vector<BufferSlot>& slots, bool isVertex, uint64_t requiredBytes) {
-    const int classIndex = chooseSizeClass(requiredBytes);
-    if (classIndex < 0) {
-        return nullptr;
+bool WebGPURenderer::refreshVoxelBindGroup() {
+    for (const MeshletPage& page : meshletPages_) {
+        std::vector<BindGroupEntry> bindings(4);
+        int i = 0;
+        bindings[i].binding = i;
+        bindings[i].buffer = bufferManager->getBuffer("uniform_buffer");
+        bindings[i].offset = 0;
+        bindings[i].size = sizeof(FrameUniforms);
+        i++;
+
+        bindings[i].binding = i;
+        bindings[i].buffer = bufferManager->getBuffer("meshlet_metadata_storage");
+        bindings[i].offset = 0;
+        bindings[i].size = std::numeric_limits<uint64_t>::max();
+        i++;
+
+        bindings[i].binding = i;
+        bindings[i].buffer = bufferManager->getBuffer(page.vertexBufferName);
+        bindings[i].offset = 0;
+        bindings[i].size = std::numeric_limits<uint64_t>::max();
+        i++;
+
+        bindings[i].binding = i;
+        bindings[i].buffer = bufferManager->getBuffer(page.indexBufferName);
+        bindings[i].offset = 0;
+        bindings[i].size = std::numeric_limits<uint64_t>::max();
+        i++;
+
+        if (!pipelineManager->createBindGroup(page.bindGroupName, "global_uniforms", bindings)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool WebGPURenderer::createMeshletPage(uint32_t pageIndex) {
+    MeshletPage page;
+    if (pageIndex == 0u) {
+        page.vertexBufferName = "meshlet_vertex_storage";
+        page.indexBufferName = "meshlet_index_storage";
+        page.bindGroupName = "global_uniforms_bg";
+    } else {
+        page.vertexBufferName = "meshlet_vertex_storage_" + std::to_string(pageIndex);
+        page.indexBufferName = "meshlet_index_storage_" + std::to_string(pageIndex);
+        page.bindGroupName = "global_uniforms_bg_page_" + std::to_string(pageIndex);
     }
 
-    for (BufferSlot& slot : slots) {
-        if (!slot.inUse && slot.classIndex == classIndex) {
-            slot.inUse = true;
-            slot.usedBytes = requiredBytes;
-            return &slot;
+    BufferDescriptor vertexDesc = Default;
+    vertexDesc.label = StringView("meshlet vertex storage page");
+    vertexDesc.size =
+        static_cast<uint64_t>(meshletSlotsPerPage_) *
+        static_cast<uint64_t>(MeshData::kMeshletVertexCapacity) *
+        sizeof(PackedVertexAttributes);
+    vertexDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    vertexDesc.mappedAtCreation = false;
+    bufferManager->deleteBuffer(page.vertexBufferName);
+    if (!bufferManager->createBuffer(page.vertexBufferName, vertexDesc)) {
+        return false;
+    }
+
+    BufferDescriptor indexDesc = Default;
+    indexDesc.label = StringView("meshlet index storage page");
+    indexDesc.size =
+        static_cast<uint64_t>(meshletSlotsPerPage_) *
+        static_cast<uint64_t>(MeshData::kMeshletIndexCapacity) *
+        sizeof(uint32_t);
+    indexDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    indexDesc.mappedAtCreation = false;
+    bufferManager->deleteBuffer(page.indexBufferName);
+    if (!bufferManager->createBuffer(page.indexBufferName, indexDesc)) {
+        return false;
+    }
+
+    page.freeSlots.reserve(meshletSlotsPerPage_);
+    for (uint32_t i = 0; i < meshletSlotsPerPage_; ++i) {
+        page.freeSlots.push_back(meshletSlotsPerPage_ - 1u - i);
+    }
+    meshletPages_.push_back(std::move(page));
+    return true;
+}
+
+bool WebGPURenderer::initializeMeshletBuffers(uint32_t meshletCapacity, uint32_t metadataCapacity) {
+    meshletSlotsPerPage_ = std::max(1u, meshletCapacity);
+    meshletMetadataCapacity_ = std::max(1u, metadataCapacity);
+
+    for (const MeshletPage& page : meshletPages_) {
+        bufferManager->deleteBuffer(page.vertexBufferName);
+        bufferManager->deleteBuffer(page.indexBufferName);
+        pipelineManager->deleteBindGroup(page.bindGroupName);
+    }
+    meshletPages_.clear();
+
+    meshletCapacityWarningEmitted_ = false;
+    metadataCapacityWarningEmitted_ = false;
+
+    BufferDescriptor metaDesc = Default;
+    metaDesc.label = StringView("meshlet metadata storage");
+    metaDesc.size = static_cast<uint64_t>(meshletMetadataCapacity_) * sizeof(GpuMeshletMetadata);
+    metaDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    metaDesc.mappedAtCreation = false;
+    bufferManager->deleteBuffer("meshlet_metadata_storage");
+    if (!bufferManager->createBuffer("meshlet_metadata_storage", metaDesc)) {
+        return false;
+    }
+
+    for (uint32_t pageIndex = 0; pageIndex < kInitialMeshletPageCount; ++pageIndex) {
+        if (!createMeshletPage(pageIndex)) {
+            return false;
         }
     }
 
-    const std::string bufferName = std::string(isVertex ? "mesh_vp_" : "mesh_ip_") + std::to_string(nextBufferId_++);
-    const uint64_t slotBytes = kSizeClasses[static_cast<std::size_t>(classIndex)];
-    const uint32_t slotsPerPage = kSlotsPerPage[static_cast<std::size_t>(classIndex)];
-
-    BufferDescriptor desc = Default;
-    desc.label = StringView(isVertex ? "mesh vertex page" : "mesh index page");
-    desc.size = slotBytes * static_cast<uint64_t>(slotsPerPage);
-    desc.usage = BufferUsage::CopyDst | (isVertex ? BufferUsage::Vertex : BufferUsage::Index);
-    desc.mappedAtCreation = false;
-
-    Buffer buffer = bufferManager->createBuffer(bufferName, desc);
-    if (!buffer) {
-        return nullptr;
-    }
-
-    std::size_t firstNewSlot = slots.size();
-    slots.reserve(slots.size() + static_cast<std::size_t>(slotsPerPage));
-    for (uint32_t i = 0; i < slotsPerPage; ++i) {
-        BufferSlot slot;
-        slot.bufferName = bufferName;
-        slot.offset = static_cast<uint64_t>(i) * slotBytes;
-        slot.capacity = slotBytes;
-        slot.usedBytes = 0;
-        slot.classIndex = classIndex;
-        slot.inUse = false;
-        slots.push_back(std::move(slot));
-    }
-
-    BufferSlot& allocated = slots[firstNewSlot];
-    allocated.inUse = true;
-    allocated.usedBytes = requiredBytes;
-    return &allocated;
+    return refreshVoxelBindGroup();
 }
 
-void WebGPURenderer::releaseSlot(std::vector<BufferSlot>& slots, const std::string& bufferName, uint64_t offset) {
-    for (BufferSlot& slot : slots) {
-        if (slot.bufferName == bufferName && slot.offset == offset) {
-            slot.inUse = false;
-            slot.usedBytes = 0;
-            return;
+uint32_t WebGPURenderer::acquireMeshletSlot(uint32_t& outPageIndex) {
+    for (uint32_t pageIndex = 0; pageIndex < meshletPages_.size(); ++pageIndex) {
+        MeshletPage& page = meshletPages_[pageIndex];
+        if (!page.freeSlots.empty()) {
+            const uint32_t slot = page.freeSlots.back();
+            page.freeSlots.pop_back();
+            outPageIndex = pageIndex;
+            return slot;
         }
     }
+
+    if (meshletPages_.size() >= kMaxMeshletPages) {
+        if (!meshletCapacityWarningEmitted_) {
+            const uint64_t totalSlots = static_cast<uint64_t>(kMaxMeshletPages) * static_cast<uint64_t>(meshletSlotsPerPage_);
+            std::cerr << "Meshlet page capacity reached (" << totalSlots
+                      << " meshlets across " << kMaxMeshletPages
+                      << " pages). Skipping additional mesh uploads." << std::endl;
+            meshletCapacityWarningEmitted_ = true;
+        }
+        return std::numeric_limits<uint32_t>::max();
+    }
+
+    const uint32_t newPageIndex = static_cast<uint32_t>(meshletPages_.size());
+    if (!createMeshletPage(newPageIndex) || !refreshVoxelBindGroup()) {
+        return std::numeric_limits<uint32_t>::max();
+    }
+
+    MeshletPage& newPage = meshletPages_.back();
+    const uint32_t slot = newPage.freeSlots.back();
+    newPage.freeSlots.pop_back();
+    outPageIndex = newPageIndex;
+    return slot;
 }
 
-bool WebGPURenderer::uploadMesh(std::vector<VertexAttributes>&& vertices, std::vector<uint32_t>&& indices, MeshSlotRef& outMeshSlot) {
+void WebGPURenderer::releaseMeshletSlot(uint32_t pageIndex, uint32_t slotInPage) {
+    if (pageIndex >= meshletPages_.size() || slotInPage >= meshletSlotsPerPage_) {
+        return;
+    }
+    meshletPages_[pageIndex].freeSlots.push_back(slotInPage);
+}
+
+bool WebGPURenderer::uploadMesh(MeshData&& meshData, MeshSlotRef& outMeshSlot) {
     outMeshSlot = {};
 
-    if (vertices.empty() || indices.empty()) {
+    if (meshData.empty()) {
         return false;
     }
 
-    const uint64_t vertexBytes = static_cast<uint64_t>(vertices.size()) * sizeof(VertexAttributes);
-    const uint64_t indexBytes = static_cast<uint64_t>(indices.size()) * sizeof(uint32_t);
+    outMeshSlot.meshlets.reserve(meshData.meshlets.size());
 
-    BufferSlot* vSlot = acquireSlot(vertexSlots_, true, vertexBytes);
-    if (vSlot == nullptr) {
-        return false;
+    for (const MeshletInfo& meshlet : meshData.meshlets) {
+        uint32_t pageIndex = 0;
+        const uint32_t slot = acquireMeshletSlot(pageIndex);
+        if (slot == std::numeric_limits<uint32_t>::max()) {
+            for (const UploadedMeshletRef& uploaded : outMeshSlot.meshlets) {
+                releaseMeshletSlot(uploaded.pageIndex, uploaded.slotInPage);
+            }
+            outMeshSlot = {};
+            return false;
+        }
+
+        const std::size_t globalVertexOffset = static_cast<std::size_t>(slot) * MeshData::kMeshletVertexCapacity;
+        const std::size_t globalIndexOffset = static_cast<std::size_t>(slot) * MeshData::kMeshletIndexCapacity;
+        const MeshletPage& page = meshletPages_[pageIndex];
+
+        bufferManager->writeBuffer(
+            page.vertexBufferName,
+            static_cast<uint64_t>(globalVertexOffset) * sizeof(PackedVertexAttributes),
+            meshData.packedVertices.data() + meshlet.vertexOffset,
+            static_cast<size_t>(MeshData::kMeshletVertexCapacity) * sizeof(PackedVertexAttributes)
+        );
+        bufferManager->writeBuffer(
+            page.indexBufferName,
+            static_cast<uint64_t>(globalIndexOffset) * sizeof(uint32_t),
+            meshData.packedIndices.data() + meshlet.indexOffset,
+            static_cast<size_t>(MeshData::kMeshletIndexCapacity) * sizeof(uint32_t)
+        );
+
+        outMeshSlot.meshlets.push_back(UploadedMeshletRef{
+            pageIndex,
+            slot,
+            meshlet.origin,
+            meshlet.lodLevel,
+            meshlet.quadCount
+        });
     }
 
-    BufferSlot* iSlot = acquireSlot(indexSlots_, false, indexBytes);
-    if (iSlot == nullptr) {
-        vSlot->inUse = false;
-        vSlot->usedBytes = 0;
-        return false;
-    }
-
-    bufferManager->writeBuffer(vSlot->bufferName, vSlot->offset, vertices.data(), static_cast<size_t>(vertexBytes));
-    bufferManager->writeBuffer(iSlot->bufferName, iSlot->offset, indices.data(), static_cast<size_t>(indexBytes));
-
-    outMeshSlot.vertexBufferName = vSlot->bufferName;
-    outMeshSlot.vertexOffset = vSlot->offset;
-    outMeshSlot.vertexBytes = vertexBytes;
-    outMeshSlot.indexBufferName = iSlot->bufferName;
-    outMeshSlot.indexOffset = iSlot->offset;
-    outMeshSlot.indexBytes = indexBytes;
-    outMeshSlot.indexCount = static_cast<uint32_t>(indices.size());
     outMeshSlot.valid = true;
     return true;
 }
@@ -334,8 +536,9 @@ void WebGPURenderer::releaseMesh(MeshSlotRef& meshSlot) {
         return;
     }
 
-    releaseSlot(vertexSlots_, meshSlot.vertexBufferName, meshSlot.vertexOffset);
-    releaseSlot(indexSlots_, meshSlot.indexBufferName, meshSlot.indexOffset);
+    for (const UploadedMeshletRef& meshlet : meshSlot.meshlets) {
+        releaseMeshletSlot(meshlet.pageIndex, meshlet.slotInPage);
+    }
     meshSlot = {};
 }
 
@@ -351,7 +554,7 @@ void WebGPURenderer::releaseAllRegionMeshes() {
     pendingBuilds_.clear();
 }
 
-std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::buildRegionLodMesh(RegionCoord regionCoord, int lodLevel) const {
+MeshData WebGPURenderer::buildRegionLodMesh(RegionCoord regionCoord, int lodLevel) const {
     const int step = lodSteps_[static_cast<std::size_t>(std::clamp(lodLevel, 0, kLodCount - 1))];
     const int cells = REGION_BLOCKS_XY / step;
 
@@ -474,7 +677,18 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint32_t>> WebGPURenderer::
         },
         glm::ivec3{0, 0, -1}, 7, static_cast<uint8_t>(lodLevel));
 
-    return {std::move(vertices), std::move(indices)};
+    MeshData meshData = buildMeshletsFromTriangles(vertices, indices);
+    meshData.minBounds = glm::vec3(
+        static_cast<float>(originX),
+        static_cast<float>(originY),
+        0.0f
+    );
+    meshData.maxBounds = glm::vec3(
+        static_cast<float>(originX + REGION_BLOCKS_XY),
+        static_cast<float>(originY + REGION_BLOCKS_XY),
+        static_cast<float>(terrainHeightMaxBlocks_)
+    );
+    return meshData;
 }
 
 void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY) {
@@ -561,7 +775,7 @@ void WebGPURenderer::processPendingRegionBuilds() {
                         RegionRenderEntry& entry = regionIt->second;
                         MeshSlotRef& mesh = entry.lodMeshes[static_cast<std::size_t>(lodLevel)];
                         if (!mesh.valid) {
-                            uploadMesh(std::move(completed.vertices), std::move(completed.indices), mesh);
+                            uploadMesh(std::move(completed.meshData), mesh);
                         }
                     }
                 }
@@ -600,12 +814,10 @@ void WebGPURenderer::processPendingRegionBuilds() {
         const RegionCoord coord = build.coord;
         const int lodLevel = build.lodLevel;
         activeBuildFuture_ = std::async(std::launch::async, [this, coord, lodLevel]() {
-            auto [vertices, indices] = buildRegionLodMesh(coord, lodLevel);
             CompletedRegionBuild completed;
             completed.coord = coord;
             completed.lodLevel = lodLevel;
-            completed.vertices = std::move(vertices);
-            completed.indices = std::move(indices);
+            completed.meshData = buildRegionLodMesh(coord, lodLevel);
             return completed;
         });
         buildInFlight_ = true;
@@ -615,6 +827,11 @@ void WebGPURenderer::processPendingRegionBuilds() {
 
 void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cameraPos) {
     const glm::vec2 cameraXY{cameraPos.x, cameraPos.y};
+    frameMeshletMetadata_.clear();
+    if (meshletPages_.empty()) {
+        return;
+    }
+    std::vector<std::vector<GpuMeshletMetadata>> meshletMetadataByPage(meshletPages_.size());
 
     for (const RegionCoord& coord : drawOrder_) {
         const auto regionIt = renderedRegions_.find(coord);
@@ -648,19 +865,89 @@ void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cam
             }
         }
 
-        if (mesh == nullptr || mesh->indexCount == 0) {
+        if (mesh == nullptr || mesh->meshlets.empty()) {
             continue;
         }
 
-        Buffer vertexBuffer = bufferManager->getBuffer(mesh->vertexBufferName);
-        Buffer indexBuffer = bufferManager->getBuffer(mesh->indexBufferName);
-        if (!vertexBuffer || !indexBuffer) {
+        for (const UploadedMeshletRef& meshlet : mesh->meshlets) {
+            if (meshlet.pageIndex >= meshletPages_.size()) {
+                continue;
+            }
+            const uint32_t slotInPage = meshlet.slotInPage;
+            meshletMetadataByPage[meshlet.pageIndex].push_back(GpuMeshletMetadata{
+                meshlet.origin.x,
+                meshlet.origin.y,
+                meshlet.origin.z,
+                static_cast<int32_t>(meshlet.lodLevel),
+                slotInPage * MeshData::kMeshletVertexCapacity,
+                slotInPage * MeshData::kMeshletIndexCapacity,
+                meshlet.quadCount,
+                0u
+            });
+        }
+    }
+
+    struct PageDrawBatch {
+        uint32_t firstInstance = 0;
+        uint32_t instanceCount = 0;
+    };
+    std::vector<PageDrawBatch> pageDrawBatches(meshletPages_.size());
+    for (uint32_t pageIndex = 0; pageIndex < meshletPages_.size(); ++pageIndex) {
+        const auto& pageMetadata = meshletMetadataByPage[pageIndex];
+        if (pageMetadata.empty()) {
+            continue;
+        }
+        PageDrawBatch& batch = pageDrawBatches[pageIndex];
+        batch.firstInstance = static_cast<uint32_t>(frameMeshletMetadata_.size());
+        batch.instanceCount = static_cast<uint32_t>(pageMetadata.size());
+        frameMeshletMetadata_.insert(frameMeshletMetadata_.end(), pageMetadata.begin(), pageMetadata.end());
+    }
+
+    if (frameMeshletMetadata_.empty()) {
+        return;
+    }
+
+    uint32_t drawBudget = static_cast<uint32_t>(frameMeshletMetadata_.size());
+    if (drawBudget > meshletMetadataCapacity_) {
+        if (!metadataCapacityWarningEmitted_) {
+            std::cerr << "Meshlet metadata capacity reached (" << meshletMetadataCapacity_
+                      << " instances/frame). Culling excess meshlets this frame." << std::endl;
+            metadataCapacityWarningEmitted_ = true;
+        }
+        drawBudget = meshletMetadataCapacity_;
+    }
+    if (drawBudget > kMaxDrawMeshletsPerFrame) {
+        drawBudget = kMaxDrawMeshletsPerFrame;
+    }
+
+    bufferManager->writeBuffer(
+        "meshlet_metadata_storage",
+        0,
+        frameMeshletMetadata_.data(),
+        static_cast<std::size_t>(drawBudget) * sizeof(GpuMeshletMetadata)
+    );
+
+    uint32_t remaining = drawBudget;
+    for (uint32_t pageIndex = 0; pageIndex < meshletPages_.size() && remaining > 0; ++pageIndex) {
+        const PageDrawBatch& batch = pageDrawBatches[pageIndex];
+        if (batch.instanceCount == 0 || batch.firstInstance >= drawBudget) {
             continue;
         }
 
-        pass.setVertexBuffer(0, vertexBuffer, mesh->vertexOffset, mesh->vertexBytes);
-        pass.setIndexBuffer(indexBuffer, IndexFormat::Uint32, mesh->indexOffset, mesh->indexBytes);
-        pass.drawIndexed(mesh->indexCount, 1, 0, 0, 0);
+        const uint32_t availableFromBatch = std::min(batch.instanceCount, drawBudget - batch.firstInstance);
+        const uint32_t drawInstanceCount = std::min(availableFromBatch, remaining);
+        if (drawInstanceCount == 0) {
+            continue;
+        }
+
+        const BindGroup pageBindGroup = pipelineManager->getBindGroup(meshletPages_[pageIndex].bindGroupName);
+        if (!pageBindGroup) {
+            continue;
+        }
+
+        pass.setBindGroup(0, pageBindGroup, 0, nullptr);
+        pass.draw(MeshData::kMeshletIndexCapacity, drawInstanceCount, 0, batch.firstInstance);
+        remaining -= drawInstanceCount;
     }
 }
 
@@ -678,7 +965,7 @@ bool WebGPURenderer::initialize() {
 
     const WorldTuningParameters tuning = kDefaultWorldTuningParameters;
 
-    const int configuredViewDistanceChunks = std::max(1, tuning.viewDistanceChunks);
+    const int configuredViewDistanceChunks = std::clamp(tuning.viewDistanceChunks, 1, 64);
     regionRadius_ = std::max(1, (configuredViewDistanceChunks + (REGION_COLS - 1)) / REGION_COLS);
 
     lodSteps_ = tuning.regionLodSteps;
@@ -723,6 +1010,7 @@ bool WebGPURenderer::initialize() {
     const std::size_t expectedRegionCount = static_cast<std::size_t>((regionRadius_ * 2 + 1) * (regionRadius_ * 2 + 1));
     renderedRegions_.reserve(expectedRegionCount * 2);
     drawOrder_.reserve(expectedRegionCount);
+    frameMeshletMetadata_.reserve(kInitialMeshletMetadataCapacity);
 
     {
         BufferDescriptor desc = Default;
@@ -745,8 +1033,8 @@ bool WebGPURenderer::initialize() {
         std::cerr << "Failed to create voxel render pipeline." << std::endl;
         return false;
     }
-    if (!voxelPipeline.createBindGroup()) {
-        std::cerr << "Failed to create voxel bind group." << std::endl;
+    if (!initializeMeshletBuffers(kMeshletsPerPage, kInitialMeshletMetadataCapacity)) {
+        std::cerr << "Failed to create meshlet storage buffers." << std::endl;
         return false;
     }
 
@@ -758,7 +1046,7 @@ void WebGPURenderer::createRenderingTextures() {
         std::cerr << "Failed to recreate voxel rendering resources." << std::endl;
         return;
     }
-    if (!voxelPipeline.createBindGroup()) {
+    if (!refreshVoxelBindGroup()) {
         std::cerr << "Failed to recreate voxel bind group." << std::endl;
     }
 }
@@ -815,6 +1103,10 @@ void WebGPURenderer::toggleLodDebugColors() {
 
 void WebGPURenderer::toggleChunkDebugColors() {
     debugRenderFlags_ ^= DebugChunkColors;
+}
+
+void WebGPURenderer::toggleMeshletDebugColors() {
+    debugRenderFlags_ ^= DebugMeshletColors;
 }
 
 void WebGPURenderer::clearDebugColors() {

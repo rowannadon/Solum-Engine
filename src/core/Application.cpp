@@ -365,6 +365,12 @@ void Application::onKey(int key, int scancode, int action, int mods) {
             std::cout << "Chunk debug colors toggled (flags=" << gpu.debugRenderFlags() << ")" << std::endl;
         }
         break;
+    case GLFW_KEY_F9:
+        if (keyJustPressed) {
+            gpu.toggleMeshletDebugColors();
+            std::cout << "Meshlet debug colors toggled (flags=" << gpu.debugRenderFlags() << ")" << std::endl;
+        }
+        break;
     }
 }
 

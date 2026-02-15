@@ -1,7 +1,5 @@
 #pragma once
 
-#include "solum_engine/render/VertexAttributes.h"
-
 #include <glm/glm.hpp>
 
 #include <cstdint>
@@ -23,15 +21,34 @@ struct MeshHandle {
     }
 };
 
+struct PackedVertexAttributes {
+    uint32_t xy = 0;
+    uint32_t zMaterial = 0;
+    uint32_t packedFlags = 0;
+};
+
+struct MeshletInfo {
+    glm::ivec3 origin{0};
+    uint32_t lodLevel = 0;
+    uint32_t quadCount = 0;
+    uint32_t vertexOffset = 0;
+    uint32_t indexOffset = 0;
+};
+
 struct MeshData {
-    std::vector<VertexAttributes> vertices;
-    std::vector<uint16_t> indices;
+    static constexpr uint32_t kMeshletQuadCapacity = 128;
+    static constexpr uint32_t kMeshletVertexCapacity = kMeshletQuadCapacity * 4;
+    static constexpr uint32_t kMeshletIndexCapacity = kMeshletQuadCapacity * 6;
+
+    std::vector<PackedVertexAttributes> packedVertices;
+    std::vector<uint32_t> packedIndices;
+    std::vector<MeshletInfo> meshlets;
     glm::vec3 minBounds{0.0f};
     glm::vec3 maxBounds{0.0f};
     uint32_t derivedFromVersion = 0;
 
     bool empty() const {
-        return vertices.empty() || indices.empty();
+        return meshlets.empty();
     }
 };
 

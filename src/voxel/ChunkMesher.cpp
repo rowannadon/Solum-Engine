@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cstring>
 #include <limits>
 
@@ -57,9 +58,126 @@ namespace {
 		{ 0, 1, 2, 1, 3, 2 }, // +Z
 		{ 0, 2, 1, 1, 3, 2 }, // -Z
 	} };
+
+	inline uint16_t ClampU16(int32_t value) {
+		return static_cast<uint16_t>(std::clamp(value, 0, 65535));
+	}
+
+	inline uint8_t DecodeNormalSign(uint8_t encoded) {
+		if (encoded > 170u) {
+			return 2u; // +1
+		}
+		if (encoded < 85u) {
+			return 0u; // -1
+		}
+		return 1u; // 0
+	}
+
+	inline uint8_t EncodeNormalAxisIndex(const VertexAttributes& vertex) {
+		const uint8_t sx = DecodeNormalSign(vertex.n_x);
+		const uint8_t sy = DecodeNormalSign(vertex.n_y);
+		const uint8_t sz = DecodeNormalSign(vertex.n_z);
+
+		if (sx == 2u) return 0u; // +X
+		if (sx == 0u) return 1u; // -X
+		if (sy == 2u) return 2u; // +Y
+		if (sy == 0u) return 3u; // -Y
+		if (sz == 2u) return 4u; // +Z
+		return 5u;               // -Z
+	}
+
+	inline PackedVertexAttributes PackVertex(const VertexAttributes& vertex, const glm::ivec3& origin) {
+		const uint16_t relX = ClampU16(vertex.x - origin.x);
+		const uint16_t relY = ClampU16(vertex.y - origin.y);
+		const uint16_t relZ = ClampU16(vertex.z - origin.z);
+		const uint32_t uBit = (vertex.u > 32767u) ? 1u : 0u;
+		const uint32_t vBit = (vertex.v > 32767u) ? 1u : 0u;
+		const uint32_t normalBits = static_cast<uint32_t>(EncodeNormalAxisIndex(vertex)) & 0x7u;
+		const uint32_t lodBits = static_cast<uint32_t>(vertex.lodLevel) & 0xFFu;
+
+		PackedVertexAttributes packed{};
+		packed.xy = static_cast<uint32_t>(relX) | (static_cast<uint32_t>(relY) << 16u);
+		packed.zMaterial = static_cast<uint32_t>(relZ) | (static_cast<uint32_t>(vertex.material) << 16u);
+		packed.packedFlags = uBit | (vBit << 1u) | (normalBits << 2u) | (lodBits << 5u);
+		return packed;
+	}
+
+	MeshData BuildMeshletsFromTriangles(const std::vector<VertexAttributes>& vertices, const std::vector<uint32_t>& indices) {
+		MeshData meshData;
+		if (vertices.empty() || indices.empty()) {
+			return meshData;
+		}
+
+		const std::size_t quadCount = indices.size() / 6ull;
+		if (quadCount == 0) {
+			return meshData;
+		}
+
+		const std::size_t meshletCount = (quadCount + MeshData::kMeshletQuadCapacity - 1ull) / MeshData::kMeshletQuadCapacity;
+		meshData.meshlets.reserve(meshletCount);
+		meshData.packedVertices.reserve(meshletCount * MeshData::kMeshletVertexCapacity);
+		meshData.packedIndices.reserve(meshletCount * MeshData::kMeshletIndexCapacity);
+
+		for (std::size_t quadBase = 0; quadBase < quadCount; quadBase += MeshData::kMeshletQuadCapacity) {
+			const uint32_t quadsInMeshlet = static_cast<uint32_t>(std::min<std::size_t>(MeshData::kMeshletQuadCapacity, quadCount - quadBase));
+			const std::size_t globalVertexBase = quadBase * 4ull;
+			if (globalVertexBase >= vertices.size()) {
+				break;
+			}
+
+			const std::size_t requestedVertexCount = static_cast<std::size_t>(quadsInMeshlet) * 4ull;
+			const std::size_t availableVertexCount = std::min<std::size_t>(requestedVertexCount, vertices.size() - globalVertexBase);
+			if (availableVertexCount == 0) {
+				continue;
+			}
+
+			glm::ivec3 origin{INT_MAX, INT_MAX, INT_MAX};
+			for (std::size_t i = 0; i < availableVertexCount; ++i) {
+				const VertexAttributes& v = vertices[globalVertexBase + i];
+				origin.x = std::min(origin.x, v.x);
+				origin.y = std::min(origin.y, v.y);
+				origin.z = std::min(origin.z, v.z);
+			}
+
+			MeshletInfo info{};
+			info.origin = origin;
+			info.lodLevel = static_cast<uint32_t>(vertices[globalVertexBase].lodLevel);
+			info.quadCount = quadsInMeshlet;
+			info.vertexOffset = static_cast<uint32_t>(meshData.packedVertices.size());
+			info.indexOffset = static_cast<uint32_t>(meshData.packedIndices.size());
+
+			for (std::size_t i = 0; i < availableVertexCount; ++i) {
+				meshData.packedVertices.push_back(PackVertex(vertices[globalVertexBase + i], origin));
+			}
+			while ((meshData.packedVertices.size() - info.vertexOffset) < MeshData::kMeshletVertexCapacity) {
+				meshData.packedVertices.push_back(PackedVertexAttributes{});
+			}
+
+			const std::size_t globalIndexBase = quadBase * 6ull;
+			const std::size_t indexCount = static_cast<std::size_t>(quadsInMeshlet) * 6ull;
+			for (std::size_t i = 0; i < indexCount; ++i) {
+				uint32_t localIndex = 0u;
+				const std::size_t globalIndexPos = globalIndexBase + i;
+				if (globalIndexPos < indices.size()) {
+					const uint32_t globalIndex = indices[globalIndexPos];
+					if (globalIndex >= globalVertexBase && globalIndex < (globalVertexBase + availableVertexCount)) {
+						localIndex = static_cast<uint32_t>(globalIndex - globalVertexBase);
+					}
+				}
+				meshData.packedIndices.push_back(localIndex);
+			}
+			while ((meshData.packedIndices.size() - info.indexOffset) < MeshData::kMeshletIndexCapacity) {
+				meshData.packedIndices.push_back(0u);
+			}
+
+			meshData.meshlets.push_back(info);
+		}
+
+		return meshData;
+	}
 }
 
-std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mesh(Chunk& chunk, const std::vector<Chunk*>& neighbors) {
+MeshData ChunkMesher::mesh(Chunk& chunk, const std::vector<Chunk*>& neighbors) {
 	std::array<BlockMaterial, kPaddedBlockCount> paddedBlockData;
 	paddedBlockData.fill(BlockMaterial{ 0 });
 	vertices.clear();
@@ -173,11 +291,7 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mes
 						continue;
 					}
 
-					if (vertices.size() > std::numeric_limits<uint16_t>::max() - 4) {
-						continue;
-					}
-
-					uint16_t baseIndex = static_cast<uint16_t>(vertices.size());
+					const uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
 					for (const glm::ivec3& vertexOffset : kFaceVertexOffsets[dir]) {
 						VertexAttributes vertex{};
 
@@ -212,12 +326,12 @@ std::pair<std::vector<VertexAttributes>, std::vector<uint16_t>> ChunkMesher::mes
 					}
 
 					for (uint8_t idx : kFaceIndexOrder[dir]) {
-						indices.push_back(static_cast<uint16_t>(baseIndex + idx));
+						indices.push_back(baseIndex + static_cast<uint32_t>(idx));
 					}
 				}
 			}
 		}
 	}
 
-	return { vertices, indices };
+	return BuildMeshletsFromTriangles(vertices, indices);
 }

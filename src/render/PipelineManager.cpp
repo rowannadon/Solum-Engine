@@ -171,6 +171,12 @@ BindGroup PipelineManager::createBindGroup(const std::string bindGroupName, cons
 		return nullptr;
     }
 
+    auto existing = bindGroups.find(bindGroupName);
+    if (existing != bindGroups.end() && existing->second) {
+        existing->second.release();
+        bindGroups.erase(existing);
+    }
+
     BindGroupDescriptor bindGroupDesc = Default;
     bindGroupDesc.label = StringView(bindGroupName);
     bindGroupDesc.layout = layout;

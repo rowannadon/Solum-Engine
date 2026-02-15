@@ -1,6 +1,7 @@
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 
 #include <cstdint>
+#include <limits>
 
 bool VoxelPipeline::createResources() {
     int width, height;
@@ -69,50 +70,6 @@ void VoxelPipeline::removeResources() {
 
 bool VoxelPipeline::createPipeline() {
     PipelineConfig config;
-
-    // Allocate space for the 10 vertex attributes we actually use.
-    config.vertexAttributes.resize(10);
-    config.vertexAttributes[0].shaderLocation = 0;
-    config.vertexAttributes[0].format = VertexFormat::Sint32;
-    config.vertexAttributes[0].offset = offsetof(VertexAttributes, x);
-
-    config.vertexAttributes[1].shaderLocation = 1;
-    config.vertexAttributes[1].format = VertexFormat::Sint32;
-    config.vertexAttributes[1].offset = offsetof(VertexAttributes, y);
-
-    config.vertexAttributes[2].shaderLocation = 2;
-    config.vertexAttributes[2].format = VertexFormat::Sint32;
-    config.vertexAttributes[2].offset = offsetof(VertexAttributes, z);
-
-    config.vertexAttributes[3].shaderLocation = 3;
-    config.vertexAttributes[3].format = VertexFormat::Uint16;
-    config.vertexAttributes[3].offset = offsetof(VertexAttributes, u);
-
-    config.vertexAttributes[4].shaderLocation = 4;
-    config.vertexAttributes[4].format = VertexFormat::Uint16;
-    config.vertexAttributes[4].offset = offsetof(VertexAttributes, v);
-
-    config.vertexAttributes[5].shaderLocation = 5;
-    config.vertexAttributes[5].format = VertexFormat::Uint16;
-    config.vertexAttributes[5].offset = offsetof(VertexAttributes, material);
-
-    config.vertexAttributes[6].shaderLocation = 6;
-    config.vertexAttributes[6].format = VertexFormat::Uint8;
-    config.vertexAttributes[6].offset = offsetof(VertexAttributes, n_x);
-
-    config.vertexAttributes[7].shaderLocation = 7;
-    config.vertexAttributes[7].format = VertexFormat::Uint8;
-    config.vertexAttributes[7].offset = offsetof(VertexAttributes, n_y);
-
-    config.vertexAttributes[8].shaderLocation = 8;
-    config.vertexAttributes[8].format = VertexFormat::Uint8;
-    config.vertexAttributes[8].offset = offsetof(VertexAttributes, n_z);
-
-    config.vertexAttributes[9].shaderLocation = 9;
-    config.vertexAttributes[9].format = VertexFormat::Uint8;
-    config.vertexAttributes[9].offset = offsetof(VertexAttributes, lodLevel);
-
-
     config.shaderPath = SHADER_DIR "/voxel.wgsl";
     config.colorFormat = context->getSurfaceFormat();
     config.depthFormat = TextureFormat::Depth32Float;
@@ -122,17 +79,34 @@ bool VoxelPipeline::createPipeline() {
     config.depthCompare = CompareFunction::Less;
     config.fragmentShaderName = "fs_main";  // Fragment shader entry point
     config.vertexShaderName = "vs_main";  // Vertex shader entry point
-    config.useVertexBuffers = true;
+    config.useVertexBuffers = false;
     config.useCustomBlending = false;
     config.alphaToCoverageEnabled = false;
 
-    // uniforms binding
     int i = 0;
-    std::vector<BindGroupLayoutEntry> globalUniforms(1, Default);
+    std::vector<BindGroupLayoutEntry> globalUniforms(4, Default);
     globalUniforms[i].binding = i;
     globalUniforms[i].visibility = ShaderStage::Vertex | ShaderStage::Fragment;
     globalUniforms[i].buffer.type = BufferBindingType::Uniform;
     globalUniforms[i].buffer.minBindingSize = sizeof(FrameUniforms);
+    i++;
+
+    globalUniforms[i].binding = i;
+    globalUniforms[i].visibility = ShaderStage::Vertex;
+    globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
+    globalUniforms[i].buffer.minBindingSize = 0;
+    i++;
+
+    globalUniforms[i].binding = i;
+    globalUniforms[i].visibility = ShaderStage::Vertex;
+    globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
+    globalUniforms[i].buffer.minBindingSize = 0;
+    i++;
+
+    globalUniforms[i].binding = i;
+    globalUniforms[i].visibility = ShaderStage::Vertex;
+    globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
+    globalUniforms[i].buffer.minBindingSize = 0;
     i++;
 
     config.bindGroupLayouts.push_back(
@@ -145,13 +119,31 @@ bool VoxelPipeline::createPipeline() {
 }
 
 bool VoxelPipeline::createBindGroup() {
-    std::vector<BindGroupEntry> bindings(1);
+    std::vector<BindGroupEntry> bindings(4);
 
     int i = 0;
     bindings[i].binding = i;
     bindings[i].buffer = buf->getBuffer("uniform_buffer");
     bindings[i].offset = 0;
     bindings[i].size = sizeof(FrameUniforms);
+    i++;
+
+    bindings[i].binding = i;
+    bindings[i].buffer = buf->getBuffer("meshlet_metadata_storage");
+    bindings[i].offset = 0;
+    bindings[i].size = std::numeric_limits<uint64_t>::max();
+    i++;
+
+    bindings[i].binding = i;
+    bindings[i].buffer = buf->getBuffer("meshlet_vertex_storage");
+    bindings[i].offset = 0;
+    bindings[i].size = std::numeric_limits<uint64_t>::max();
+    i++;
+
+    bindings[i].binding = i;
+    bindings[i].buffer = buf->getBuffer("meshlet_index_storage");
+    bindings[i].offset = 0;
+    bindings[i].size = std::numeric_limits<uint64_t>::max();
     i++;
 
     BindGroup bindGroup = pip->createBindGroup("global_uniforms_bg", "global_uniforms", bindings);

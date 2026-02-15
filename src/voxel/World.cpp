@@ -584,10 +584,7 @@ JobResult World::executeJob(const VoxelJob& job) {
                     }
 
                     ChunkMesher mesher;
-                    auto [vertices, indices] = mesher.mesh(*chunk, neighbors);
-
-                    meshData.vertices = std::move(vertices);
-                    meshData.indices = std::move(indices);
+                    meshData = mesher.mesh(*chunk, neighbors);
                     meshData.derivedFromVersion = blockVersion;
 
                     const BlockCoord origin = chunk_to_block_origin(input.chunkCoord);
