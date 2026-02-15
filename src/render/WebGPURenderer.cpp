@@ -694,8 +694,57 @@ MeshData WebGPURenderer::buildRegionLodMesh(RegionCoord regionCoord, int lodLeve
     return meshData;
 }
 
-void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY) {
+bool WebGPURenderer::isRegionLodBuildQueued(const RegionCoord& coord, int lodLevel) const {
+    if (buildInFlight_ && activeBuildLodLevel_ == lodLevel && activeBuildCoord_ == coord) {
+        return true;
+    }
+
+    for (const PendingRegionBuild& pending : pendingBuilds_) {
+        if (pending.lodLevel == lodLevel && pending.coord == coord) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void WebGPURenderer::enqueueMissingRegionLodBuilds(int centerRegionX, int centerRegionY, const glm::vec2& cameraXY) {
+    for (int ring = 0; ring <= regionRadius_; ++ring) {
+        for (const RegionCoord& coord : drawOrder_) {
+            const int rx = coord.x() - centerRegionX;
+            const int ry = coord.y() - centerRegionY;
+            const int coordRing = std::max(std::abs(rx), std::abs(ry));
+            if (coordRing != ring) {
+                continue;
+            }
+
+            auto regionIt = renderedRegions_.find(coord);
+            if (regionIt == renderedRegions_.end()) {
+                continue;
+            }
+            RegionRenderEntry& entry = regionIt->second;
+
+            const glm::vec2 regionCenter{
+                (static_cast<float>(coord.x()) + 0.5f) * static_cast<float>(REGION_BLOCKS_XY),
+                (static_cast<float>(coord.y()) + 0.5f) * static_cast<float>(REGION_BLOCKS_XY),
+            };
+            const float distance = glm::distance(cameraXY, regionCenter);
+            const int targetLod = chooseLodByDistance(distance);
+            for (int lod = kLodCount - 1; lod >= targetLod; --lod) {
+                if (entry.lodMeshes[static_cast<std::size_t>(lod)].valid) {
+                    continue;
+                }
+                if (isRegionLodBuildQueued(coord, lod)) {
+                    continue;
+                }
+                pendingBuilds_.push_back({coord, lod});
+            }
+        }
+    }
+}
+
+void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY, const glm::vec2& cameraXY) {
     if (centerRegionX == activeCenterRegionX && centerRegionY == activeCenterRegionY) {
+        enqueueMissingRegionLodBuilds(centerRegionX, centerRegionY, cameraXY);
         return;
     }
 
@@ -736,29 +785,7 @@ void WebGPURenderer::rebuildRegionsAroundPlayer(int centerRegionX, int centerReg
 
     drawOrder_ = desiredOrder;
     pendingBuilds_.clear();
-
-    for (int ring = 0; ring <= regionRadius_; ++ring) {
-        for (const RegionCoord& coord : desiredOrder) {
-            const int rx = coord.x() - centerRegionX;
-            const int ry = coord.y() - centerRegionY;
-            const int coordRing = std::max(std::abs(rx), std::abs(ry));
-            if (coordRing != ring) {
-                continue;
-            }
-
-            RegionRenderEntry& entry = renderedRegions_.find(coord)->second;
-
-            const float approxDistance = std::sqrt(
-                static_cast<float>(rx * rx + ry * ry)
-            ) * static_cast<float>(REGION_BLOCKS_XY);
-            const int minLod = chooseLodByDistance(approxDistance);
-            for (int lod = kLodCount - 1; lod >= minLod; --lod) {
-                if (!entry.lodMeshes[static_cast<std::size_t>(lod)].valid) {
-                    pendingBuilds_.push_back({coord, lod});
-                }
-            }
-        }
-    }
+    enqueueMissingRegionLodBuilds(centerRegionX, centerRegionY, cameraXY);
 
     activeCenterRegionX = centerRegionX;
     activeCenterRegionY = centerRegionY;
@@ -782,12 +809,15 @@ void WebGPURenderer::processPendingRegionBuilds() {
                         }
                     }
                 }
+                activeBuildLodLevel_ = -1;
             } catch (const std::exception& ex) {
                 std::cerr << "Background region build failed: " << ex.what() << std::endl;
                 buildInFlight_ = false;
+                activeBuildLodLevel_ = -1;
             } catch (...) {
                 std::cerr << "Background region build failed with unknown error." << std::endl;
                 buildInFlight_ = false;
+                activeBuildLodLevel_ = -1;
             }
         }
     }
@@ -816,6 +846,8 @@ void WebGPURenderer::processPendingRegionBuilds() {
 
         const RegionCoord coord = build.coord;
         const int lodLevel = build.lodLevel;
+        activeBuildCoord_ = coord;
+        activeBuildLodLevel_ = lodLevel;
         activeBuildFuture_ = std::async(std::launch::async, [this, coord, lodLevel]() {
             CompletedRegionBuild completed;
             completed.coord = coord;
@@ -1109,7 +1141,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
     const glm::vec3 cameraPos = glm::vec3(uniforms.inverseViewMatrix * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
     const int regionX = floor_div(static_cast<int>(std::floor(cameraPos.x)), REGION_BLOCKS_XY);
     const int regionY = floor_div(static_cast<int>(std::floor(cameraPos.y)), REGION_BLOCKS_XY);
-    rebuildRegionsAroundPlayer(regionX, regionY);
+    rebuildRegionsAroundPlayer(regionX, regionY, glm::vec2{cameraPos.x, cameraPos.y});
     processPendingRegionBuilds();
 
     int fbWidth = 0;

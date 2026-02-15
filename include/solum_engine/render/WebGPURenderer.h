@@ -115,6 +115,8 @@ private:
     std::deque<PendingRegionBuild> pendingBuilds_;
     std::future<CompletedRegionBuild> activeBuildFuture_;
     bool buildInFlight_ = false;
+    RegionCoord activeBuildCoord_{0, 0};
+    int activeBuildLodLevel_ = -1;
     std::vector<MeshletPage> meshletPages_;
     uint32_t meshletSlotsPerPage_ = 0;
     uint32_t meshletMetadataCapacity_ = 0;
@@ -126,7 +128,9 @@ private:
     bool uploadMesh(MeshData&& meshData, MeshSlotRef& outMeshSlot);
     void releaseMesh(MeshSlotRef& meshSlot);
     void releaseAllRegionMeshes();
-    void rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY);
+    void rebuildRegionsAroundPlayer(int centerRegionX, int centerRegionY, const glm::vec2& cameraXY);
+    bool isRegionLodBuildQueued(const RegionCoord& coord, int lodLevel) const;
+    void enqueueMissingRegionLodBuilds(int centerRegionX, int centerRegionY, const glm::vec2& cameraXY);
     void processPendingRegionBuilds();
     int chooseLodByDistance(float distance) const;
     bool loadHeightmap(const std::string& path);
