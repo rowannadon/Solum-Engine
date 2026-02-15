@@ -5,13 +5,13 @@
 
 namespace {
 template <std::size_t... I>
-std::array<Chunk, sizeof...(I)> makeChunks(ColumnCoord coord, ChunkPool* pool, std::index_sequence<I...>) {
-    return {Chunk(ChunkCoord{coord.x(), coord.y(), static_cast<int>(I)}, pool)...};
+std::array<Chunk, sizeof...(I)> makeChunks(ColumnCoord coord, std::index_sequence<I...>) {
+    return {Chunk(ChunkCoord{coord.x(), coord.y(), static_cast<int>(I)})...};
 }
 }
 
-Column::Column(ColumnCoord coord, ChunkPool* pool)
-    : coord_(coord), chunks_(createChunks(coord, pool)) {}
+Column::Column(ColumnCoord coord)
+    : coord_(coord), chunks_(createChunks(coord)) {}
 
 ColumnCoord Column::coord() const {
     return coord_;
@@ -67,6 +67,6 @@ const ColumnState& Column::state() const {
     return state_;
 }
 
-std::array<Chunk, COLUMN_CHUNKS_Z> Column::createChunks(ColumnCoord coord, ChunkPool* pool) {
-    return makeChunks(coord, pool, std::make_index_sequence<COLUMN_CHUNKS_Z>{});
+std::array<Chunk, COLUMN_CHUNKS_Z> Column::createChunks(ColumnCoord coord) {
+    return makeChunks(coord, std::make_index_sequence<COLUMN_CHUNKS_Z>{});
 }

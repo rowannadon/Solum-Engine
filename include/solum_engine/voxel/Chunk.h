@@ -4,22 +4,16 @@
 #include "solum_engine/resources/Coords.h"
 #include "solum_engine/voxel/BlockMaterial.h"
 #include "solum_engine/voxel/ChunkMeshes.h"
-#include "solum_engine/voxel/ChunkPool.h"
 #include "solum_engine/voxel/ChunkState.h"
-#include "solum_engine/voxel/CompressedStore.h"
 #include "solum_engine/voxel/LodStorage.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 
-class ChunkPool;
-
-class ChunkMesher;
-
 class Chunk {
 public:
-    explicit Chunk(ChunkCoord coord, ChunkPool* pool = nullptr);
+    explicit Chunk(ChunkCoord coord);
 
     ChunkCoord coord() const;
 
@@ -28,17 +22,6 @@ public:
 
     BlockMaterial* getBlockData();
     const BlockMaterial* getBlockData() const;
-
-    bool attachUncompressedStorage(ChunkPool& pool, UncompressedChunkHandle handle);
-    void clearUncompressedStorage();
-
-    bool isPoolResident() const;
-    bool isResident() const;
-
-    UncompressedChunkHandle uncompressedHandle() const;
-    void setCompressedHandle(CompressedChunkHandle handle);
-    CompressedChunkHandle compressedHandle() const;
-    void clearCompressedHandle();
 
     ChunkState& state();
     const ChunkState& state() const;
@@ -58,11 +41,6 @@ private:
     static std::size_t localIndex(BlockCoord pos);
 
     ChunkCoord coord_;
-    ChunkPool* pool_ = nullptr;
-    bool bootstrapActive_ = true;
-
-    UncompressedChunkHandle uncompressedHandle_ = UncompressedChunkHandle::invalid();
-    CompressedChunkHandle compressedHandle_ = CompressedChunkHandle::invalid();
 
     std::array<BlockMaterial, CHUNK_BLOCKS> bootstrapData_{};
 
@@ -70,5 +48,4 @@ private:
     LodStorage lodStorage_;
     MeshHandle meshHandleL0_ = MeshHandle::invalid();
 
-    friend class ChunkMesher;
 };

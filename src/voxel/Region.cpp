@@ -1,7 +1,5 @@
 #include "solum_engine/voxel/Region.h"
 
-#include "solum_engine/voxel/ChunkPool.h"
-
 #include <algorithm>
 
 namespace {
@@ -9,9 +7,8 @@ constexpr int kRegionColumnCount = REGION_COLS * REGION_COLS;
 constexpr int kLodLevelCount = 4;
 }
 
-Region::Region(RegionCoord coord, ChunkPool* pool)
+Region::Region(RegionCoord coord)
     : coord_(coord),
-      pool_(pool),
       columns_(kRegionColumnCount),
       lodLevels_(kLodLevelCount) {
     for (int level = 0; level < kLodLevelCount; ++level) {
@@ -44,7 +41,7 @@ Column& Region::ensureColumn(int localX, int localY) {
     if (!columns_[idx]) {
         const int worldX = coord_.x() * REGION_COLS + localX;
         const int worldY = coord_.y() * REGION_COLS + localY;
-        columns_[idx] = std::make_unique<Column>(ColumnCoord{worldX, worldY}, pool_);
+        columns_[idx] = std::make_unique<Column>(ColumnCoord{worldX, worldY});
     }
 
     return *columns_[idx];

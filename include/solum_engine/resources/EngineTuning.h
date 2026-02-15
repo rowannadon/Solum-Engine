@@ -10,7 +10,7 @@
 inline constexpr int kRegionLodCount = 6;
 
 struct WorldTuningParameters {
-    int viewDistanceChunks = 15;
+    int viewDistanceChunks = 32;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 
@@ -38,9 +38,9 @@ inline constexpr WorldTuningParameters kDefaultWorldTuningParameters{};
 struct RendererTuningParameters {
     uint32_t meshletsPerPage = 8192u;
     uint32_t initialMeshletPageCount = 2u;
-    uint32_t maxMeshletPages = 16u;
+    uint32_t maxMeshletPages = 8u;
     uint32_t initialMeshletMetadataCapacity = 65536u;
-    uint32_t maxDrawMeshletsPerFrame = 16384u * 2u;
+    uint32_t maxDrawMeshletsPerFrame = 65536u;
 };
 
 inline constexpr RendererTuningParameters kDefaultRendererTuningParameters{};

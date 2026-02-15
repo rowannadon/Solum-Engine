@@ -2,8 +2,8 @@
 
 #include <cstddef>
 
-Chunk::Chunk(ChunkCoord coord, ChunkPool* pool)
-    : coord_(coord), pool_(pool), bootstrapActive_(pool == nullptr) {}
+Chunk::Chunk(ChunkCoord coord)
+    : coord_(coord) {}
 
 ChunkCoord Chunk::coord() const {
     return coord_;
@@ -60,81 +60,11 @@ UnpackedBlockMaterial Chunk::getBlock(BlockCoord localPos) const {
 }
 
 BlockMaterial* Chunk::getBlockData() {
-    if (pool_ != nullptr && uncompressedHandle_.isValid()) {
-        return pool_->data(uncompressedHandle_);
-    }
-
-    if (!bootstrapActive_) {
-        return nullptr;
-    }
-
     return bootstrapData_.data();
 }
 
 const BlockMaterial* Chunk::getBlockData() const {
-    if (pool_ != nullptr && uncompressedHandle_.isValid()) {
-        return pool_->data(uncompressedHandle_);
-    }
-
-    if (!bootstrapActive_) {
-        return nullptr;
-    }
-
     return bootstrapData_.data();
-}
-
-bool Chunk::attachUncompressedStorage(ChunkPool& pool, UncompressedChunkHandle handle) {
-    if (!handle.isValid()) {
-        return false;
-    }
-    if (!pool.isAllocated(handle)) {
-        return false;
-    }
-
-    pool_ = &pool;
-    uncompressedHandle_ = handle;
-    bootstrapActive_ = false;
-    BlockMaterial* poolData = pool_->data(uncompressedHandle_);
-    if (poolData == nullptr) {
-        uncompressedHandle_ = UncompressedChunkHandle::invalid();
-        bootstrapActive_ = (pool_ == nullptr);
-        return false;
-    }
-
-    for (std::size_t i = 0; i < CHUNK_BLOCKS; ++i) {
-        poolData[i] = bootstrapData_[i];
-    }
-
-    return true;
-}
-
-void Chunk::clearUncompressedStorage() {
-    uncompressedHandle_ = UncompressedChunkHandle::invalid();
-    bootstrapActive_ = (pool_ == nullptr);
-}
-
-bool Chunk::isPoolResident() const {
-    return pool_ != nullptr && uncompressedHandle_.isValid();
-}
-
-bool Chunk::isResident() const {
-    return (pool_ != nullptr && uncompressedHandle_.isValid()) || bootstrapActive_;
-}
-
-UncompressedChunkHandle Chunk::uncompressedHandle() const {
-    return uncompressedHandle_;
-}
-
-void Chunk::setCompressedHandle(CompressedChunkHandle handle) {
-    compressedHandle_ = handle;
-}
-
-CompressedChunkHandle Chunk::compressedHandle() const {
-    return compressedHandle_;
-}
-
-void Chunk::clearCompressedHandle() {
-    compressedHandle_ = CompressedChunkHandle::invalid();
 }
 
 ChunkState& Chunk::state() {

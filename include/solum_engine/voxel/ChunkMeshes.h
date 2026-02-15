@@ -4,8 +4,6 @@
 
 #include <cstdint>
 #include <limits>
-#include <mutex>
-#include <optional>
 #include <vector>
 
 struct MeshHandle {
@@ -50,25 +48,4 @@ struct MeshData {
     bool empty() const {
         return meshlets.empty();
     }
-};
-
-class MeshHandleTable {
-public:
-    MeshHandle create(MeshData meshData);
-    MeshHandle updateOrCreate(MeshHandle handle, MeshData meshData);
-    bool release(MeshHandle handle);
-    std::optional<MeshData> copy(MeshHandle handle) const;
-
-private:
-    struct Entry {
-        uint32_t generation = 1;
-        bool allocated = false;
-        MeshData mesh;
-    };
-
-    bool isValidLocked(MeshHandle handle) const;
-
-    mutable std::mutex mutex_;
-    std::vector<Entry> entries_;
-    std::vector<uint32_t> freeList_;
 };

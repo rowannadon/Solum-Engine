@@ -7,11 +7,9 @@
 
 #include <array>
 
-class ChunkPool;
-
 class Column {
 public:
-    explicit Column(ColumnCoord coord, ChunkPool* pool = nullptr);
+    explicit Column(ColumnCoord coord);
 
     ColumnCoord coord() const;
 
@@ -28,7 +26,7 @@ public:
     const ColumnState& state() const;
 
 private:
-    static std::array<Chunk, COLUMN_CHUNKS_Z> createChunks(ColumnCoord coord, ChunkPool* pool);
+    static std::array<Chunk, COLUMN_CHUNKS_Z> createChunks(ColumnCoord coord);
 
     ColumnCoord coord_;
     std::array<Chunk, COLUMN_CHUNKS_Z> chunks_;

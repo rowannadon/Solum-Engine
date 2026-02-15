@@ -11,8 +11,6 @@
 #include <optional>
 #include <vector>
 
-class ChunkPool;
-
 struct RegionLodTileCoord {
     uint8_t x = 0;
     uint8_t y = 0;
@@ -27,7 +25,7 @@ struct RegionLodTileState {
 
 class Region {
 public:
-    explicit Region(RegionCoord coord, ChunkPool* pool = nullptr);
+    explicit Region(RegionCoord coord);
 
     RegionCoord coord() const;
     RegionState& state();
@@ -66,7 +64,6 @@ private:
     std::size_t tileIndex(const LodLevelGrid& grid, RegionLodTileCoord coord) const;
 
     RegionCoord coord_;
-    ChunkPool* pool_ = nullptr;
     RegionState state_;
 
     std::vector<std::unique_ptr<Column>> columns_;
