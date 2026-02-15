@@ -2,7 +2,26 @@
 
 #include "solum_engine/core/Application.h"
 
+#include <algorithm>
 #include <cfloat>
+#include <cmath>
+#include <iomanip>
+
+namespace {
+constexpr int kDebugStreamingViewDistanceChunks = 8;
+constexpr int kDebugStreamingVerticalRadiusChunks = 3;
+
+double utilizationPercent(std::size_t used, std::size_t capacity) {
+    if (capacity == 0) {
+        return 0.0;
+    }
+    return (static_cast<double>(used) / static_cast<double>(capacity)) * 100.0;
+}
+
+uint64_t diffCounter(uint64_t current, uint64_t previous) {
+    return (current >= previous) ? (current - previous) : current;
+}
+} // namespace
 
 bool Application::Initialize() {
     if (!gpu.initialize()) return false;
@@ -84,6 +103,14 @@ void Application::MainLoop() {
         processInput();
     }
 
+    PlayerStreamingContext streamingContext;
+    streamingContext.playerPosition = camera.position;
+    streamingContext.viewDistanceChunks = std::min(kDefaultWorldTuningParameters.viewDistanceChunks, kDebugStreamingViewDistanceChunks);
+    const int playerChunkZ = floor_div(static_cast<int>(std::floor(camera.position.z)), CHUNK_SIZE);
+    streamingContext.verticalChunkMin = std::clamp(playerChunkZ - kDebugStreamingVerticalRadiusChunks, 0, COLUMN_CHUNKS_Z - 1);
+    streamingContext.verticalChunkMax = std::clamp(playerChunkZ + kDebugStreamingVerticalRadiusChunks, 0, COLUMN_CHUNKS_Z - 1);
+    debugWorld_.update(streamingContext);
+
     // Early exit if frame budget is already exceeded
     float frameStartTime = currentFrame;
 
@@ -117,13 +144,110 @@ void Application::MainLoop() {
         float averageFrameMs = averageFrameTime * 1000.0f;
         float frameBudgetUtilization = (averageFrameTime / TARGET_FRAME_TIME) * 100.0f;
 
+        const WorldDebugSnapshot worldDebug = debugWorld_.debugSnapshot();
+        const RendererDebugSnapshot rendererDebug = gpu.debugSnapshot();
+        const JobSchedulerDebugSnapshot& currentJobSnapshot = worldDebug.jobScheduler;
+
+        std::array<JobTypeDebugStats, kVoxelJobTypeCount> deltaJobTypeStats{};
+        uint64_t deltaTotalCompleted = currentJobSnapshot.totalCompletedCount;
+        uint64_t deltaTotalFailed = currentJobSnapshot.totalFailedCount;
+        if (hasPreviousJobSnapshot_) {
+            deltaTotalCompleted = diffCounter(currentJobSnapshot.totalCompletedCount, previousJobSnapshot_.totalCompletedCount);
+            deltaTotalFailed = diffCounter(currentJobSnapshot.totalFailedCount, previousJobSnapshot_.totalFailedCount);
+            for (std::size_t i = 0; i < kVoxelJobTypeCount; ++i) {
+                const JobTypeDebugStats& now = currentJobSnapshot.byType[i];
+                const JobTypeDebugStats& prev = previousJobSnapshot_.byType[i];
+                deltaJobTypeStats[i].completedCount = diffCounter(now.completedCount, prev.completedCount);
+                deltaJobTypeStats[i].succeededCount = diffCounter(now.succeededCount, prev.succeededCount);
+                deltaJobTypeStats[i].failedCount = diffCounter(now.failedCount, prev.failedCount);
+                deltaJobTypeStats[i].totalRuntimeNs = diffCounter(now.totalRuntimeNs, prev.totalRuntimeNs);
+            }
+        } else {
+            deltaJobTypeStats = currentJobSnapshot.byType;
+        }
+
         std::cout << "=== Frame Timing Debug ===" << std::endl;
         std::cout << "Target FPS: " << TARGET_FPS << " (Budget: " << frameBudgetMs << "ms)" << std::endl;
         std::cout << "Current Frame: " << currentFrameMs << "ms" << std::endl;
         std::cout << "Average Frame: " << averageFrameMs << "ms (" << averageFPS << " FPS)" << std::endl;
         std::cout << "Frame Budget Utilization: " << frameBudgetUtilization << "%" << std::endl;
+        std::cout << "Camera Position: (" << camera.position.x << ", " << camera.position.y << ", " << camera.position.z << ")" << std::endl;
+
+        const double chunkPoolUsedPct = utilizationPercent(worldDebug.chunkPool.usedSlots, worldDebug.chunkPool.capacity);
+        std::cout << "ChunkPool: " << worldDebug.chunkPool.usedSlots << "/" << worldDebug.chunkPool.capacity
+                  << " used (" << std::fixed << std::setprecision(1) << chunkPoolUsedPct << "%), free="
+                  << worldDebug.chunkPool.freeSlots
+                  << ", pinnedSlots=" << worldDebug.chunkPool.pinnedSlots
+                  << " (pinRefs=" << worldDebug.chunkPool.totalPinCount << ")" << std::endl;
+
+        std::cout << "World: regions=" << worldDebug.regionCount
+                  << ", columns=" << worldDebug.columnCount
+                  << ", chunks=" << worldDebug.chunkStats.totalChunks
+                  << " (uncompressed=" << worldDebug.chunkStats.uncompressedChunks
+                  << ", compressed=" << worldDebug.chunkStats.compressedChunks
+                  << ", unloaded=" << worldDebug.chunkStats.unloadedChunks
+                  << "), compressedStoreEntries=" << worldDebug.compressedStoreEntries << std::endl;
+
+        std::cout << "Chunk Dirty: needsLodScan=" << worldDebug.chunkStats.needsLodScanChunks
+                  << ", needsMeshL0=" << worldDebug.chunkStats.needsMeshL0Chunks << std::endl;
+
+        std::cout << "Job Scheduler: workers=" << currentJobSnapshot.workerCount
+                  << ", queued(H/M/L)=" << currentJobSnapshot.queuedHigh << "/"
+                  << currentJobSnapshot.queuedMedium << "/"
+                  << currentJobSnapshot.queuedLow
+                  << ", completedQueue=" << currentJobSnapshot.completedResultsQueued
+                  << ", completed(last1s)=" << deltaTotalCompleted
+                  << ", failed(last1s)=" << deltaTotalFailed << std::endl;
+
+        std::cout << "Scheduled Sets: terrain=" << worldDebug.terrainJobsScheduled
+                  << ", structure=" << worldDebug.structureJobsScheduled
+                  << ", lodScan=" << worldDebug.lodScanJobsScheduled
+                  << ", meshL0=" << worldDebug.meshJobsScheduled
+                  << ", lodTile=" << worldDebug.lodTileJobsScheduled << std::endl;
+
+        std::cout << "Completed Jobs by Type (last 1s):" << std::endl;
+        bool emittedJobTypeLine = false;
+        for (std::size_t i = 0; i < kVoxelJobTypeCount; ++i) {
+            const JobTypeDebugStats& stats = deltaJobTypeStats[i];
+            if (stats.completedCount == 0u) {
+                continue;
+            }
+
+            emittedJobTypeLine = true;
+            const double averageMs = static_cast<double>(stats.totalRuntimeNs) / static_cast<double>(stats.completedCount) / 1'000'000.0;
+            std::cout << "  " << voxelJobTypeName(static_cast<VoxelJobType>(i))
+                      << ": count=" << stats.completedCount
+                      << ", avg=" << std::fixed << std::setprecision(3) << averageMs << "ms"
+                      << ", failed=" << stats.failedCount << std::endl;
+        }
+        if (!emittedJobTypeLine) {
+            std::cout << "  none" << std::endl;
+        }
+
+        const MeshletPageDebugSnapshot& meshletDebug = rendererDebug.meshletPages;
+        const double meshletPageUsedPct = utilizationPercent(static_cast<std::size_t>(meshletDebug.usedSlots), static_cast<std::size_t>(meshletDebug.totalSlotCapacity));
+        std::cout << "Meshlet Pages: pages=" << meshletDebug.activePageCount << "/" << meshletDebug.maxPageCount
+                  << ", slots=" << meshletDebug.usedSlots << "/" << meshletDebug.totalSlotCapacity
+                  << " (" << std::fixed << std::setprecision(1) << meshletPageUsedPct << "%)"
+                  << ", freeSlots=" << meshletDebug.freeSlots
+                  << ", slotsPerPage=" << meshletDebug.slotsPerPage
+                  << ", metadataCapPerPage=" << meshletDebug.metadataCapacityPerPage << std::endl;
+
+        std::cout << "Renderer Regions: rendered=" << rendererDebug.renderedRegionCount
+                  << ", drawOrder=" << rendererDebug.drawOrderRegionCount
+                  << ", pendingBuilds=" << rendererDebug.pendingRegionBuildCount
+                  << ", buildInFlight=" << (rendererDebug.buildInFlight ? "yes" : "no") << std::endl;
+
+        std::cout << "Meshlet Draw (last frame): requested=" << rendererDebug.lastFrameRequestedMeshlets
+                  << ", drawn=" << rendererDebug.lastFrameDrawnMeshlets
+                  << ", culledMetadata=" << rendererDebug.lastFrameMetadataCulledMeshlets
+                  << ", culledBudget=" << rendererDebug.lastFrameBudgetCulledMeshlets
+                  << ", pagesDrawn=" << rendererDebug.lastFramePagesDrawn << std::endl;
+
         std::cout << "=========================" << std::endl;
 
+        previousJobSnapshot_ = currentJobSnapshot;
+        hasPreviousJobSnapshot_ = true;
         lastDebugTime = currentFrame;
     }
 

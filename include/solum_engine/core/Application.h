@@ -27,6 +27,7 @@
 #include "solum_engine/render/WebGPURenderer.h"
 #include "solum_engine/ui/GuiManager.h"
 #include "solum_engine/core/Camera.h"
+#include "solum_engine/voxel/World.h"
 
 class Application {
 public:
@@ -94,4 +95,8 @@ private:
     FrameUniforms uniforms;
 
     std::vector<float> frameTimes;
+
+    World debugWorld_{8192, 2};
+    JobSchedulerDebugSnapshot previousJobSnapshot_{};
+    bool hasPreviousJobSnapshot_ = false;
 };

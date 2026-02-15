@@ -862,6 +862,12 @@ void WebGPURenderer::processPendingRegionBuilds() {
 
 void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cameraPos) {
     const glm::vec2 cameraXY{cameraPos.x, cameraPos.y};
+    lastFrameRequestedMeshlets_ = 0u;
+    lastFrameDrawnMeshlets_ = 0u;
+    lastFrameMetadataCulledMeshlets_ = 0u;
+    lastFrameBudgetCulledMeshlets_ = 0u;
+    lastFramePagesDrawn_ = 0u;
+
     if (meshletPages_.empty()) {
         return;
     }
@@ -903,6 +909,7 @@ void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cam
             continue;
         }
 
+        lastFrameRequestedMeshlets_ += static_cast<uint32_t>(mesh->meshlets.size());
         for (const UploadedMeshletRef& meshlet : mesh->meshlets) {
             if (meshlet.pageIndex >= meshletPages_.size()) {
                 continue;
@@ -933,6 +940,7 @@ void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cam
         }
 
         uint32_t drawInstanceCount = static_cast<uint32_t>(pageMetadata.size());
+        const uint32_t originalInstanceCount = drawInstanceCount;
         if (drawInstanceCount > meshletMetadataCapacity_) {
             if (!metadataCapacityWarningEmitted_) {
                 std::cerr << "Meshlet metadata capacity reached (" << meshletMetadataCapacity_
@@ -941,7 +949,14 @@ void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cam
             }
             drawInstanceCount = meshletMetadataCapacity_;
         }
+        if (drawInstanceCount < originalInstanceCount) {
+            lastFrameMetadataCulledMeshlets_ += (originalInstanceCount - drawInstanceCount);
+        }
+        const uint32_t beforeGlobalBudgetClamp = drawInstanceCount;
         drawInstanceCount = std::min(drawInstanceCount, remainingGlobalBudget);
+        if (drawInstanceCount < beforeGlobalBudgetClamp) {
+            lastFrameBudgetCulledMeshlets_ += (beforeGlobalBudgetClamp - drawInstanceCount);
+        }
         if (drawInstanceCount == 0) {
             continue;
         }
@@ -961,6 +976,8 @@ void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cam
         pass.setBindGroup(0, pageBindGroup, 0, nullptr);
         pass.draw(MeshData::kMeshletIndexCapacity, drawInstanceCount, 0, 0);
         remainingGlobalBudget -= drawInstanceCount;
+        lastFrameDrawnMeshlets_ += drawInstanceCount;
+        ++lastFramePagesDrawn_;
     }
 }
 
@@ -1127,6 +1144,34 @@ void WebGPURenderer::clearDebugColors() {
 
 uint32_t WebGPURenderer::debugRenderFlags() const {
     return debugRenderFlags_;
+}
+
+RendererDebugSnapshot WebGPURenderer::debugSnapshot() const {
+    RendererDebugSnapshot snapshot;
+    snapshot.renderedRegionCount = renderedRegions_.size();
+    snapshot.drawOrderRegionCount = drawOrder_.size();
+    snapshot.pendingRegionBuildCount = pendingBuilds_.size();
+    snapshot.buildInFlight = buildInFlight_;
+    snapshot.lastFrameRequestedMeshlets = lastFrameRequestedMeshlets_;
+    snapshot.lastFrameDrawnMeshlets = lastFrameDrawnMeshlets_;
+    snapshot.lastFrameMetadataCulledMeshlets = lastFrameMetadataCulledMeshlets_;
+    snapshot.lastFrameBudgetCulledMeshlets = lastFrameBudgetCulledMeshlets_;
+    snapshot.lastFramePagesDrawn = lastFramePagesDrawn_;
+
+    snapshot.meshletPages.activePageCount = static_cast<uint32_t>(meshletPages_.size());
+    snapshot.meshletPages.maxPageCount = kMaxMeshletPages;
+    snapshot.meshletPages.slotsPerPage = meshletSlotsPerPage_;
+    snapshot.meshletPages.metadataCapacityPerPage = meshletMetadataCapacity_;
+    snapshot.meshletPages.totalSlotCapacity =
+        static_cast<uint64_t>(meshletPages_.size()) * static_cast<uint64_t>(meshletSlotsPerPage_);
+
+    uint64_t totalFreeSlots = 0;
+    for (const MeshletPage& page : meshletPages_) {
+        totalFreeSlots += static_cast<uint64_t>(page.freeSlots.size());
+    }
+    snapshot.meshletPages.freeSlots = totalFreeSlots;
+    snapshot.meshletPages.usedSlots = snapshot.meshletPages.totalSlotCapacity - totalFreeSlots;
+    return snapshot;
 }
 
 void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {

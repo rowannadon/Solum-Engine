@@ -2,6 +2,7 @@
 
 #include "solum_engine/voxel/ChunkMeshes.h"
 #include "solum_engine/voxel/ChunkPool.h"
+#include "solum_engine/voxel/JobScheduler.h"
 #include "solum_engine/voxel/RegionManager.h"
 
 #include <glm/glm.hpp>
@@ -15,9 +16,32 @@
 
 class ChunkResidencyManager;
 class CompressedStore;
-class JobScheduler;
-struct VoxelJob;
-struct JobResult;
+
+struct WorldChunkDebugSnapshot {
+    std::size_t totalChunks = 0;
+    std::size_t uncompressedChunks = 0;
+    std::size_t compressedChunks = 0;
+    std::size_t unloadedChunks = 0;
+    std::size_t needsLodScanChunks = 0;
+    std::size_t needsMeshL0Chunks = 0;
+};
+
+struct WorldDebugSnapshot {
+    std::size_t regionCount = 0;
+    std::size_t columnCount = 0;
+    WorldChunkDebugSnapshot chunkStats;
+
+    ChunkPoolDebugSnapshot chunkPool;
+    std::size_t compressedStoreEntries = 0;
+
+    std::size_t terrainJobsScheduled = 0;
+    std::size_t structureJobsScheduled = 0;
+    std::size_t lodScanJobsScheduled = 0;
+    std::size_t meshJobsScheduled = 0;
+    std::size_t lodTileJobsScheduled = 0;
+
+    JobSchedulerDebugSnapshot jobScheduler;
+};
 
 // Shared startup tuning for both world streaming defaults and renderer region/LOD behavior.
 // This is the single place to tweak for now (GUI controls can later drive these values at runtime).
@@ -82,6 +106,7 @@ public:
 
     ChunkPool& chunkPool();
     const ChunkPool& chunkPool() const;
+    WorldDebugSnapshot debugSnapshot() const;
 
 private:
     WorldInterestSet buildInterestSet(const PlayerStreamingContext& context) const;

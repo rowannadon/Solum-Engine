@@ -22,6 +22,14 @@ struct UncompressedChunkHandle {
     }
 };
 
+struct ChunkPoolDebugSnapshot {
+    std::size_t capacity = 0;
+    std::size_t freeSlots = 0;
+    std::size_t usedSlots = 0;
+    std::size_t pinnedSlots = 0;
+    uint64_t totalPinCount = 0;
+};
+
 class ChunkPool {
 public:
     explicit ChunkPool(std::size_t capacity = 1024);
@@ -40,6 +48,7 @@ public:
 
     std::size_t capacity() const;
     std::size_t freeSlots() const;
+    ChunkPoolDebugSnapshot debugSnapshot() const;
 
 private:
     struct SlotMeta {

@@ -199,6 +199,67 @@ const ChunkPool& World::chunkPool() const {
     return chunkPool_;
 }
 
+WorldDebugSnapshot World::debugSnapshot() const {
+    WorldDebugSnapshot snapshot;
+    snapshot.chunkPool = chunkPool_.debugSnapshot();
+    snapshot.compressedStoreEntries = compressedStore_ ? compressedStore_->liveEntries() : 0;
+    snapshot.jobScheduler = scheduler_ ? scheduler_->debugSnapshot() : JobSchedulerDebugSnapshot{};
+
+    std::scoped_lock lock(worldMutex_);
+
+    const std::vector<RegionCoord> regionCoords = regionManager_.regionCoords();
+    snapshot.regionCount = regionCoords.size();
+
+    for (const RegionCoord regionCoord : regionCoords) {
+        const Region* region = regionManager_.tryGetRegion(regionCoord);
+        if (region == nullptr) {
+            continue;
+        }
+
+        for (int lx = 0; lx < REGION_COLS; ++lx) {
+            for (int ly = 0; ly < REGION_COLS; ++ly) {
+                const Column* column = region->tryGetColumn(lx, ly);
+                if (column == nullptr) {
+                    continue;
+                }
+
+                ++snapshot.columnCount;
+                for (int z = 0; z < COLUMN_CHUNKS_Z; ++z) {
+                    const Chunk* chunk = column->tryGetChunk(z);
+                    if (chunk == nullptr) {
+                        continue;
+                    }
+
+                    ++snapshot.chunkStats.totalChunks;
+
+                    if (chunk->isPoolResident()) {
+                        ++snapshot.chunkStats.uncompressedChunks;
+                    } else if (chunk->compressedHandle().isValid()) {
+                        ++snapshot.chunkStats.compressedChunks;
+                    } else {
+                        ++snapshot.chunkStats.unloadedChunks;
+                    }
+
+                    if (chunk->state().needsLodScan()) {
+                        ++snapshot.chunkStats.needsLodScanChunks;
+                    }
+                    if (chunk->state().needsMeshL0()) {
+                        ++snapshot.chunkStats.needsMeshL0Chunks;
+                    }
+                }
+            }
+        }
+    }
+
+    snapshot.terrainJobsScheduled = terrainScheduled_.size();
+    snapshot.structureJobsScheduled = structureScheduled_.size();
+    snapshot.lodScanJobsScheduled = lodScanScheduled_.size();
+    snapshot.meshJobsScheduled = meshScheduled_.size();
+    snapshot.lodTileJobsScheduled = lodTileScheduled_.size();
+
+    return snapshot;
+}
+
 WorldInterestSet World::buildInterestSet(const PlayerStreamingContext& context) const {
     WorldInterestSet set;
 

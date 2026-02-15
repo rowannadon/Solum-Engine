@@ -5,6 +5,8 @@
 #include "solum_engine/voxel/Region.h"
 
 #include <atomic>
+#include <array>
+#include <cstddef>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -23,6 +25,32 @@ enum class VoxelJobType : uint8_t {
     CompressChunk,
     UncompressChunk,
 };
+
+inline constexpr std::size_t kVoxelJobTypeCount = static_cast<std::size_t>(VoxelJobType::UncompressChunk) + 1u;
+
+inline constexpr std::size_t voxelJobTypeIndex(VoxelJobType type) {
+    return static_cast<std::size_t>(type);
+}
+
+inline constexpr const char* voxelJobTypeName(VoxelJobType type) {
+    switch (type) {
+    case VoxelJobType::TerrainGeneration:
+        return "TerrainGeneration";
+    case VoxelJobType::StructureGeneration:
+        return "StructureGeneration";
+    case VoxelJobType::LodScan:
+        return "LodScan";
+    case VoxelJobType::MeshL0:
+        return "MeshL0";
+    case VoxelJobType::LodTile:
+        return "LodTile";
+    case VoxelJobType::CompressChunk:
+        return "CompressChunk";
+    case VoxelJobType::UncompressChunk:
+        return "UncompressChunk";
+    }
+    return "Unknown";
+}
 
 enum class JobPriority : uint8_t {
     High = 0,
@@ -137,6 +165,25 @@ struct JobResult {
     JobResultPayload payload;
 };
 
+struct JobTypeDebugStats {
+    uint64_t completedCount = 0;
+    uint64_t succeededCount = 0;
+    uint64_t failedCount = 0;
+    uint64_t totalRuntimeNs = 0;
+};
+
+struct JobSchedulerDebugSnapshot {
+    std::array<JobTypeDebugStats, kVoxelJobTypeCount> byType{};
+    uint64_t totalCompletedCount = 0;
+    uint64_t totalSucceededCount = 0;
+    uint64_t totalFailedCount = 0;
+    std::size_t queuedHigh = 0;
+    std::size_t queuedMedium = 0;
+    std::size_t queuedLow = 0;
+    std::size_t completedResultsQueued = 0;
+    std::size_t workerCount = 0;
+};
+
 class JobScheduler {
 public:
     using Executor = std::function<JobResult(const VoxelJob&)>;
@@ -148,6 +195,7 @@ public:
 
     uint64_t enqueue(VoxelJob job);
     bool tryPopResult(JobResult& outResult);
+    JobSchedulerDebugSnapshot debugSnapshot() const;
 
 private:
     void workerMain();
@@ -167,6 +215,11 @@ private:
 
     mutable std::mutex executorMutex_;
     Executor executor_;
+
+    std::array<std::atomic<uint64_t>, kVoxelJobTypeCount> completedCountByType_{};
+    std::array<std::atomic<uint64_t>, kVoxelJobTypeCount> succeededCountByType_{};
+    std::array<std::atomic<uint64_t>, kVoxelJobTypeCount> failedCountByType_{};
+    std::array<std::atomic<uint64_t>, kVoxelJobTypeCount> totalRuntimeNsByType_{};
 
     std::vector<std::thread> workers_;
 };

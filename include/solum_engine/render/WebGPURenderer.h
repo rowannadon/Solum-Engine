@@ -29,6 +29,29 @@
 #include <utility>
 #include <vector>
 
+struct MeshletPageDebugSnapshot {
+    uint32_t activePageCount = 0;
+    uint32_t maxPageCount = 0;
+    uint32_t slotsPerPage = 0;
+    uint32_t metadataCapacityPerPage = 0;
+    uint64_t totalSlotCapacity = 0;
+    uint64_t usedSlots = 0;
+    uint64_t freeSlots = 0;
+};
+
+struct RendererDebugSnapshot {
+    MeshletPageDebugSnapshot meshletPages;
+    std::size_t renderedRegionCount = 0;
+    std::size_t drawOrderRegionCount = 0;
+    std::size_t pendingRegionBuildCount = 0;
+    bool buildInFlight = false;
+    uint32_t lastFrameRequestedMeshlets = 0;
+    uint32_t lastFrameDrawnMeshlets = 0;
+    uint32_t lastFrameMetadataCulledMeshlets = 0;
+    uint32_t lastFrameBudgetCulledMeshlets = 0;
+    uint32_t lastFramePagesDrawn = 0;
+};
+
 class WebGPURenderer {
 private:
     struct GpuMeshletMetadata {
@@ -123,6 +146,11 @@ private:
     bool meshletCapacityWarningEmitted_ = false;
     bool metadataCapacityWarningEmitted_ = false;
     uint32_t debugRenderFlags_ = 0;
+    uint32_t lastFrameRequestedMeshlets_ = 0;
+    uint32_t lastFrameDrawnMeshlets_ = 0;
+    uint32_t lastFrameMetadataCulledMeshlets_ = 0;
+    uint32_t lastFrameBudgetCulledMeshlets_ = 0;
+    uint32_t lastFramePagesDrawn_ = 0;
 
     MeshData buildRegionLodMesh(RegionCoord regionCoord, int lodLevel) const;
     bool uploadMesh(MeshData&& meshData, MeshSlotRef& outMeshSlot);
@@ -169,6 +197,7 @@ public:
     void toggleMeshletDebugColors();
     void clearDebugColors();
     uint32_t debugRenderFlags() const;
+    RendererDebugSnapshot debugSnapshot() const;
 
     void terminate();
 };

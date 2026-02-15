@@ -1,7 +1,16 @@
 #include "solum_engine/voxel/JobScheduler.h"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
+
+namespace {
+bool jobResultSucceeded(const JobResult& result) {
+    return std::visit([](const auto& payload) {
+        return payload.success;
+    }, result.payload);
+}
+} // namespace
 
 JobScheduler::JobScheduler(std::size_t workerThreads) {
     if (workerThreads == 0) {
@@ -93,6 +102,7 @@ void JobScheduler::workerMain() {
         }
 
         JobResult result;
+        const auto start = std::chrono::steady_clock::now();
         if (executor) {
             result = executor(job);
         } else {
@@ -100,8 +110,19 @@ void JobScheduler::workerMain() {
             result.ticket = job.ticket;
             result.payload = TerrainJobResult{};
         }
+        const auto end = std::chrono::steady_clock::now();
 
         result.ticket = job.ticket;
+
+        const std::size_t typeIndex = voxelJobTypeIndex(result.type);
+        const uint64_t runtimeNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+        completedCountByType_[typeIndex].fetch_add(1u, std::memory_order_relaxed);
+        totalRuntimeNsByType_[typeIndex].fetch_add(runtimeNs, std::memory_order_relaxed);
+        if (jobResultSucceeded(result)) {
+            succeededCountByType_[typeIndex].fetch_add(1u, std::memory_order_relaxed);
+        } else {
+            failedCountByType_[typeIndex].fetch_add(1u, std::memory_order_relaxed);
+        }
 
         {
             std::scoped_lock lock(resultMutex_);
@@ -128,4 +149,35 @@ bool JobScheduler::tryPopNextJobLocked(VoxelJob& job) {
     }
 
     return false;
+}
+
+JobSchedulerDebugSnapshot JobScheduler::debugSnapshot() const {
+    JobSchedulerDebugSnapshot snapshot;
+    snapshot.workerCount = workers_.size();
+
+    for (std::size_t i = 0; i < kVoxelJobTypeCount; ++i) {
+        JobTypeDebugStats& byType = snapshot.byType[i];
+        byType.completedCount = completedCountByType_[i].load(std::memory_order_relaxed);
+        byType.succeededCount = succeededCountByType_[i].load(std::memory_order_relaxed);
+        byType.failedCount = failedCountByType_[i].load(std::memory_order_relaxed);
+        byType.totalRuntimeNs = totalRuntimeNsByType_[i].load(std::memory_order_relaxed);
+
+        snapshot.totalCompletedCount += byType.completedCount;
+        snapshot.totalSucceededCount += byType.succeededCount;
+        snapshot.totalFailedCount += byType.failedCount;
+    }
+
+    {
+        std::scoped_lock lock(queueMutex_);
+        snapshot.queuedHigh = highQueue_.size();
+        snapshot.queuedMedium = mediumQueue_.size();
+        snapshot.queuedLow = lowQueue_.size();
+    }
+
+    {
+        std::scoped_lock lock(resultMutex_);
+        snapshot.completedResultsQueued = completedResults_.size();
+    }
+
+    return snapshot;
 }

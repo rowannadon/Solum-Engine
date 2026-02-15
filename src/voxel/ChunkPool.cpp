@@ -114,6 +114,27 @@ std::size_t ChunkPool::freeSlots() const {
     return freeList_.size();
 }
 
+ChunkPoolDebugSnapshot ChunkPool::debugSnapshot() const {
+    std::scoped_lock lock(mutex_);
+
+    ChunkPoolDebugSnapshot snapshot;
+    snapshot.capacity = capacity_;
+    snapshot.freeSlots = freeList_.size();
+    snapshot.usedSlots = capacity_ - snapshot.freeSlots;
+
+    for (const SlotMeta& slot : slots_) {
+        if (!slot.allocated) {
+            continue;
+        }
+        if (slot.pinCount > 0u) {
+            ++snapshot.pinnedSlots;
+            snapshot.totalPinCount += static_cast<uint64_t>(slot.pinCount);
+        }
+    }
+
+    return snapshot;
+}
+
 bool ChunkPool::validateLocked(UncompressedChunkHandle handle) const {
     if (!handle.isValid()) {
         return false;
