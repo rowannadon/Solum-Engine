@@ -1,5 +1,12 @@
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 
+#include "solum_engine/render/MeshletManager.h"
+
+void VoxelPipeline::setDrawConfig(uint32_t meshletVertices, uint32_t totalMeshletCount) {
+    meshletVertexCount = meshletVertices;
+    meshletCount = totalMeshletCount;
+}
+
 bool VoxelPipeline::createResources() {
     int width, height;
     glfwGetFramebufferSize(context->getWindow(), &width, &height);
@@ -29,31 +36,31 @@ bool VoxelPipeline::createResources() {
     depthTextureViewDesc.format = depthTextureFormat;
     TextureView depthTextureView = tex->createTextureView("depth_texture", "depth_view", depthTextureViewDesc);
 
-        TextureFormat multiSampleTextureFormat = context->getSurfaceFormat();
+    TextureFormat multiSampleTextureFormat = context->getSurfaceFormat();
 
-        TextureDescriptor multiSampleTextureDesc = Default;
-        multiSampleTextureDesc.dimension = TextureDimension::_2D;
-        multiSampleTextureDesc.format = multiSampleTextureFormat;
-        multiSampleTextureDesc.mipLevelCount = 1;
+    TextureDescriptor multiSampleTextureDesc = Default;
+    multiSampleTextureDesc.dimension = TextureDimension::_2D;
+    multiSampleTextureDesc.format = multiSampleTextureFormat;
+    multiSampleTextureDesc.mipLevelCount = 1;
     multiSampleTextureDesc.sampleCount = 4;
-        multiSampleTextureDesc.size = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
-        multiSampleTextureDesc.usage = TextureUsage::RenderAttachment;
-        multiSampleTextureDesc.viewFormatCount = 0;
-        multiSampleTextureDesc.viewFormats = nullptr;
+    multiSampleTextureDesc.size = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+    multiSampleTextureDesc.usage = TextureUsage::RenderAttachment;
+    multiSampleTextureDesc.viewFormatCount = 0;
+    multiSampleTextureDesc.viewFormats = nullptr;
     Texture multiSampleTexture = tex->createTexture("multisample_texture", multiSampleTextureDesc);
 
-        TextureViewDescriptor multiSampleTextureViewDesc = Default;
-        multiSampleTextureViewDesc.aspect = TextureAspect::All;
-        multiSampleTextureViewDesc.baseArrayLayer = 0;
-        multiSampleTextureViewDesc.arrayLayerCount = 1;
-        multiSampleTextureViewDesc.baseMipLevel = 0;
-        multiSampleTextureViewDesc.mipLevelCount = 1;
-        multiSampleTextureViewDesc.dimension = TextureViewDimension::_2D;
-        multiSampleTextureViewDesc.format = multiSampleTextureFormat;
-        TextureView multiSampleTextureView = tex->createTextureView("multisample_texture", "multisample_view", multiSampleTextureViewDesc);
+    TextureViewDescriptor multiSampleTextureViewDesc = Default;
+    multiSampleTextureViewDesc.aspect = TextureAspect::All;
+    multiSampleTextureViewDesc.baseArrayLayer = 0;
+    multiSampleTextureViewDesc.arrayLayerCount = 1;
+    multiSampleTextureViewDesc.baseMipLevel = 0;
+    multiSampleTextureViewDesc.mipLevelCount = 1;
+    multiSampleTextureViewDesc.dimension = TextureViewDimension::_2D;
+    multiSampleTextureViewDesc.format = multiSampleTextureFormat;
+    TextureView multiSampleTextureView = tex->createTextureView("multisample_texture", "multisample_view", multiSampleTextureViewDesc);
 
     return multiSampleTextureView != nullptr && depthTextureView != nullptr;
-};
+}
 
 void VoxelPipeline::removeResources() {
     tex->removeTextureView("multisample_view");
@@ -63,49 +70,10 @@ void VoxelPipeline::removeResources() {
     tex->removeTexture("depth_texture");
 
     pip->deleteBindGroup("global_uniforms_bg");
-};
+}
 
 bool VoxelPipeline::createPipeline() {
     PipelineConfig config;
-
-    // Allocate space for the 9 vertex attributes we actually use
-    config.vertexAttributes.resize(9);
-    config.vertexAttributes[0].shaderLocation = 0;
-    config.vertexAttributes[0].format = VertexFormat::Uint16;
-    config.vertexAttributes[0].offset = offsetof(VertexAttributes, x);
-
-    config.vertexAttributes[1].shaderLocation = 1;
-    config.vertexAttributes[1].format = VertexFormat::Uint16;
-    config.vertexAttributes[1].offset = offsetof(VertexAttributes, y);
-
-    config.vertexAttributes[2].shaderLocation = 2;
-    config.vertexAttributes[2].format = VertexFormat::Uint16;
-    config.vertexAttributes[2].offset = offsetof(VertexAttributes, z);
-
-    config.vertexAttributes[3].shaderLocation = 3;
-    config.vertexAttributes[3].format = VertexFormat::Uint16;
-    config.vertexAttributes[3].offset = offsetof(VertexAttributes, u);
-
-    config.vertexAttributes[4].shaderLocation = 4;
-    config.vertexAttributes[4].format = VertexFormat::Uint16;
-    config.vertexAttributes[4].offset = offsetof(VertexAttributes, v);
-
-    config.vertexAttributes[5].shaderLocation = 5;
-    config.vertexAttributes[5].format = VertexFormat::Uint16;
-    config.vertexAttributes[5].offset = offsetof(VertexAttributes, material);
-
-    config.vertexAttributes[6].shaderLocation = 6;
-    config.vertexAttributes[6].format = VertexFormat::Uint8;
-    config.vertexAttributes[6].offset = offsetof(VertexAttributes, n_x);
-
-    config.vertexAttributes[7].shaderLocation = 7;
-    config.vertexAttributes[7].format = VertexFormat::Uint8;
-    config.vertexAttributes[7].offset = offsetof(VertexAttributes, n_y);
-
-    config.vertexAttributes[8].shaderLocation = 8;
-    config.vertexAttributes[8].format = VertexFormat::Uint8;
-    config.vertexAttributes[8].offset = offsetof(VertexAttributes, n_z);
-
 
     config.shaderPath = SHADER_DIR "/voxel.wgsl";
     config.colorFormat = context->getSurfaceFormat();
@@ -114,20 +82,29 @@ bool VoxelPipeline::createPipeline() {
     config.cullMode = CullMode::None;
     config.depthWriteEnabled = true;
     config.depthCompare = CompareFunction::Less;
-    config.fragmentShaderName = "fs_main";  // Fragment shader entry point
-    config.vertexShaderName = "vs_main";  // Vertex shader entry point
-    config.useVertexBuffers = true;
+    config.fragmentShaderName = "fs_main";
+    config.vertexShaderName = "vs_main";
+    config.useVertexBuffers = false;
     config.useCustomBlending = false;
     config.alphaToCoverageEnabled = false;
 
-    // uniforms binding
+    std::vector<BindGroupLayoutEntry> globalUniforms(3, Default);
+
     int i = 0;
-    std::vector<BindGroupLayoutEntry> globalUniforms(1, Default);
     globalUniforms[i].binding = i;
     globalUniforms[i].visibility = ShaderStage::Vertex | ShaderStage::Fragment;
     globalUniforms[i].buffer.type = BufferBindingType::Uniform;
     globalUniforms[i].buffer.minBindingSize = sizeof(FrameUniforms);
     i++;
+
+    globalUniforms[i].binding = i;
+    globalUniforms[i].visibility = ShaderStage::Vertex;
+    globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
+    i++;
+
+    globalUniforms[i].binding = i;
+    globalUniforms[i].visibility = ShaderStage::Vertex;
+    globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
 
     config.bindGroupLayouts.push_back(
         pip->createBindGroupLayout("global_uniforms", globalUniforms)
@@ -139,14 +116,33 @@ bool VoxelPipeline::createPipeline() {
 }
 
 bool VoxelPipeline::createBindGroup() {
-    std::vector<BindGroupEntry> bindings(1);
+    Buffer uniformBuffer = buf->getBuffer("uniform_buffer");
+    Buffer meshDataBuffer = buf->getBuffer(MeshletManager::kMeshDataBufferName);
+    Buffer metadataBuffer = buf->getBuffer(MeshletManager::kMeshMetadataBufferName);
+
+    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer) {
+        return false;
+    }
+
+    std::vector<BindGroupEntry> bindings(3);
 
     int i = 0;
     bindings[i].binding = i;
-    bindings[i].buffer = buf->getBuffer("uniform_buffer");
+    bindings[i].buffer = uniformBuffer;
     bindings[i].offset = 0;
     bindings[i].size = sizeof(FrameUniforms);
     i++;
+
+    bindings[i].binding = i;
+    bindings[i].buffer = meshDataBuffer;
+    bindings[i].offset = 0;
+    bindings[i].size = meshDataBuffer.getSize();
+    i++;
+
+    bindings[i].binding = i;
+    bindings[i].buffer = metadataBuffer;
+    bindings[i].offset = 0;
+    bindings[i].size = metadataBuffer.getSize();
 
     BindGroup bindGroup = pip->createBindGroup("global_uniforms_bg", "global_uniforms", bindings);
 
@@ -191,19 +187,9 @@ bool VoxelPipeline::render(
 
     voxelRenderPass.setBindGroup(0, pip->getBindGroup("global_uniforms_bg"), 0, nullptr);
 
-    Buffer vertexBuffer = buf->getBuffer("vertex_buffer");
-    Buffer indexBuffer = buf->getBuffer("index_buffer");
-    voxelRenderPass.setVertexBuffer(0, vertexBuffer, 0, vertexBuffer.getSize());
-    voxelRenderPass.setIndexBuffer(indexBuffer, IndexFormat::Uint16, 0, indexBuffer.getSize());
-
-    voxelRenderPass.drawIndexed(indexBuffer.getSize() / sizeof(uint16_t), 1, 0, 0, 0);
-
-    Buffer vertexBuffer2 = buf->getBuffer("vertex_buffer2");
-    Buffer indexBuffer2 = buf->getBuffer("index_buffer2");
-    voxelRenderPass.setVertexBuffer(0, vertexBuffer2, 0, vertexBuffer2.getSize());
-    voxelRenderPass.setIndexBuffer(indexBuffer2, IndexFormat::Uint16, 0, indexBuffer2.getSize());
-
-    voxelRenderPass.drawIndexed(indexBuffer2.getSize() / sizeof(uint16_t), 1, 0, 0, 0);
+    if (meshletVertexCount > 0 && meshletCount > 0) {
+        voxelRenderPass.draw(meshletVertexCount, meshletCount, 0, 0);
+    }
 
     if (overlayCallback) {
         overlayCallback(voxelRenderPass);

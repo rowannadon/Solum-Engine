@@ -11,7 +11,7 @@ void BufferManager::deleteBuffer(std::string bufferName) {
     }
 }
 
-void BufferManager::writeBuffer(const std::string bufferName, uint64_t bufferOffset, void* data, size_t size) {
+void BufferManager::writeBuffer(const std::string bufferName, uint64_t bufferOffset, const void* data, size_t size) {
     Buffer buffer = getBuffer(bufferName);
     if (buffer) {
         queue.writeBuffer(buffer, bufferOffset, data, size);

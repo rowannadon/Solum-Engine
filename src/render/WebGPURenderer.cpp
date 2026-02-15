@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <random>
 #include <thread>
 #include <chrono>
@@ -15,10 +16,7 @@ bool WebGPURenderer::initialize() {
 	pipelineManager = std::make_unique<PipelineManager>(context->getDevice(), context->getSurfaceFormat());
 	bufferManager = std::make_unique<BufferManager>(context->getDevice(), context->getQueue());
 	textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
-
-	BufferManager* buf = bufferManager.get();
-	TextureManager* tex = textureManager.get();
-	PipelineManager* pip = pipelineManager.get();
+	meshletManager = std::make_unique<MeshletManager>();
 
 	{
 		BufferDescriptor desc = Default;
@@ -33,7 +31,7 @@ bool WebGPURenderer::initialize() {
     std::random_device dev;
     std::mt19937 rng(dev());
     std::uniform_int_distribution<std::mt19937::result_type> dist(1,10);
-    std::uniform_int_distribution<std::mt19937::result_type> dist2(1,1000);
+    std::uniform_int_distribution<std::mt19937::result_type> dist2(1,10);
 
 	UnpackedBlockMaterial mat;
 	mat.id = 1;
@@ -81,7 +79,7 @@ bool WebGPURenderer::initialize() {
 	neighbors.push_back(nullptr);
 	neighbors.push_back(nullptr);
 
-	auto [vertexData, indexData] = mesher.mesh(chunk, neighbors);
+	std::vector<Meshlet> chunkMeshlets = mesher.mesh(chunk, neighbors);
 
 	std::vector<Chunk*> neighbors2;
 	neighbors2.push_back(nullptr);
@@ -91,62 +89,35 @@ bool WebGPURenderer::initialize() {
 	neighbors2.push_back(nullptr);
 	neighbors2.push_back(nullptr);
 
-	auto [vertexData2, indexData2] = mesher.mesh(chunk2, neighbors2);
+	std::vector<Meshlet> chunkMeshlets2 = mesher.mesh(chunk2, neighbors2);
 
-	vertexCount = static_cast<uint32_t>(vertexData.size());
-    vertexCount2 = static_cast<uint32_t>(vertexData2.size());
-
-
-	{
-		BufferDescriptor desc = Default;
-		desc.label = StringView("vertex buffer");
-		desc.size = sizeof(VertexAttributes) * vertexCount;
-		desc.usage = BufferUsage::CopyDst | BufferUsage::Vertex;
-		desc.mappedAtCreation = false;
-		Buffer vbo = bufferManager->createBuffer("vertex_buffer", desc);
-		if (!vbo) return false;
+	uint32_t totalMeshletCount = static_cast<uint32_t>(chunkMeshlets.size() + chunkMeshlets2.size());
+	uint32_t totalQuadCount = 0;
+	for (const Meshlet& meshlet : chunkMeshlets) {
+		totalQuadCount += meshlet.quadCount;
+	}
+	for (const Meshlet& meshlet : chunkMeshlets2) {
+		totalQuadCount += meshlet.quadCount;
 	}
 
-    {
-        BufferDescriptor desc = Default;
-        desc.label = StringView("vertex buffer2");
-        desc.size = sizeof(VertexAttributes) * vertexCount2;
-        desc.usage = BufferUsage::CopyDst | BufferUsage::Vertex;
-        desc.mappedAtCreation = false;
-        Buffer vbo = bufferManager->createBuffer("vertex_buffer2", desc);
-        if (!vbo) return false;
-    }
+	const uint32_t meshletCapacity = std::max(totalMeshletCount + 16u, 64u);
+	const uint32_t quadCapacity = std::max(totalQuadCount + 1024u, meshletCapacity * MESHLET_QUAD_CAPACITY);
 
-    indexCount = static_cast<uint32_t>(indexData.size());
-    indexCount2 = static_cast<uint32_t>(indexData2.size());
-
-	{
-		BufferDescriptor desc = Default;
-		desc.label = StringView("index buffer");
-		desc.size = sizeof(uint16_t) * indexCount;
-		desc.usage = BufferUsage::CopyDst | BufferUsage::Index;
-		desc.mappedAtCreation = false;
-		Buffer ibo = bufferManager->createBuffer("index_buffer", desc);
-		if (!ibo) return false;
+	if (!meshletManager->initialize(bufferManager.get(), meshletCapacity, quadCapacity)) {
+		std::cerr << "Failed to create meshlet buffers." << std::endl;
+		return false;
 	}
-    
-    {
-        BufferDescriptor desc = Default;
-        desc.label = StringView("index buffer2");
-        desc.size = sizeof(uint16_t) * indexCount2;
-        desc.usage = BufferUsage::CopyDst | BufferUsage::Index;
-        desc.mappedAtCreation = false;
-        Buffer ibo = bufferManager->createBuffer("index_buffer2", desc);
-        if (!ibo) return false;
-    }
-    
-	bufferManager->writeBuffer("vertex_buffer", 0, vertexData.data(), vertexCount * sizeof(VertexAttributes));
-	bufferManager->writeBuffer("index_buffer", 0, indexData.data(), indexCount * sizeof(uint16_t));
-    
-    bufferManager->writeBuffer("vertex_buffer2", 0, vertexData2.data(), vertexCount2 * sizeof(VertexAttributes));
-    bufferManager->writeBuffer("index_buffer2", 0, indexData2.data(), indexCount2 * sizeof(uint16_t));
+
+	meshletManager->clear();
+	meshletManager->registerMeshletGroup(chunkMeshlets);
+	meshletManager->registerMeshletGroup(chunkMeshlets2);
+	if (!meshletManager->upload()) {
+		std::cerr << "Failed to upload meshlet buffers." << std::endl;
+		return false;
+	}
 
 	voxelPipeline.init(bufferManager.get(), textureManager.get(), pipelineManager.get(), context.get());
+	voxelPipeline.setDrawConfig(meshletManager->getVerticesPerMeshlet(), meshletManager->getMeshletCount());
 	if (!voxelPipeline.createResources()) {
 		std::cerr << "Failed to create voxel rendering resources." << std::endl;
 		return false;

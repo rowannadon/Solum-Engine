@@ -27,6 +27,10 @@ bool Application::Initialize() {
     uniforms.inverseProjectionMatrix = glm::mat4x4(1.0);
     uniforms.viewMatrix = glm::mat4x4(1.0);
     uniforms.inverseViewMatrix = glm::mat4x4(1.0);
+    uniforms.renderFlags[0] = 0u;
+    uniforms.renderFlags[1] = 0u;
+    uniforms.renderFlags[2] = 0u;
+    uniforms.renderFlags[3] = 0u;
 
     camera.position = glm::vec3(10.0, 10.0, 0.0);
     camera.updateCameraVectors();
@@ -336,6 +340,14 @@ void Application::onKey(int key, int scancode, int action, int mods) {
             cursorCaptured = false;
             mouseState.firstMouse = true;
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        }
+        break;
+    case GLFW_KEY_F6:
+        if (action == GLFW_PRESS) {
+            meshletDebugView = !meshletDebugView;
+            uniforms.renderFlags[0] = meshletDebugView ? 1u : 0u;
+            buf->writeBuffer("uniform_buffer", offsetof(FrameUniforms, renderFlags), uniforms.renderFlags, sizeof(uniforms.renderFlags));
+            std::cout << "Meshlet debug view: " << (meshletDebugView ? "ON" : "OFF") << std::endl;
         }
         break;
     }

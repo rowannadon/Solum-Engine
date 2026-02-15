@@ -2,6 +2,7 @@
 #include <GLFW/glfw3.h>
 #include <unordered_map>
 #include <future>
+#include <memory>
 #include <glm/glm.hpp>
 #include <glm/ext.hpp>
 #include "solum_engine/render/PipelineManager.h"
@@ -12,7 +13,7 @@
 #include "solum_engine/resources/Coords.h"
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
-#include "solum_engine/render/VertexAttributes.h"
+#include "solum_engine/render/MeshletManager.h"
 #include "solum_engine/voxel/Chunk.h"
 #include "solum_engine/voxel/ChunkMesher.h"
 
@@ -31,18 +32,13 @@ private:
     Chunk chunk;
     Chunk chunk2;
     ChunkMesher mesher;
+    std::unique_ptr<MeshletManager> meshletManager;
 
     VoxelPipeline voxelPipeline;
     bool resizePending = false;
 
     // Add this for ImGUI support
     RenderPassEncoder currentCommandEncoder = nullptr;
-
-    uint32_t vertexCount;
-    uint32_t indexCount;
-
-    uint32_t vertexCount2;
-    uint32_t indexCount2;
 
 public:
     WebGPURenderer()
