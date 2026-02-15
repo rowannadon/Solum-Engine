@@ -337,7 +337,7 @@ bool WebGPURenderer::refreshVoxelBindGroup() {
         i++;
 
         bindings[i].binding = i;
-        bindings[i].buffer = bufferManager->getBuffer("meshlet_metadata_storage");
+        bindings[i].buffer = bufferManager->getBuffer(page.metadataBufferName);
         bindings[i].offset = 0;
         bindings[i].size = std::numeric_limits<uint64_t>::max();
         i++;
@@ -364,13 +364,25 @@ bool WebGPURenderer::refreshVoxelBindGroup() {
 bool WebGPURenderer::createMeshletPage(uint32_t pageIndex) {
     MeshletPage page;
     if (pageIndex == 0u) {
+        page.metadataBufferName = "meshlet_metadata_storage";
         page.vertexBufferName = "meshlet_vertex_storage";
         page.indexBufferName = "meshlet_index_storage";
         page.bindGroupName = "global_uniforms_bg";
     } else {
+        page.metadataBufferName = "meshlet_metadata_storage_" + std::to_string(pageIndex);
         page.vertexBufferName = "meshlet_vertex_storage_" + std::to_string(pageIndex);
         page.indexBufferName = "meshlet_index_storage_" + std::to_string(pageIndex);
         page.bindGroupName = "global_uniforms_bg_page_" + std::to_string(pageIndex);
+    }
+
+    BufferDescriptor metaDesc = Default;
+    metaDesc.label = StringView("meshlet metadata storage page");
+    metaDesc.size = static_cast<uint64_t>(meshletMetadataCapacity_) * sizeof(GpuMeshletMetadata);
+    metaDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    metaDesc.mappedAtCreation = false;
+    bufferManager->deleteBuffer(page.metadataBufferName);
+    if (!bufferManager->createBuffer(page.metadataBufferName, metaDesc)) {
+        return false;
     }
 
     BufferDescriptor vertexDesc = Default;
@@ -412,6 +424,7 @@ bool WebGPURenderer::initializeMeshletBuffers(uint32_t meshletCapacity, uint32_t
     meshletMetadataCapacity_ = std::max(1u, metadataCapacity);
 
     for (const MeshletPage& page : meshletPages_) {
+        bufferManager->deleteBuffer(page.metadataBufferName);
         bufferManager->deleteBuffer(page.vertexBufferName);
         bufferManager->deleteBuffer(page.indexBufferName);
         pipelineManager->deleteBindGroup(page.bindGroupName);
@@ -420,16 +433,6 @@ bool WebGPURenderer::initializeMeshletBuffers(uint32_t meshletCapacity, uint32_t
 
     meshletCapacityWarningEmitted_ = false;
     metadataCapacityWarningEmitted_ = false;
-
-    BufferDescriptor metaDesc = Default;
-    metaDesc.label = StringView("meshlet metadata storage");
-    metaDesc.size = static_cast<uint64_t>(meshletMetadataCapacity_) * sizeof(GpuMeshletMetadata);
-    metaDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
-    metaDesc.mappedAtCreation = false;
-    bufferManager->deleteBuffer("meshlet_metadata_storage");
-    if (!bufferManager->createBuffer("meshlet_metadata_storage", metaDesc)) {
-        return false;
-    }
 
     for (uint32_t pageIndex = 0; pageIndex < kInitialMeshletPageCount; ++pageIndex) {
         if (!createMeshletPage(pageIndex)) {
@@ -827,7 +830,6 @@ void WebGPURenderer::processPendingRegionBuilds() {
 
 void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cameraPos) {
     const glm::vec2 cameraXY{cameraPos.x, cameraPos.y};
-    frameMeshletMetadata_.clear();
     if (meshletPages_.empty()) {
         return;
     }
@@ -887,58 +889,37 @@ void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cam
         }
     }
 
-    struct PageDrawBatch {
-        uint32_t firstInstance = 0;
-        uint32_t instanceCount = 0;
-    };
-    std::vector<PageDrawBatch> pageDrawBatches(meshletPages_.size());
+    uint32_t remainingGlobalBudget = kMaxDrawMeshletsPerFrame;
     for (uint32_t pageIndex = 0; pageIndex < meshletPages_.size(); ++pageIndex) {
-        const auto& pageMetadata = meshletMetadataByPage[pageIndex];
+        if (remainingGlobalBudget == 0) {
+            break;
+        }
+
+        std::vector<GpuMeshletMetadata>& pageMetadata = meshletMetadataByPage[pageIndex];
         if (pageMetadata.empty()) {
             continue;
         }
-        PageDrawBatch& batch = pageDrawBatches[pageIndex];
-        batch.firstInstance = static_cast<uint32_t>(frameMeshletMetadata_.size());
-        batch.instanceCount = static_cast<uint32_t>(pageMetadata.size());
-        frameMeshletMetadata_.insert(frameMeshletMetadata_.end(), pageMetadata.begin(), pageMetadata.end());
-    }
 
-    if (frameMeshletMetadata_.empty()) {
-        return;
-    }
-
-    uint32_t drawBudget = static_cast<uint32_t>(frameMeshletMetadata_.size());
-    if (drawBudget > meshletMetadataCapacity_) {
-        if (!metadataCapacityWarningEmitted_) {
-            std::cerr << "Meshlet metadata capacity reached (" << meshletMetadataCapacity_
-                      << " instances/frame). Culling excess meshlets this frame." << std::endl;
-            metadataCapacityWarningEmitted_ = true;
+        uint32_t drawInstanceCount = static_cast<uint32_t>(pageMetadata.size());
+        if (drawInstanceCount > meshletMetadataCapacity_) {
+            if (!metadataCapacityWarningEmitted_) {
+                std::cerr << "Meshlet metadata capacity reached (" << meshletMetadataCapacity_
+                          << " instances/page). Culling excess meshlets." << std::endl;
+                metadataCapacityWarningEmitted_ = true;
+            }
+            drawInstanceCount = meshletMetadataCapacity_;
         }
-        drawBudget = meshletMetadataCapacity_;
-    }
-    if (drawBudget > kMaxDrawMeshletsPerFrame) {
-        drawBudget = kMaxDrawMeshletsPerFrame;
-    }
-
-    bufferManager->writeBuffer(
-        "meshlet_metadata_storage",
-        0,
-        frameMeshletMetadata_.data(),
-        static_cast<std::size_t>(drawBudget) * sizeof(GpuMeshletMetadata)
-    );
-
-    uint32_t remaining = drawBudget;
-    for (uint32_t pageIndex = 0; pageIndex < meshletPages_.size() && remaining > 0; ++pageIndex) {
-        const PageDrawBatch& batch = pageDrawBatches[pageIndex];
-        if (batch.instanceCount == 0 || batch.firstInstance >= drawBudget) {
-            continue;
-        }
-
-        const uint32_t availableFromBatch = std::min(batch.instanceCount, drawBudget - batch.firstInstance);
-        const uint32_t drawInstanceCount = std::min(availableFromBatch, remaining);
+        drawInstanceCount = std::min(drawInstanceCount, remainingGlobalBudget);
         if (drawInstanceCount == 0) {
             continue;
         }
+
+        bufferManager->writeBuffer(
+            meshletPages_[pageIndex].metadataBufferName,
+            0,
+            pageMetadata.data(),
+            static_cast<std::size_t>(drawInstanceCount) * sizeof(GpuMeshletMetadata)
+        );
 
         const BindGroup pageBindGroup = pipelineManager->getBindGroup(meshletPages_[pageIndex].bindGroupName);
         if (!pageBindGroup) {
@@ -946,8 +927,8 @@ void WebGPURenderer::drawRegionSet(RenderPassEncoder& pass, const glm::vec3& cam
         }
 
         pass.setBindGroup(0, pageBindGroup, 0, nullptr);
-        pass.draw(MeshData::kMeshletIndexCapacity, drawInstanceCount, 0, batch.firstInstance);
-        remaining -= drawInstanceCount;
+        pass.draw(MeshData::kMeshletIndexCapacity, drawInstanceCount, 0, 0);
+        remainingGlobalBudget -= drawInstanceCount;
     }
 }
 
@@ -965,7 +946,7 @@ bool WebGPURenderer::initialize() {
 
     const WorldTuningParameters tuning = kDefaultWorldTuningParameters;
 
-    const int configuredViewDistanceChunks = std::clamp(tuning.viewDistanceChunks, 1, 64);
+    const int configuredViewDistanceChunks = std::clamp(tuning.viewDistanceChunks, 1, 500);
     regionRadius_ = std::max(1, (configuredViewDistanceChunks + (REGION_COLS - 1)) / REGION_COLS);
 
     lodSteps_ = tuning.regionLodSteps;
@@ -1010,7 +991,6 @@ bool WebGPURenderer::initialize() {
     const std::size_t expectedRegionCount = static_cast<std::size_t>((regionRadius_ * 2 + 1) * (regionRadius_ * 2 + 1));
     renderedRegions_.reserve(expectedRegionCount * 2);
     drawOrder_.reserve(expectedRegionCount);
-    frameMeshletMetadata_.reserve(kInitialMeshletMetadataCapacity);
 
     {
         BufferDescriptor desc = Default;

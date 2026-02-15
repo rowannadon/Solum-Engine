@@ -24,7 +24,7 @@ struct JobResult;
 inline constexpr int kRegionLodCount = 6;
 
 struct WorldTuningParameters {
-    int viewDistanceChunks = 200;
+    int viewDistanceChunks = 50;
     int verticalChunkMin = 0;
     int verticalChunkMax = COLUMN_CHUNKS_Z - 1;
 

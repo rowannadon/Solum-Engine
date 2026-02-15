@@ -58,6 +58,7 @@ private:
     };
 
     struct MeshletPage {
+        std::string metadataBufferName;
         std::string vertexBufferName;
         std::string indexBufferName;
         std::string bindGroupName;
@@ -116,7 +117,6 @@ private:
     bool buildInFlight_ = false;
     std::vector<MeshletPage> meshletPages_;
     uint32_t meshletSlotsPerPage_ = 0;
-    std::vector<GpuMeshletMetadata> frameMeshletMetadata_;
     uint32_t meshletMetadataCapacity_ = 0;
     bool meshletCapacityWarningEmitted_ = false;
     bool metadataCapacityWarningEmitted_ = false;
