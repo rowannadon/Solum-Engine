@@ -23,7 +23,7 @@ std::vector<Meshlet> ChunkMesher::mesh(Chunk& chunk, const std::vector<Chunk*>& 
     std::array<BlockMaterial, kPaddedBlockCount> paddedBlockData;
     paddedBlockData.fill(BlockMaterial{ 0 });
 
-    BlockCoord chunkOrigin = chunk_to_block_origin(chunk.pos);
+    BlockCoord chunkOrigin = chunk_to_block_origin(chunk.getCoord());
 
     auto paddedIndex = [&](int x, int y, int z) {
         return (x * kPaddedPlaneArea) + (y * kChunkSizePadded) + z;

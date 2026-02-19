@@ -16,6 +16,7 @@
 #include "solum_engine/render/MeshletManager.h"
 #include "solum_engine/voxel/Chunk.h"
 #include "solum_engine/voxel/ChunkMesher.h"
+#include "solum_engine/voxel/RegionManager.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>

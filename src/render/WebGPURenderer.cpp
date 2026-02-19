@@ -18,6 +18,28 @@ bool WebGPURenderer::initialize() {
 	textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
 	meshletManager = std::make_unique<MeshletManager>();
 
+	jobsystem::JobSystem::Config jsConfig;
+    jsConfig.worker_threads = 4;
+
+    jobsystem::JobSystem jobsys(jsConfig);
+
+	RegionManager rm(&jobsys);
+
+	rm.addRegion(RegionCoord(glm::ivec2(0)));
+
+	rm.update();
+
+	Region* region = rm.getRegion(RegionCoord(glm::ivec2(0)));
+	if (region) {
+		Column* c = region->getColumn(15, 15);
+		if (c) {
+			Chunk* ch = c->getChunk(28);
+			if (ch) {
+				std::cout << ch->getCoord() << std::endl;
+			}
+		}
+	}
+
 	{
 		BufferDescriptor desc = Default;
 		desc.label = StringView("uniform buffer");

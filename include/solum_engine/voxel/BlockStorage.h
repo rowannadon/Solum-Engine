@@ -2,13 +2,13 @@
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/resources/Coords.h"
 class BlockStorage {
-    BlockMaterial data[CHUNK_BLOCKS];
+    std::array<BlockMaterial, CHUNK_TOTAL_BLOCKS> data;
 public:
     bool setBlock(BlockCoord pos, UnpackedBlockMaterial mat);
     UnpackedBlockMaterial getBlock(BlockCoord pos);
 
     BlockMaterial* getData() {
-        return data;
+        return data.data();
     }
 
 private:

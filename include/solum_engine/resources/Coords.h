@@ -1,6 +1,10 @@
 #pragma once
 #include "Constants.h"
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <ostream>
+#include <cassert>
 #include <glm/glm.hpp>
 
 // --------------------------------------------
@@ -11,7 +15,6 @@ inline constexpr int32_t floor_div(int32_t a, int32_t b) {
     int32_t q = a / b;
     int32_t r = a % b;
     if (r != 0 && r < 0) {
-        // For positive b, adjust toward -infinity.
         --q;
     }
     return q;
@@ -51,7 +54,6 @@ struct GridCoord3 {
         return a.v.x == b.v.x && a.v.y == b.v.y && a.v.z == b.v.z;
     }
 
-    // Lexicographic ordering for ordered containers.
     friend constexpr bool operator<(const GridCoord3& a, const GridCoord3& b) {
         if (a.v.x != b.v.x) return a.v.x < b.v.x;
         if (a.v.y != b.v.y) return a.v.y < b.v.y;
@@ -81,17 +83,28 @@ struct GridCoord2 {
 };
 
 // Common aliases
-using RegionCoord = GridCoord2<RegionTag>; // region indices in region-grid (2D)
-using ColumnCoord = GridCoord2<ColumnTag>; // column indices in column-grid (2D: x,y)
-using ChunkCoord  = GridCoord3<ChunkTag>;  // chunk indices in chunk-grid (3D: x,y,z)
-using BlockCoord  = GridCoord3<BlockTag>;  // block indices in block-grid (3D: x,y,z)
+using RegionCoord = GridCoord2<RegionTag>;
+using ColumnCoord = GridCoord2<ColumnTag>;
+using ChunkCoord  = GridCoord3<ChunkTag>;
+using BlockCoord  = GridCoord3<BlockTag>;
 
+template <typename Tag>
+inline std::ostream& operator<<(std::ostream& os, const GridCoord2<Tag>& coord) {
+    os << "(" << coord.v.x << ", " << coord.v.y << ")";
+    return os;
+}
+
+template <typename Tag>
+inline std::ostream& operator<<(std::ostream& os, const GridCoord3<Tag>& coord) {
+    os << "(" << coord.v.x << ", " << coord.v.y << ", " << coord.v.z << ")";
+    return os;
+}
 
 // --------------------------------------------
-// Conversions
+// Conversions (world/grid relations)
 // --------------------------------------------
 
-// Block -> Chunk (each chunk covers 32^3 blocks)
+// Block -> Chunk (each chunk covers CHUNK_SIZE^3 blocks)
 inline constexpr ChunkCoord block_to_chunk(BlockCoord b) {
     return ChunkCoord{
         floor_div(b.v.x, CHUNK_SIZE),
@@ -105,7 +118,7 @@ inline constexpr ColumnCoord chunk_to_column(ChunkCoord c) {
     return ColumnCoord{ c.v.x, c.v.y };
 }
 
-// Column -> Region (regions are 16x16 columns)
+// Column -> Region (regions are REGION_COLS x REGION_COLS columns)
 inline constexpr RegionCoord column_to_region(ColumnCoord col) {
     return RegionCoord{
         floor_div(col.v.x, REGION_COLS),
@@ -118,7 +131,7 @@ inline constexpr RegionCoord chunk_to_region(ChunkCoord c) {
     return column_to_region(chunk_to_column(c));
 }
 
-// Local column index within its region: [0..15] x [0..15]
+// Local column index within its region: [0..REGION_COLS-1] x [0..REGION_COLS-1]
 inline constexpr glm::ivec2 column_local_in_region(ColumnCoord col) {
     return glm::ivec2{
         floor_mod(col.v.x, REGION_COLS),
@@ -126,6 +139,7 @@ inline constexpr glm::ivec2 column_local_in_region(ColumnCoord col) {
     };
 }
 
+// Local block index within its chunk: [0..CHUNK_SIZE-1]^3
 inline constexpr glm::ivec3 block_local_in_chunk(BlockCoord b) {
     return glm::ivec3{
         floor_mod(b.v.x, CHUNK_SIZE),
@@ -150,3 +164,75 @@ inline constexpr BlockCoord chunk_local_to_block(ChunkCoord c, glm::ivec3 local)
         origin.v.z + local.z
     };
 }
+
+// --------------------------------------------
+// Forward conversions (needed for eager construction)
+// --------------------------------------------
+
+// Region -> Column origin (minimum global column coord covered by that region).
+inline constexpr ColumnCoord region_to_column_origin(RegionCoord r) {
+    return ColumnCoord{
+        r.v.x * REGION_COLS,
+        r.v.y * REGION_COLS
+    };
+}
+
+// Region + local (x,y) -> global ColumnCoord.
+inline constexpr ColumnCoord region_local_to_column(RegionCoord r, int32_t local_x, int32_t local_y) {
+    ColumnCoord base = region_to_column_origin(r);
+    return ColumnCoord{
+        base.v.x + local_x,
+        base.v.y + local_y
+    };
+}
+
+// Column + local z -> global ChunkCoord.
+// In your setup, local_z is [0..COLUMN_HEIGHT_CHUNKS-1] and equals the chunk's global z.
+inline constexpr ChunkCoord column_local_to_chunk(ColumnCoord col, int32_t local_z) {
+    return ChunkCoord{ col.v.x, col.v.y, local_z };
+}
+
+// Region + local (x,y,z) -> global ChunkCoord.
+inline constexpr ChunkCoord region_local_to_chunk(RegionCoord r, int32_t local_x, int32_t local_y, int32_t local_z) {
+    return column_local_to_chunk(region_local_to_column(r, local_x, local_y), local_z);
+}
+
+// Optional: local chunk index within its column (since global z == local z here).
+inline constexpr int32_t chunk_local_in_column(ChunkCoord c) {
+    return c.v.z;
+}
+
+// --------------------------------------------
+// Hashing
+// --------------------------------------------
+namespace coord_hash_detail {
+inline std::size_t hash_combine(std::size_t seed, std::size_t value) noexcept {
+#if SIZE_MAX > UINT32_MAX
+    constexpr std::size_t kGoldenRatio = 0x9e3779b97f4a7c15ull;
+#else
+    constexpr std::size_t kGoldenRatio = 0x9e3779b9u;
+#endif
+    return seed ^ (value + kGoldenRatio + (seed << 6) + (seed >> 2));
+}
+} // namespace coord_hash_detail
+
+namespace std {
+template <typename Tag>
+struct hash<GridCoord2<Tag>> {
+    std::size_t operator()(const GridCoord2<Tag>& coord) const noexcept {
+        std::size_t seed = std::hash<int32_t>{}(coord.v.x);
+        seed = coord_hash_detail::hash_combine(seed, std::hash<int32_t>{}(coord.v.y));
+        return seed;
+    }
+};
+
+template <typename Tag>
+struct hash<GridCoord3<Tag>> {
+    std::size_t operator()(const GridCoord3<Tag>& coord) const noexcept {
+        std::size_t seed = std::hash<int32_t>{}(coord.v.x);
+        seed = coord_hash_detail::hash_combine(seed, std::hash<int32_t>{}(coord.v.y));
+        seed = coord_hash_detail::hash_combine(seed, std::hash<int32_t>{}(coord.v.z));
+        return seed;
+    }
+};
+} // namespace std
