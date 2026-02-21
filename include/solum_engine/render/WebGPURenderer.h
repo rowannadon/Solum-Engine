@@ -17,6 +17,8 @@
 #include "solum_engine/voxel/Chunk.h"
 #include "solum_engine/voxel/ChunkMesher.h"
 #include "solum_engine/voxel/RegionManager.h"
+#include "solum_engine/voxel/BlockMaterial.h"
+#include "solum_engine/voxel/TerrainGenerator.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
@@ -30,22 +32,18 @@ private:
 
     FrameUniforms uniforms;
 
-    Chunk chunk;
-    Chunk chunk2;
-    ChunkMesher mesher;
     std::unique_ptr<MeshletManager> meshletManager;
 
-    VoxelPipeline voxelPipeline;
+    std::optional<RenderServices> services_;
+    std::optional<VoxelPipeline> voxelPipeline_;
+
     bool resizePending = false;
 
     // Add this for ImGUI support
     RenderPassEncoder currentCommandEncoder = nullptr;
 
 public:
-    WebGPURenderer()
-            : chunk(ChunkCoord{0, 0, 0})
-            , chunk2(ChunkCoord{1, 0, 0})
-        {}
+    WebGPURenderer() = default;
 
     bool initialize();
 

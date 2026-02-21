@@ -2,6 +2,10 @@
 
 #include "solum_engine/render/MeshletManager.h"
 
+bool VoxelPipeline::build() {
+    return createResources() && createPipeline() && createBindGroup();
+}
+
 void VoxelPipeline::setDrawConfig(uint32_t meshletVertices, uint32_t totalMeshletCount) {
     meshletVertexCount = meshletVertices;
     meshletCount = totalMeshletCount;
@@ -9,7 +13,7 @@ void VoxelPipeline::setDrawConfig(uint32_t meshletVertices, uint32_t totalMeshle
 
 bool VoxelPipeline::createResources() {
     int width, height;
-    glfwGetFramebufferSize(context->getWindow(), &width, &height);
+    glfwGetFramebufferSize(r_.ctx.getWindow(), &width, &height);
     if (width <= 0 || height <= 0) {
         return false;
     }
@@ -24,7 +28,7 @@ bool VoxelPipeline::createResources() {
     depthTextureDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
     depthTextureDesc.viewFormatCount = 0;
     depthTextureDesc.viewFormats = nullptr;
-    Texture depthTexture = tex->createTexture("depth_texture", depthTextureDesc);
+    Texture depthTexture = r_.tex.createTexture("depth_texture", depthTextureDesc);
 
     TextureViewDescriptor depthTextureViewDesc = Default;
     depthTextureViewDesc.aspect = TextureAspect::DepthOnly;
@@ -34,9 +38,9 @@ bool VoxelPipeline::createResources() {
     depthTextureViewDesc.mipLevelCount = 1;
     depthTextureViewDesc.dimension = TextureViewDimension::_2D;
     depthTextureViewDesc.format = depthTextureFormat;
-    TextureView depthTextureView = tex->createTextureView("depth_texture", "depth_view", depthTextureViewDesc);
+    TextureView depthTextureView = r_.tex.createTextureView("depth_texture", "depth_view", depthTextureViewDesc);
 
-    TextureFormat multiSampleTextureFormat = context->getSurfaceFormat();
+    TextureFormat multiSampleTextureFormat = r_.ctx.getSurfaceFormat();
 
     TextureDescriptor multiSampleTextureDesc = Default;
     multiSampleTextureDesc.dimension = TextureDimension::_2D;
@@ -47,7 +51,7 @@ bool VoxelPipeline::createResources() {
     multiSampleTextureDesc.usage = TextureUsage::RenderAttachment;
     multiSampleTextureDesc.viewFormatCount = 0;
     multiSampleTextureDesc.viewFormats = nullptr;
-    Texture multiSampleTexture = tex->createTexture("multisample_texture", multiSampleTextureDesc);
+    Texture multiSampleTexture = r_.tex.createTexture("multisample_texture", multiSampleTextureDesc);
 
     TextureViewDescriptor multiSampleTextureViewDesc = Default;
     multiSampleTextureViewDesc.aspect = TextureAspect::All;
@@ -57,26 +61,26 @@ bool VoxelPipeline::createResources() {
     multiSampleTextureViewDesc.mipLevelCount = 1;
     multiSampleTextureViewDesc.dimension = TextureViewDimension::_2D;
     multiSampleTextureViewDesc.format = multiSampleTextureFormat;
-    TextureView multiSampleTextureView = tex->createTextureView("multisample_texture", "multisample_view", multiSampleTextureViewDesc);
+    TextureView multiSampleTextureView = r_.tex.createTextureView("multisample_texture", "multisample_view", multiSampleTextureViewDesc);
 
     return multiSampleTextureView != nullptr && depthTextureView != nullptr;
 }
 
 void VoxelPipeline::removeResources() {
-    tex->removeTextureView("multisample_view");
-    tex->removeTexture("multisample_texture");
+    r_.tex.removeTextureView("multisample_view");
+    r_.tex.removeTexture("multisample_texture");
 
-    tex->removeTextureView("depth_view");
-    tex->removeTexture("depth_texture");
+    r_.tex.removeTextureView("depth_view");
+    r_.tex.removeTexture("depth_texture");
 
-    pip->deleteBindGroup("global_uniforms_bg");
+    r_.pip.deleteBindGroup("global_uniforms_bg");
 }
 
 bool VoxelPipeline::createPipeline() {
     PipelineConfig config;
 
     config.shaderPath = SHADER_DIR "/voxel.wgsl";
-    config.colorFormat = context->getSurfaceFormat();
+    config.colorFormat = r_.ctx.getSurfaceFormat();
     config.depthFormat = TextureFormat::Depth32Float;
     config.sampleCount = 4;
     config.cullMode = CullMode::None;
@@ -107,18 +111,18 @@ bool VoxelPipeline::createPipeline() {
     globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
 
     config.bindGroupLayouts.push_back(
-        pip->createBindGroupLayout("global_uniforms", globalUniforms)
+        r_.pip.createBindGroupLayout("global_uniforms", globalUniforms)
     );
 
-    RenderPipeline pipeline = pip->createRenderPipeline("voxel_pipeline", config);
+    RenderPipeline pipeline = r_.pip.createRenderPipeline("voxel_pipeline", config);
 
     return pipeline != nullptr;
 }
 
 bool VoxelPipeline::createBindGroup() {
-    Buffer uniformBuffer = buf->getBuffer("uniform_buffer");
-    Buffer meshDataBuffer = buf->getBuffer(MeshletManager::kMeshDataBufferName);
-    Buffer metadataBuffer = buf->getBuffer(MeshletManager::kMeshMetadataBufferName);
+    Buffer uniformBuffer = r_.buf.getBuffer("uniform_buffer");
+    Buffer meshDataBuffer = r_.buf.getBuffer(MeshletManager::kMeshDataBufferName);
+    Buffer metadataBuffer = r_.buf.getBuffer(MeshletManager::kMeshMetadataBufferName);
 
     if (!uniformBuffer || !meshDataBuffer || !metadataBuffer) {
         return false;
@@ -144,7 +148,7 @@ bool VoxelPipeline::createBindGroup() {
     bindings[i].offset = 0;
     bindings[i].size = metadataBuffer.getSize();
 
-    BindGroup bindGroup = pip->createBindGroup("global_uniforms_bg", "global_uniforms", bindings);
+    BindGroup bindGroup = r_.pip.createBindGroup("global_uniforms_bg", "global_uniforms", bindings);
 
     return bindGroup != nullptr;
 }
@@ -156,7 +160,7 @@ bool VoxelPipeline::render(
 ) {
     RenderPassDescriptor renderPassDesc = Default;
     RenderPassColorAttachment renderPassColorAttachment = {};
-    renderPassColorAttachment.view = tex->getTextureView("multisample_view");
+    renderPassColorAttachment.view = r_.tex.getTextureView("multisample_view");
     renderPassColorAttachment.resolveTarget = targetView;
     renderPassColorAttachment.loadOp = LoadOp::Clear;
     renderPassColorAttachment.storeOp = StoreOp::Store;
@@ -169,7 +173,7 @@ bool VoxelPipeline::render(
     renderPassDesc.colorAttachments = &renderPassColorAttachment;
 
     RenderPassDepthStencilAttachment depthStencilAttachment = Default;
-    depthStencilAttachment.view = tex->getTextureView("depth_view");
+    depthStencilAttachment.view = r_.tex.getTextureView("depth_view");
     depthStencilAttachment.depthClearValue = 1.0f;
     depthStencilAttachment.depthLoadOp = LoadOp::Clear;
     depthStencilAttachment.depthStoreOp = StoreOp::Store;
@@ -183,9 +187,9 @@ bool VoxelPipeline::render(
     renderPassDesc.timestampWrites = nullptr;
 
     RenderPassEncoder voxelRenderPass = encoder.beginRenderPass(renderPassDesc);
-    voxelRenderPass.setPipeline(pip->getPipeline("voxel_pipeline"));
+    voxelRenderPass.setPipeline(r_.pip.getPipeline("voxel_pipeline"));
 
-    voxelRenderPass.setBindGroup(0, pip->getBindGroup("global_uniforms_bg"), 0, nullptr);
+    voxelRenderPass.setBindGroup(0, r_.pip.getBindGroup("global_uniforms_bg"), 0, nullptr);
 
     if (meshletVertexCount > 0 && meshletCount > 0) {
         voxelRenderPass.draw(meshletVertexCount, meshletCount, 0, 0);

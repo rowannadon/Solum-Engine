@@ -18,27 +18,7 @@ bool WebGPURenderer::initialize() {
 	textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
 	meshletManager = std::make_unique<MeshletManager>();
 
-	jobsystem::JobSystem::Config jsConfig;
-    jsConfig.worker_threads = 4;
-
-    jobsystem::JobSystem jobsys(jsConfig);
-
-	RegionManager rm(&jobsys);
-
-	rm.addRegion(RegionCoord(glm::ivec2(0)));
-
-	rm.update();
-
-	Region* region = rm.getRegion(RegionCoord(glm::ivec2(0)));
-	if (region) {
-		Column* c = region->getColumn(15, 15);
-		if (c) {
-			Chunk* ch = c->getChunk(28);
-			if (ch) {
-				std::cout << ch->getCoord() << std::endl;
-			}
-		}
-	}
+	services_.emplace(*bufferManager, *textureManager, *pipelineManager, *context);
 
 	{
 		BufferDescriptor desc = Default;
@@ -61,64 +41,82 @@ bool WebGPURenderer::initialize() {
 	UnpackedBlockMaterial air;
 	air.id = 0;
 
-	for (int x = 0; x < CHUNK_SIZE; x++) {
-		for (int y = 0; y < CHUNK_SIZE; y++) {
-			for (int z = 0; z < CHUNK_SIZE; z++) {
-				mat.id = dist2(rng);
-				BlockCoord coord(glm::ivec3(x, y, z));
-				if (true) {
-					chunk.setBlock(coord, mat);
-				}
-				else {
-					chunk.setBlock(coord, air);
-				}
-			}
-		}
+	RegionManager rm;
+	RegionCoord coord = RegionCoord(glm::ivec3(0));
+	rm.addRegion(coord);
+
+	Region* region = rm.getRegion(coord);
+
+	Column col = region->getColumn(0, 0);
+
+	TerrainGenerator gen;
+	
+	gen.generateColumn(glm::ivec3(0), col);
+
+	ChunkMesher mesher;
+
+	std::vector<const Chunk*> neighbors;
+	for (int i = 0; i < 8; i++) {
+		neighbors.push_back(nullptr);
 	}
 
-	for (int x = 0; x < CHUNK_SIZE; x++) {
-		for (int y = 0; y < CHUNK_SIZE; y++) {
-			for (int z = 0; z < CHUNK_SIZE; z++) {
-				mat.id = dist2(rng);
-				BlockCoord coord(glm::ivec3(x, y, z));
-				if (dist(rng) == 1) {
-					chunk2.setBlock(coord, mat);
-				}
-				else {
-					chunk2.setBlock(coord, air);
-				}
-			}
-		}
+	std::vector<Meshlet> totalMeshlets;
+	for (int i = 0; i < cfg::COLUMN_HEIGHT; i++) {
+		std::vector<Meshlet> chunkMeshlets = mesher.mesh(col.getChunk(i), ChunkCoord(glm::ivec3(0, 0, i)), neighbors);
+		totalMeshlets.insert(totalMeshlets.end(), chunkMeshlets.begin(), chunkMeshlets.end());
 	}
+
+	// for (int x = 0; x < cfg::CHUNK_SIZE; x++) {
+	// 	for (int y = 0; y < cfg::CHUNK_SIZE; y++) {
+	// 		for (int z = 0; z < cfg::CHUNK_SIZE; z++) {
+	// 			mat.id = dist2(rng);
+	// 			if (true) {
+	// 				chunk.setBlock(x, y, z, mat.pack());
+	// 			}
+	// 			else {
+	// 				chunk.setBlock(x, y, z, air.pack());
+	// 			}
+	// 		}
+	// 	}
+	// }
+
+	// for (int x = 0; x < cfg::CHUNK_SIZE; x++) {
+	// 	for (int y = 0; y < cfg::CHUNK_SIZE; y++) {
+	// 		for (int z = 0; z < cfg::CHUNK_SIZE; z++) {
+	// 			mat.id = dist2(rng);
+	// 			if (dist(rng) == 1) {
+	// 				chunk2.setBlock(x, y, z, mat.pack());
+	// 			}
+	// 			else {
+	// 				chunk2.setBlock(x, y, z, air.pack());
+	// 			}
+	// 		}
+	// 	}
+	// }
     
-    
+	// std::vector<const Chunk*> neighbors;
+	// neighbors.push_back(&chunk2);
+	// neighbors.push_back(nullptr);
+	// neighbors.push_back(nullptr);
+	// neighbors.push_back(nullptr);
+	// neighbors.push_back(nullptr);
+	// neighbors.push_back(nullptr);
 
-	std::vector<Chunk*> neighbors;
-	neighbors.push_back(&chunk2);
-	neighbors.push_back(nullptr);
-	neighbors.push_back(nullptr);
-	neighbors.push_back(nullptr);
-	neighbors.push_back(nullptr);
-	neighbors.push_back(nullptr);
+	// std::vector<Meshlet> chunkMeshlets = mesher.mesh(chunk, ChunkCoord(glm::ivec3(0)), neighbors);
 
-	std::vector<Meshlet> chunkMeshlets = mesher.mesh(chunk, neighbors);
+	// std::vector<const Chunk*> neighbors2;
+	// neighbors2.push_back(nullptr);
+	// neighbors2.push_back(&chunk);
+	// neighbors2.push_back(nullptr);
+	// neighbors2.push_back(nullptr);
+	// neighbors2.push_back(nullptr);
+	// neighbors2.push_back(nullptr);
 
-	std::vector<Chunk*> neighbors2;
-	neighbors2.push_back(nullptr);
-	neighbors2.push_back(&chunk);
-	neighbors2.push_back(nullptr);
-	neighbors2.push_back(nullptr);
-	neighbors2.push_back(nullptr);
-	neighbors2.push_back(nullptr);
+	// std::vector<Meshlet> chunkMeshlets2 = mesher.mesh(chunk2, ChunkCoord(glm::ivec3(1, 0, 0)), neighbors2);
 
-	std::vector<Meshlet> chunkMeshlets2 = mesher.mesh(chunk2, neighbors2);
-
-	uint32_t totalMeshletCount = static_cast<uint32_t>(chunkMeshlets.size() + chunkMeshlets2.size());
+	uint32_t totalMeshletCount = static_cast<uint32_t>(totalMeshlets.size());
 	uint32_t totalQuadCount = 0;
-	for (const Meshlet& meshlet : chunkMeshlets) {
-		totalQuadCount += meshlet.quadCount;
-	}
-	for (const Meshlet& meshlet : chunkMeshlets2) {
+	for (const Meshlet& meshlet : totalMeshlets) {
 		totalQuadCount += meshlet.quadCount;
 	}
 
@@ -131,25 +129,16 @@ bool WebGPURenderer::initialize() {
 	}
 
 	meshletManager->clear();
-	meshletManager->registerMeshletGroup(chunkMeshlets);
-	meshletManager->registerMeshletGroup(chunkMeshlets2);
+	meshletManager->registerMeshletGroup(totalMeshlets);
 	if (!meshletManager->upload()) {
 		std::cerr << "Failed to upload meshlet buffers." << std::endl;
 		return false;
 	}
 
-	voxelPipeline.init(bufferManager.get(), textureManager.get(), pipelineManager.get(), context.get());
-	voxelPipeline.setDrawConfig(meshletManager->getVerticesPerMeshlet(), meshletManager->getMeshletCount());
-	if (!voxelPipeline.createResources()) {
-		std::cerr << "Failed to create voxel rendering resources." << std::endl;
-		return false;
-	}
-	if (!voxelPipeline.createPipeline()) {
-		std::cerr << "Failed to create voxel render pipeline." << std::endl;
-		return false;
-	}
-	if (!voxelPipeline.createBindGroup()) {
-		std::cerr << "Failed to create voxel bind group." << std::endl;
+	voxelPipeline_.emplace(*services_);
+	voxelPipeline_->setDrawConfig(meshletManager->getVerticesPerMeshlet(), meshletManager->getMeshletCount());
+	if (!voxelPipeline_->build()) {
+		std::cerr << "Failed to create voxel pipeline and resources." << std::endl;
 		return false;
 	}
 
@@ -157,17 +146,17 @@ bool WebGPURenderer::initialize() {
 }
 
 void WebGPURenderer::createRenderingTextures() {
-	if (!voxelPipeline.createResources()) {
+	if (!voxelPipeline_->createResources()) {
 		std::cerr << "Failed to recreate voxel rendering resources." << std::endl;
 		return;
 	}
-	if (!voxelPipeline.createBindGroup()) {
+	if (!voxelPipeline_->createBindGroup()) {
 		std::cerr << "Failed to recreate voxel bind group." << std::endl;
 	}
 }
 
 void WebGPURenderer::removeRenderingTextures() {
-	voxelPipeline.removeResources();
+	voxelPipeline_->removeResources();
 }
 
 bool WebGPURenderer::resizeSurfaceAndAttachments() {
@@ -233,7 +222,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 
 	// GEOMETRY RENDER PASS
 	{
-		voxelPipeline.render(targetView, encoder, [&](RenderPassEncoder& pass) {
+		voxelPipeline_->render(targetView, encoder, [&](RenderPassEncoder& pass) {
 			ImGui::Render();
 			ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
 		});

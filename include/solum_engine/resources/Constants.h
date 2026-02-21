@@ -2,19 +2,19 @@
 #include <glm/glm.hpp>
 #include <array>
 
-#define CHUNK_SIZE 32
-#define CHUNK_SIZE_P 34
+namespace cfg {
+    static constexpr int CHUNK_SIZE = 16;
+    static constexpr int CHUNK_SIZE_P = 18;
+    static constexpr int CHUNK_VOLUME_BLOCKS = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 
-#define REGION_COLS 16
-#define COLUMN_HEIGHT_CHUNKS 32
+    static constexpr int COLUMN_HEIGHT = 32;
+    static constexpr int COLUMN_HEIGHT_BLOCKS = COLUMN_HEIGHT * CHUNK_SIZE;
 
-static constexpr int REGION_BLOCKS_XY = REGION_COLS * CHUNK_SIZE; // 512 blocks
-static constexpr int REGION_TOTAL_COLUMNS = REGION_COLS * REGION_COLS;
-static constexpr int REGION_TOTAL_CHUNKS = REGION_COLS * REGION_COLS * COLUMN_HEIGHT_CHUNKS; // 512 blocks
-
-static constexpr int CHUNK_TOTAL_BLOCKS = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
-
-static constexpr int COLUMN_HEIGHT_BLOCKS = COLUMN_HEIGHT_CHUNKS * CHUNK_SIZE;
+    static constexpr int REGION_SIZE = 32;
+    static constexpr int REGION_SIZE_BLOCKS = REGION_SIZE * CHUNK_SIZE;
+    static constexpr int REGION_VOLUME_COLUMNS = REGION_SIZE * REGION_SIZE;
+    static constexpr int REGION_VOLUME_CHUNKS = REGION_SIZE * REGION_SIZE * COLUMN_HEIGHT;
+}
 
 static constexpr float PI = 3.14159265359f;
 

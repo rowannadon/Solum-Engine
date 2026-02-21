@@ -30,11 +30,3 @@ Region* RegionManager::getRegion(const RegionCoord& coord) {
 
     return it->second.get();
 }
-
-
-void RegionManager::update() {
-    for (auto& kv : regions_) {
-        Region* region = kv.second.get();
-        region->update();
-    }
-}

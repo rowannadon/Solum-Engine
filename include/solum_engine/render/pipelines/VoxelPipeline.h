@@ -6,6 +6,8 @@
 
 class VoxelPipeline : public AbstractRenderPipeline {
 public:
+    explicit VoxelPipeline(RenderServices& r) : AbstractRenderPipeline(r) {}
+
     void setDrawConfig(uint32_t meshletVertexCount, uint32_t meshletCount);
 
     bool createResources() override;
@@ -15,6 +17,8 @@ public:
     bool createPipeline() override;
 
     bool createBindGroup() override;
+    
+    bool build() override;
 
     bool render(
         TextureView targetView,

@@ -4,8 +4,6 @@
 #include "stb_image.h"
 #include <glm/glm.hpp>
 
-using std::uint32_t;
-
 // ---------- basic IO ----------
 void TextureManager::writeTexture(const TexelCopyTextureInfo& destination,
     const void* data, size_t size,

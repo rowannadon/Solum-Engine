@@ -1,7 +1,7 @@
 #pragma once
 
 #include <GLFW/glfw3.h>
-#include <glfw3webgpu.h>
+#include <glfw3webgpu/glfw3webgpu.h>
 
 #include <webgpu/webgpu.hpp>
 #include <glm/glm.hpp>

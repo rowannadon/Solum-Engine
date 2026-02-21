@@ -17,5 +17,8 @@ struct UnpackedBlockMaterial {
 struct BlockMaterial {
     uint32_t data = 0;
 
+    bool operator==(const BlockMaterial& other) const { return data == other.data; }
+    bool operator!=(const BlockMaterial& other) const { return !(*this == other); }
+
     UnpackedBlockMaterial unpack() const;
 };

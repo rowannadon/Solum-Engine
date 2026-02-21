@@ -15,6 +15,7 @@ namespace {
     constexpr uint32_t ID_MASK     = 0xFFFF; // 16 bits
 }
 
+
 BlockMaterial UnpackedBlockMaterial::pack() const {
     BlockMaterial mat{0};
 

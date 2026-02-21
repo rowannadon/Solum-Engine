@@ -1,26 +1,29 @@
+#pragma once
 #include "solum_engine/voxel/Chunk.h"
-#include "solum_engine/voxel/ColumnState.h"
-#include "solum_engine/resources/Constants.h"
-#include "solum_engine/resources/Util.h"
+#include "solum_engine/voxel/BlockMaterial.h"
+#include <array>
 
 class Column {
-private:
-    ColumnCoord coord_;
-    ColumnState state_;
-    std::array<Chunk, COLUMN_HEIGHT_CHUNKS> chunks_;
-
 public:
-    explicit Column(ColumnCoord coord) : 
-        coord_(coord), 
-        chunks_(make_array<COLUMN_HEIGHT_CHUNKS>([&](auto I) {
-            constexpr int z = static_cast<int>(I);
-            return Chunk(column_local_to_chunk(coord_, z));
-        })) {};
+    static constexpr size_t HEIGHT = 32;
 
-    Chunk* getChunk(int z) {
-        if (z < COLUMN_HEIGHT_CHUNKS)
-            return &chunks_[z];
-        else
-            return nullptr;
+    Column() = default;
+
+    inline BlockMaterial getBlock(uint8_t x, uint16_t y, uint8_t z) const {
+        uint8_t chunk_y = y / Chunk::SIZE;
+        uint8_t local_y = y % Chunk::SIZE;
+        return chunks_[chunk_y].getBlock(x, local_y, z);
     }
+
+    inline void setBlock(uint8_t x, uint16_t y, uint8_t z, const BlockMaterial blockID) {
+        uint8_t chunk_y = y / Chunk::SIZE;
+        uint8_t local_y = y % Chunk::SIZE;
+        chunks_[chunk_y].setBlock(x, local_y, z, blockID);
+    }
+
+    Chunk& getChunk(uint8_t chunk_y) { return chunks_[chunk_y]; }
+    const Chunk& getChunk(uint8_t chunk_y) const { return chunks_[chunk_y]; }
+
+private:
+    std::array<Chunk, HEIGHT> chunks_;
 };

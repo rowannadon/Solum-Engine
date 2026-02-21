@@ -13,7 +13,7 @@
 #include <tuple>
 #include <optional>
 #include <unordered_set>
-#include "json.hpp" // nlohmann/json
+#include "nlohmann_json/json.hpp" // nlohmann/json
 
 using json = nlohmann::json;
 using namespace wgpu;

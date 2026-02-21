@@ -107,9 +107,9 @@ inline std::ostream& operator<<(std::ostream& os, const GridCoord3<Tag>& coord) 
 // Block -> Chunk (each chunk covers CHUNK_SIZE^3 blocks)
 inline constexpr ChunkCoord block_to_chunk(BlockCoord b) {
     return ChunkCoord{
-        floor_div(b.v.x, CHUNK_SIZE),
-        floor_div(b.v.y, CHUNK_SIZE),
-        floor_div(b.v.z, CHUNK_SIZE)
+        floor_div(b.v.x, cfg::CHUNK_SIZE),
+        floor_div(b.v.y, cfg::CHUNK_SIZE),
+        floor_div(b.v.z, cfg::CHUNK_SIZE)
     };
 }
 
@@ -121,8 +121,8 @@ inline constexpr ColumnCoord chunk_to_column(ChunkCoord c) {
 // Column -> Region (regions are REGION_COLS x REGION_COLS columns)
 inline constexpr RegionCoord column_to_region(ColumnCoord col) {
     return RegionCoord{
-        floor_div(col.v.x, REGION_COLS),
-        floor_div(col.v.y, REGION_COLS)
+        floor_div(col.v.x, cfg::REGION_SIZE),
+        floor_div(col.v.y, cfg::REGION_SIZE)
     };
 }
 
@@ -134,25 +134,25 @@ inline constexpr RegionCoord chunk_to_region(ChunkCoord c) {
 // Local column index within its region: [0..REGION_COLS-1] x [0..REGION_COLS-1]
 inline constexpr glm::ivec2 column_local_in_region(ColumnCoord col) {
     return glm::ivec2{
-        floor_mod(col.v.x, REGION_COLS),
-        floor_mod(col.v.y, REGION_COLS)
+        floor_mod(col.v.x, cfg::REGION_SIZE),
+        floor_mod(col.v.y, cfg::REGION_SIZE)
     };
 }
 
 // Local block index within its chunk: [0..CHUNK_SIZE-1]^3
 inline constexpr glm::ivec3 block_local_in_chunk(BlockCoord b) {
     return glm::ivec3{
-        floor_mod(b.v.x, CHUNK_SIZE),
-        floor_mod(b.v.y, CHUNK_SIZE),
-        floor_mod(b.v.z, CHUNK_SIZE)
+        floor_mod(b.v.x, cfg::CHUNK_SIZE),
+        floor_mod(b.v.y, cfg::CHUNK_SIZE),
+        floor_mod(b.v.z, cfg::CHUNK_SIZE)
     };
 }
 
 inline constexpr BlockCoord chunk_to_block_origin(ChunkCoord c) {
     return BlockCoord{
-        c.v.x * CHUNK_SIZE,
-        c.v.y * CHUNK_SIZE,
-        c.v.z * CHUNK_SIZE
+        c.v.x * cfg::CHUNK_SIZE,
+        c.v.y * cfg::CHUNK_SIZE,
+        c.v.z * cfg::CHUNK_SIZE
     };
 }
 
@@ -172,8 +172,8 @@ inline constexpr BlockCoord chunk_local_to_block(ChunkCoord c, glm::ivec3 local)
 // Region -> Column origin (minimum global column coord covered by that region).
 inline constexpr ColumnCoord region_to_column_origin(RegionCoord r) {
     return ColumnCoord{
-        r.v.x * REGION_COLS,
-        r.v.y * REGION_COLS
+        r.v.x * cfg::REGION_SIZE,
+        r.v.y * cfg::REGION_SIZE
     };
 }
 

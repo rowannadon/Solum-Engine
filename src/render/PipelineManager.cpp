@@ -2,6 +2,7 @@
 #include <functional>
 #include <unordered_set>
 #include <string>
+#include <iostream>
 
 RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineName, PipelineConfig& config) {
     std::cout << "Creating shader module..." << std::endl;

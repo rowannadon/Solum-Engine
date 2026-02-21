@@ -1,32 +1,45 @@
-#include "glm/glm.hpp"
+#pragma once
 #include "solum_engine/voxel/Column.h"
-#include "solum_engine/voxel/RegionState.h"
+#include "solum_engine/voxel/BlockMaterial.h"
 #include "solum_engine/resources/Coords.h"
-#include "solum_engine/resources/Constants.h"
+#include <array>
 
 class Region {
+public:
+    static constexpr size_t SIZE = 32;
+
+    explicit Region(const RegionCoord& coord) : coord_(coord) {}
+
+    BlockMaterial getBlock(uint16_t x, uint16_t y, uint16_t z) const {
+        uint8_t col_x = x / Chunk::SIZE;
+        uint8_t col_z = z / Chunk::SIZE;
+        uint8_t local_x = x % Chunk::SIZE;
+        uint8_t local_z = z % Chunk::SIZE;
+        
+        return getColumn(col_x, col_z).getBlock(local_x, y, local_z);
+    }
+
+    void setBlock(uint16_t x, uint16_t y, uint16_t z, BlockMaterial blockID) {
+        uint8_t col_x = x / Chunk::SIZE;
+        uint8_t col_z = z / Chunk::SIZE;
+        uint8_t local_x = x % Chunk::SIZE;
+        uint8_t local_z = z % Chunk::SIZE;
+        
+        getColumn(col_x, col_z).setBlock(local_x, y, local_z, blockID);
+    }
+
+    Column& getColumn(uint8_t x, uint8_t z) {
+        return columns_[z * SIZE + x];
+    }
+
+    const Column& getColumn(uint8_t x, uint8_t z) const {
+        return columns_[z * SIZE + x];
+    }
+
+    RegionCoord getCoord() const { return coord_; }
+
 private:
     RegionCoord coord_;
-    RegionState state;
-    std::array<Column, REGION_TOTAL_COLUMNS> columns_;
 
-public:
-    explicit Region(RegionCoord coord) : 
-        coord_(coord),
-        columns_(make_array<REGION_TOTAL_COLUMNS>([&](auto I) {
-            constexpr int idx = static_cast<int>(I);
-            const int x = idx % REGION_COLS;
-            const int y = idx / REGION_COLS;
-            return Column(region_local_to_column(coord_, x, y));
-        })) {};
-
-    void update();
-
-    Column* getColumn(int x, int y) {
-        if (x >= REGION_COLS || y >= REGION_COLS || x < 0 || y < 0) {
-            return nullptr;
-        }
-
-        return &columns_[y * REGION_COLS + x];
-    }
+    std::array<Column, SIZE * SIZE> columns_;
 };
