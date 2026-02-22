@@ -10,7 +10,7 @@ struct MeshletMetadata {
     quadCount: u32,
     faceDirection: u32,
     dataOffset: u32,
-    pad0: u32,
+    voxelScale: u32,
     pad1: u32,
 };
 
@@ -202,9 +202,12 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let blockLocal = decode_local_offset(packedOffset);
     let corner = corner_from_triangle_vertex(meshlet.faceDirection, triangleVertex);
     let cornerOffset = face_corner_offset(meshlet.faceDirection, corner);
+    let voxelScale = f32(max(meshlet.voxelScale, 1u));
 
     let meshletOrigin = vec3f(f32(meshlet.originX), f32(meshlet.originY), f32(meshlet.originZ));
-    let worldPosition = meshletOrigin + vec3f(f32(blockLocal.x), f32(blockLocal.y), f32(blockLocal.z)) + cornerOffset;
+    let worldPosition =
+        meshletOrigin +
+        (vec3f(f32(blockLocal.x), f32(blockLocal.y), f32(blockLocal.z)) + cornerOffset) * voxelScale;
 
     let worldSpacePosition = frameUniforms.modelMatrix * vec4f(worldPosition, 1.0);
     let viewPosition = frameUniforms.viewMatrix * worldSpacePosition;
@@ -212,9 +215,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     out.worldPosition = worldSpacePosition.xyz;
 
-    let worldBlockX = meshlet.originX + i32(blockLocal.x);
-    let worldBlockY = meshlet.originY + i32(blockLocal.y);
-    let worldBlockZ = meshlet.originZ + i32(blockLocal.z);
+    let worldBlockX = meshlet.originX + i32(blockLocal.x) * i32(max(meshlet.voxelScale, 1u));
+    let worldBlockY = meshlet.originY + i32(blockLocal.y) * i32(max(meshlet.voxelScale, 1u));
+    let worldBlockZ = meshlet.originZ + i32(blockLocal.z) * i32(max(meshlet.voxelScale, 1u));
 
     let colorSeed = (bitcast<u32>(worldBlockX) * 73856093u) ^
         (bitcast<u32>(worldBlockY) * 19349663u) ^

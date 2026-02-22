@@ -15,6 +15,7 @@ struct Meshlet {
     glm::ivec3 origin{ 0, 0, 0 };
     uint32_t faceDirection = 0;
     uint32_t quadCount = 0;
+    uint32_t voxelScale = 1;
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> packedQuadLocalOffsets{};
 };
 
@@ -25,7 +26,7 @@ struct MeshletMetadataGPU {
     uint32_t quadCount = 0;
     uint32_t faceDirection = 0;
     uint32_t dataOffset = 0;
-    uint32_t pad0 = 0;
+    uint32_t voxelScale = 1;
     uint32_t pad1 = 0;
 };
 

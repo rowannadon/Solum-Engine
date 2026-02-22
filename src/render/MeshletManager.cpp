@@ -1,5 +1,6 @@
 #include "solum_engine/render/MeshletManager.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <iostream>
@@ -71,6 +72,7 @@ MeshletGroupHandle MeshletManager::registerMeshletGroup(const std::vector<Meshle
         metadata.quadCount = meshlet.quadCount;
         metadata.faceDirection = meshlet.faceDirection;
         metadata.dataOffset = static_cast<uint32_t>(quadDataCpu.size());
+        metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
 
         metadataCpu.push_back(metadata);
 

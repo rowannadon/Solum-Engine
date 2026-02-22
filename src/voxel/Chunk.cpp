@@ -1,112 +1,289 @@
 #include "solum_engine/voxel/Chunk.h"
 
-Chunk::Chunk() : bits_per_block_(0), palette_(1, BlockMaterial{}) {
-    // Initializes perfectly empty: 1 palette entry (Block ID 0 = Air), 0 bits, empty data array.
+#include <array>
+#include <utility>
+
+namespace {
+BlockMaterial makeAirBlock() {
+    static const BlockMaterial kAir = UnpackedBlockMaterial{}.pack();
+    return kAir;
+}
+}  // namespace
+
+Chunk::Chunk() {
+    for (uint8_t level = 0; level <= MAX_MIP_LEVEL; ++level) {
+        MipStorage& storage = mips_[level];
+        storage.bitsPerBlock = 0;
+        storage.size = mipSize(level);
+        storage.palette.assign(1, airBlock());
+        storage.data.clear();
+    }
 }
 
-BlockMaterial Chunk::getBlock(uint8_t x, uint8_t y, uint8_t z) const {
-    if (bits_per_block_ == 0) return palette_[0];
-    return palette_[getPaletteIndex(getVoxelIndex(x, y, z))];
+BlockMaterial Chunk::getBlock(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel) const {
+    const uint8_t level = std::min<uint8_t>(mipLevel, MAX_MIP_LEVEL);
+    const MipStorage& storage = mips_[level];
+    if (x >= storage.size || y >= storage.size || z >= storage.size) {
+        return airBlock();
+    }
+
+    if (storage.bitsPerBlock == 0) {
+        return storage.palette.empty() ? airBlock() : storage.palette[0];
+    }
+
+    const uint16_t voxelIndex = getVoxelIndex(x, y, z, storage.size);
+    const uint32_t paletteIndex = getPaletteIndex(storage, voxelIndex);
+    if (paletteIndex >= storage.palette.size()) {
+        return storage.palette.empty() ? airBlock() : storage.palette[0];
+    }
+    return storage.palette[paletteIndex];
 }
 
 void Chunk::setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockID) {
-    uint16_t voxel_index = getVoxelIndex(x, y, z);
-    
-    // Find blockID in palette
-    auto it = std::find(palette_.begin(), palette_.end(), blockID);
-    uint32_t palette_index = 0;
-    
-    if (it != palette_.end()) {
-        palette_index = static_cast<uint32_t>(std::distance(palette_.begin(), it));
-    } else {
-        // Not in palette, add it
-        palette_index = static_cast<uint32_t>(palette_.size());
-        palette_.push_back(blockID);
-        
-        // Resize bit array if the palette size exceeds what the current bit width can store
-        if (palette_.size() > (1ULL << bits_per_block_)) {
-            uint8_t new_bpi = bits_per_block_ == 0 ? 1 : bits_per_block_ + 1;
-            resizeBitArray(new_bpi);
+    if (x >= SIZE || y >= SIZE || z >= SIZE) {
+        return;
+    }
+
+    bool levelChanged = false;
+    setBlockInStorage(mips_[0], x, y, z, blockID, &levelChanged);
+    if (!levelChanged) {
+        return;
+    }
+
+    uint8_t px = x;
+    uint8_t py = y;
+    uint8_t pz = z;
+
+    for (uint8_t level = 1; level <= MAX_MIP_LEVEL; ++level) {
+        px >>= 1;
+        py >>= 1;
+        pz >>= 1;
+
+        BlockMaterial parentBlock = downsampleBlockFromChildren(mips_[level - 1], px, py, pz);
+
+        bool parentChanged = false;
+        setBlockInStorage(mips_[level], px, py, pz, parentBlock, &parentChanged);
+        if (!parentChanged) {
+            break;
         }
     }
-    
-    if (bits_per_block_ > 0) {
-        setPaletteIndex(voxel_index, palette_index);
+}
+
+uint16_t Chunk::getVoxelIndex(uint8_t x, uint8_t y, uint8_t z, uint8_t size) {
+    const uint16_t stride = static_cast<uint16_t>(size);
+    return static_cast<uint16_t>((static_cast<uint16_t>(z) * stride * stride) +
+                                 (static_cast<uint16_t>(y) * stride) +
+                                 static_cast<uint16_t>(x));
+}
+
+uint32_t Chunk::getPaletteIndex(const MipStorage& storage, uint16_t voxelIndex) {
+    const size_t bitsPerBlock = storage.bitsPerBlock;
+    const size_t bitIndex = static_cast<size_t>(voxelIndex) * bitsPerBlock;
+    const size_t wordIndex = bitIndex / 64;
+    const size_t bitOffset = bitIndex % 64;
+
+    if (bitOffset + bitsPerBlock <= 64) {
+        const uint64_t mask = (1ULL << bitsPerBlock) - 1ULL;
+        return static_cast<uint32_t>((storage.data[wordIndex] >> bitOffset) & mask);
+    }
+
+    const size_t bitsInFirst = 64 - bitOffset;
+    const size_t bitsInNext = bitsPerBlock - bitsInFirst;
+
+    const uint32_t val1 = static_cast<uint32_t>(
+        (storage.data[wordIndex] >> bitOffset) & ((1ULL << bitsInFirst) - 1ULL));
+    const uint32_t val2 = static_cast<uint32_t>(
+        storage.data[wordIndex + 1] & ((1ULL << bitsInNext) - 1ULL));
+    return val1 | (val2 << bitsInFirst);
+}
+
+void Chunk::setPaletteIndex(MipStorage& storage, uint16_t voxelIndex, uint32_t paletteIndex) {
+    const size_t bitsPerBlock = storage.bitsPerBlock;
+    const size_t bitIndex = static_cast<size_t>(voxelIndex) * bitsPerBlock;
+    const size_t wordIndex = bitIndex / 64;
+    const size_t bitOffset = bitIndex % 64;
+
+    if (bitOffset + bitsPerBlock <= 64) {
+        const uint64_t mask = ((1ULL << bitsPerBlock) - 1ULL) << bitOffset;
+        storage.data[wordIndex] =
+            (storage.data[wordIndex] & ~mask) | (static_cast<uint64_t>(paletteIndex) << bitOffset);
+        return;
+    }
+
+    const size_t bitsInFirst = 64 - bitOffset;
+    const size_t bitsInNext = bitsPerBlock - bitsInFirst;
+
+    const uint64_t mask1 = ((1ULL << bitsInFirst) - 1ULL) << bitOffset;
+    storage.data[wordIndex] =
+        (storage.data[wordIndex] & ~mask1) |
+        ((static_cast<uint64_t>(paletteIndex) & ((1ULL << bitsInFirst) - 1ULL)) << bitOffset);
+
+    const uint64_t mask2 = (1ULL << bitsInNext) - 1ULL;
+    storage.data[wordIndex + 1] =
+        (storage.data[wordIndex + 1] & ~mask2) |
+        (static_cast<uint64_t>(paletteIndex) >> bitsInFirst);
+}
+
+void Chunk::resizeBitArray(MipStorage& storage, uint8_t newBitsPerBlock) {
+    const size_t oldBitsPerBlock = storage.bitsPerBlock;
+    const uint8_t size = storage.size;
+    const size_t volume = static_cast<size_t>(size) * static_cast<size_t>(size) * static_cast<size_t>(size);
+    const size_t newDataWords = (volume * newBitsPerBlock + 63) / 64;
+
+    std::vector<uint64_t> oldData = std::move(storage.data);
+    storage.data.assign(newDataWords, 0ULL);
+    storage.bitsPerBlock = newBitsPerBlock;
+
+    if (oldBitsPerBlock == 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < volume; ++i) {
+        const size_t bitIndex = i * oldBitsPerBlock;
+        const size_t wordIndex = bitIndex / 64;
+        const size_t bitOffset = bitIndex % 64;
+
+        uint32_t paletteIndex = 0;
+        if (bitOffset + oldBitsPerBlock <= 64) {
+            paletteIndex = static_cast<uint32_t>(
+                (oldData[wordIndex] >> bitOffset) & ((1ULL << oldBitsPerBlock) - 1ULL));
+        } else {
+            const size_t bitsInFirst = 64 - bitOffset;
+            const size_t bitsInNext = oldBitsPerBlock - bitsInFirst;
+            const uint32_t v1 = static_cast<uint32_t>(
+                (oldData[wordIndex] >> bitOffset) & ((1ULL << bitsInFirst) - 1ULL));
+            const uint32_t v2 = static_cast<uint32_t>(
+                oldData[wordIndex + 1] & ((1ULL << bitsInNext) - 1ULL));
+            paletteIndex = v1 | (v2 << bitsInFirst);
+        }
+
+        setPaletteIndex(storage, static_cast<uint16_t>(i), paletteIndex);
     }
 }
 
-uint32_t Chunk::getPaletteIndex(uint16_t voxel_index) const {
-    size_t bit_index = voxel_index * bits_per_block_;
-    size_t word_index = bit_index / 64;
-    size_t bit_offset = bit_index % 64;
-
-    if (bit_offset + bits_per_block_ <= 64) {
-        // Fits within a single 64-bit word
-        const uint64_t mask = (1ULL << bits_per_block_) - 1ULL;
-        return static_cast<uint32_t>((data_[word_index] >> bit_offset) & mask);
-    } else {
-        // Crosses a 64-bit boundary
-        size_t bits_in_first = 64 - bit_offset;
-        size_t bits_in_next = bits_per_block_ - bits_in_first;
-        
-        uint32_t val1 = static_cast<uint32_t>((data_[word_index] >> bit_offset) & ((1ULL << bits_in_first) - 1ULL));
-        uint32_t val2 = static_cast<uint32_t>(data_[word_index + 1] & ((1ULL << bits_in_next) - 1ULL));
-        return val1 | (val2 << bits_in_first);
-    }
+bool Chunk::isSolid(BlockMaterial block) {
+    return block.unpack().id != 0u;
 }
 
-void Chunk::setPaletteIndex(uint16_t voxel_index, uint32_t palette_index) {
-    size_t bit_index = voxel_index * bits_per_block_;
-    size_t word_index = bit_index / 64;
-    size_t bit_offset = bit_index % 64;
-
-    if (bit_offset + bits_per_block_ <= 64) {
-        uint64_t mask = ((1ULL << bits_per_block_) - 1) << bit_offset;
-        data_[word_index] = (data_[word_index] & ~mask) | (static_cast<uint64_t>(palette_index) << bit_offset);
-    } else {
-        size_t bits_in_first = 64 - bit_offset;
-        size_t bits_in_next = bits_per_block_ - bits_in_first;
-
-        uint64_t mask1 = ((1ULL << bits_in_first) - 1) << bit_offset;
-        data_[word_index] = (data_[word_index] & ~mask1) | ((static_cast<uint64_t>(palette_index) & ((1ULL << bits_in_first) - 1)) << bit_offset);
-
-        uint64_t mask2 = (1ULL << bits_in_next) - 1;
-        data_[word_index + 1] = (data_[word_index + 1] & ~mask2) | (static_cast<uint64_t>(palette_index) >> bits_in_first);
-    }
+BlockMaterial Chunk::airBlock() {
+    return makeAirBlock();
 }
 
-void Chunk::resizeBitArray(uint8_t new_bits_per_block) {
-    // Calculate new data array size based on 4096 volume
-    size_t new_size = (VOLUME * new_bits_per_block + 63) / 64;
-    std::vector<uint64_t> new_data(new_size, 0);
-    
-    // Temporarily copy old state to unpack
-    uint8_t old_bits_per_block = bits_per_block_;
-    std::vector<uint64_t> old_data = std::move(data_);
-    
-    data_ = std::move(new_data);
-    bits_per_block_ = new_bits_per_block;
-    
-    // Repack if we had previous data
-    if (old_bits_per_block > 0) {
-        for (uint16_t i = 0; i < VOLUME; ++i) {
-            // Re-implementing a manual inline extraction from the old array here 
-            // to bypass the stateful `getPaletteIndex` dependency
-            size_t b_idx = i * old_bits_per_block;
-            size_t w_idx = b_idx / 64;
-            size_t b_off = b_idx % 64;
-            uint32_t p_idx = 0;
-            
-            if (b_off + old_bits_per_block <= 64) {
-                p_idx = static_cast<uint32_t>((old_data[w_idx] >> b_off) & ((1ULL << old_bits_per_block) - 1ULL));
-            } else {
-                size_t first = 64 - b_off;
-                size_t next = old_bits_per_block - first;
-                uint32_t v1 = static_cast<uint32_t>((old_data[w_idx] >> b_off) & ((1ULL << first) - 1ULL));
-                uint32_t v2 = static_cast<uint32_t>(old_data[w_idx + 1] & ((1ULL << next) - 1ULL));
-                p_idx = v1 | (v2 << first);
+BlockMaterial Chunk::downsampleBlockFromChildren(const MipStorage& childLevel,
+                                                 uint8_t px,
+                                                 uint8_t py,
+                                                 uint8_t pz) {
+    const uint8_t cx = static_cast<uint8_t>(px << 1);
+    const uint8_t cy = static_cast<uint8_t>(py << 1);
+    const uint8_t cz = static_cast<uint8_t>(pz << 1);
+
+    std::array<BlockMaterial, 8> candidates{};
+    std::array<uint8_t, 8> candidateCounts{};
+    size_t candidateCount = 0;
+    uint8_t solidChildCount = 0;
+
+    for (uint8_t dz = 0; dz < 2; ++dz) {
+        for (uint8_t dy = 0; dy < 2; ++dy) {
+            for (uint8_t dx = 0; dx < 2; ++dx) {
+                const BlockMaterial child =
+                    (childLevel.bitsPerBlock == 0)
+                        ? childLevel.palette[0]
+                        : [&childLevel, cx, cy, cz, dx, dy, dz]() {
+                              const uint32_t childIndex = getPaletteIndex(
+                                  childLevel,
+                                  getVoxelIndex(
+                                      static_cast<uint8_t>(cx + dx),
+                                      static_cast<uint8_t>(cy + dy),
+                                      static_cast<uint8_t>(cz + dz),
+                                      childLevel.size));
+                              if (childIndex >= childLevel.palette.size()) {
+                                  return airBlock();
+                              }
+                              return childLevel.palette[childIndex];
+                          }();
+
+                if (!isSolid(child)) {
+                    continue;
+                }
+
+                ++solidChildCount;
+
+                bool merged = false;
+                for (size_t i = 0; i < candidateCount; ++i) {
+                    if (candidates[i] == child) {
+                        ++candidateCounts[i];
+                        merged = true;
+                        break;
+                    }
+                }
+
+                if (!merged && candidateCount < candidates.size()) {
+                    candidates[candidateCount] = child;
+                    candidateCounts[candidateCount] = 1;
+                    ++candidateCount;
+                }
             }
-            setPaletteIndex(i, p_idx);
         }
+    }
+
+    if (solidChildCount < 4 || candidateCount == 0) {
+        return airBlock();
+    }
+
+    size_t bestIndex = 0;
+    for (size_t i = 1; i < candidateCount; ++i) {
+        if (candidateCounts[i] > candidateCounts[bestIndex]) {
+            bestIndex = i;
+        }
+    }
+
+    return candidates[bestIndex];
+}
+
+void Chunk::setBlockInStorage(MipStorage& storage,
+                              uint8_t x,
+                              uint8_t y,
+                              uint8_t z,
+                              BlockMaterial blockID,
+                              bool* outChanged) {
+    if (outChanged != nullptr) {
+        *outChanged = false;
+    }
+
+    if (x >= storage.size || y >= storage.size || z >= storage.size) {
+        return;
+    }
+
+    const uint16_t voxelIndex = getVoxelIndex(x, y, z, storage.size);
+
+    auto it = std::find(storage.palette.begin(), storage.palette.end(), blockID);
+    uint32_t paletteIndex = 0;
+
+    if (it != storage.palette.end()) {
+        paletteIndex = static_cast<uint32_t>(std::distance(storage.palette.begin(), it));
+    } else {
+        paletteIndex = static_cast<uint32_t>(storage.palette.size());
+        storage.palette.push_back(blockID);
+
+        if (storage.palette.size() > (1ULL << storage.bitsPerBlock)) {
+            const uint8_t newBitsPerBlock = storage.bitsPerBlock == 0 ? 1 : storage.bitsPerBlock + 1;
+            resizeBitArray(storage, newBitsPerBlock);
+        }
+    }
+
+    const uint32_t previousIndex = (storage.bitsPerBlock == 0)
+        ? 0u
+        : getPaletteIndex(storage, voxelIndex);
+
+    if (previousIndex == paletteIndex) {
+        return;
+    }
+
+    if (storage.bitsPerBlock > 0) {
+        setPaletteIndex(storage, voxelIndex, paletteIndex);
+    }
+
+    if (outChanged != nullptr) {
+        *outChanged = true;
     }
 }

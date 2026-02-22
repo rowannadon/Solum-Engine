@@ -26,15 +26,21 @@ struct World::ColumnGenerationResult {
     bool generated = false;
 };
 
-WorldSection::WorldSection(const World& world, const BlockCoord& origin, const glm::ivec3& extent)
-    : world_(world), origin_(origin), extent_(extent) {}
+WorldSection::WorldSection(const World& world,
+                           const BlockCoord& origin,
+                           const glm::ivec3& extent,
+                           uint8_t mipLevel)
+    : world_(world),
+      origin_(origin),
+      extent_(extent),
+      mipLevel_(std::min<uint8_t>(mipLevel, Chunk::MAX_MIP_LEVEL)) {}
 
 BlockMaterial WorldSection::getBlock(const BlockCoord& coord) const {
-    return world_.getBlock(coord);
+    return world_.getBlock(coord, mipLevel_);
 }
 
 bool WorldSection::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const {
-    return world_.tryGetBlock(coord, outBlock);
+    return world_.tryGetBlock(coord, outBlock, mipLevel_);
 }
 
 BlockMaterial WorldSection::getLocalBlock(int32_t x, int32_t y, int32_t z) const {
@@ -42,7 +48,7 @@ BlockMaterial WorldSection::getLocalBlock(int32_t x, int32_t y, int32_t z) const
         origin_.v.x + x,
         origin_.v.y + y,
         origin_.v.z + z
-    });
+    }, mipLevel_);
 }
 
 bool WorldSection::tryGetLocalBlock(int32_t x, int32_t y, int32_t z, BlockMaterial& outBlock) const {
@@ -50,7 +56,7 @@ bool WorldSection::tryGetLocalBlock(int32_t x, int32_t y, int32_t z, BlockMateri
         origin_.v.x + x,
         origin_.v.y + y,
         origin_.v.z + z
-    }, outBlock);
+    }, outBlock, mipLevel_);
 }
 
 void WorldSection::copySamples(std::vector<Sample>& outSamples) const {
@@ -77,7 +83,7 @@ void WorldSection::copySamples(std::vector<Sample>& outSamples) const {
                     origin_.v.y + y,
                     origin_.v.z + z
                 };
-                sample.known = world_.tryGetBlockLocked(coord, sample.block);
+                sample.known = world_.tryGetBlockLocked(coord, sample.block, mipLevel_);
                 outSamples[index] = sample;
             }
         }
@@ -102,14 +108,22 @@ void World::waitForIdle() {
 }
 
 BlockMaterial World::getBlock(const BlockCoord& coord) const {
+    return getBlock(coord, 0);
+}
+
+BlockMaterial World::getBlock(const BlockCoord& coord, uint8_t mipLevel) const {
     BlockMaterial block = airBlock();
-    tryGetBlock(coord, block);
+    tryGetBlock(coord, block, mipLevel);
     return block;
 }
 
 bool World::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const {
+    return tryGetBlock(coord, outBlock, 0);
+}
+
+bool World::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
-    return tryGetBlockLocked(coord, outBlock);
+    return tryGetBlockLocked(coord, outBlock, mipLevel);
 }
 
 bool World::isColumnGenerated(const ColumnCoord& coord) const {
@@ -117,13 +131,23 @@ bool World::isColumnGenerated(const ColumnCoord& coord) const {
     return isColumnGeneratedLocked(coord);
 }
 
-bool World::tryGetBlockLocked(const BlockCoord& coord, BlockMaterial& outBlock) const {
-    if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT_BLOCKS) {
+bool World::tryGetBlockLocked(const BlockCoord& coord,
+                              BlockMaterial& outBlock,
+                              uint8_t mipLevel) const {
+    const uint8_t clampedMip = std::min<uint8_t>(mipLevel, Chunk::MAX_MIP_LEVEL);
+    const int32_t chunkSizeAtMip = static_cast<int32_t>(Chunk::mipSize(clampedMip));
+    const int32_t worldHeightAtMip = cfg::COLUMN_HEIGHT_BLOCKS >> clampedMip;
+
+    if (coord.v.z < 0 || coord.v.z >= worldHeightAtMip) {
         outBlock = airBlock();
         return false;
     }
 
-    const ChunkCoord chunkCoord = block_to_chunk(coord);
+    const ChunkCoord chunkCoord{
+        floor_div(coord.v.x, chunkSizeAtMip),
+        floor_div(coord.v.y, chunkSizeAtMip),
+        floor_div(coord.v.z, chunkSizeAtMip)
+    };
     if (chunkCoord.v.z < 0 || chunkCoord.v.z >= cfg::COLUMN_HEIGHT) {
         outBlock = airBlock();
         return false;
@@ -146,7 +170,11 @@ bool World::tryGetBlockLocked(const BlockCoord& coord, BlockMaterial& outBlock) 
     }
 
     const glm::ivec2 localColumn = column_local_in_region(columnCoord);
-    const glm::ivec3 localBlock = block_local_in_chunk(coord);
+    const glm::ivec3 localBlock{
+        floor_mod(coord.v.x, chunkSizeAtMip),
+        floor_mod(coord.v.y, chunkSizeAtMip),
+        floor_mod(coord.v.z, chunkSizeAtMip)
+    };
     const Column& column = regionIt->second->getColumn(
         static_cast<uint8_t>(localColumn.x),
         static_cast<uint8_t>(localColumn.y)
@@ -155,13 +183,20 @@ bool World::tryGetBlockLocked(const BlockCoord& coord, BlockMaterial& outBlock) 
     outBlock = column.getChunk(static_cast<uint8_t>(chunkCoord.v.z)).getBlock(
         static_cast<uint8_t>(localBlock.x),
         static_cast<uint8_t>(localBlock.y),
-        static_cast<uint8_t>(localBlock.z)
+        static_cast<uint8_t>(localBlock.z),
+        clampedMip
     );
     return true;
 }
 
 WorldSection World::createSection(const BlockCoord& origin, const glm::ivec3& extent) const {
-    return WorldSection(*this, origin, extent);
+    return createSection(origin, extent, 0);
+}
+
+WorldSection World::createSection(const BlockCoord& origin,
+                                  const glm::ivec3& extent,
+                                  uint8_t mipLevel) const {
+    return WorldSection(*this, origin, extent, mipLevel);
 }
 
 void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {

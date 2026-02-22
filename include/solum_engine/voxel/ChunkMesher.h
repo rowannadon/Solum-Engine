@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 class IBlockSource {
@@ -16,11 +17,14 @@ public:
 
 class ChunkMesher {
 public:
+    static constexpr uint16_t kCulledSolidBlockId = 255u;
+
     std::vector<Meshlet> mesh(const Chunk& chunk, const ChunkCoord& coord, const std::vector<const Chunk*>& neighbors) const;
     std::vector<Meshlet> mesh(const IBlockSource& source,
                               const BlockCoord& sectionOrigin,
                               const glm::ivec3& sectionExtent,
-                              const glm::ivec3& meshletOrigin) const;
+                              const glm::ivec3& meshletOrigin,
+                              uint32_t voxelScale = 1u) const;
 
     static constexpr std::array<glm::ivec3, 6> directionOffsets = {
         glm::ivec3(1, 0, 0),   // PlusX

@@ -35,13 +35,17 @@ bool WebGPURenderer::initialize() {
 	World::Config worldConfig;
 	worldConfig.columnLoadRadius = 16;
 	worldConfig.jobConfig.worker_threads = 4;
-	world_ = std::make_unique<World>(worldConfig);
 
 	MeshManager::Config meshConfig;
-	meshConfig.columnMeshRadius = std::max(1, worldConfig.columnLoadRadius);
+	meshConfig.lodChunkRadii = {4, 16, 32};
 	meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
+	const int32_t maxLodSpanChunks = 1 << (static_cast<int32_t>(meshConfig.lodChunkRadii.size()) - 1);
+	const int32_t requiredGenerationRadius = meshConfig.lodChunkRadii.back() + (maxLodSpanChunks - 1);
+	worldConfig.columnLoadRadius = std::max(worldConfig.columnLoadRadius, requiredGenerationRadius);
+
+	world_ = std::make_unique<World>(worldConfig);
 	voxelMeshManager_ = std::make_unique<MeshManager>(*world_, meshConfig);
-	uploadColumnRadius_ = std::max(1, meshConfig.columnMeshRadius + 1);
+	uploadColumnRadius_ = std::max(1, meshConfig.lodChunkRadii.back() + 1);
 
 	const glm::vec3 initialPlayerPosition(0.0f, 0.0f, 0.0f);
 	world_->updatePlayerPosition(initialPlayerPosition);
@@ -234,11 +238,11 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 		0.15;
 	const bool intervalElapsed =
 		lastMeshUploadTimeSeconds_ < 0.0 || (now - lastMeshUploadTimeSeconds_) >= minUploadIntervalSeconds;
-	const bool forceForLargeCenterShift = centerShift >= 2;
+	const bool forceForCenterChange = centerChanged && centerShift >= 1;
 
 	// Avoid full-buffer upload every single column-step while generation is in flight.
-	// We still force upload when the camera moved far enough to avoid appearing frozen.
-	if (pendingJobs && !intervalElapsed && !forceForLargeCenterShift) {
+	// We still force upload for center changes so visible LOD rings can switch as the player moves.
+	if (pendingJobs && !intervalElapsed && !forceForCenterChange) {
 		return;
 	}
 

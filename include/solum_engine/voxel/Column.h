@@ -10,10 +10,17 @@ public:
     Column() = default;
 
     // Z is the vertical axis (z-up). X/Y address the horizontal plane.
-    inline BlockMaterial getBlock(uint8_t x, uint8_t y, uint16_t z) const {
-        uint8_t chunk_z = z / Chunk::SIZE;
-        uint8_t local_z = z % Chunk::SIZE;
-        return chunks_[chunk_z].getBlock(x, y, local_z);
+    inline BlockMaterial getBlock(uint8_t x, uint8_t y, uint16_t z, uint8_t mipLevel = 0) const {
+        const uint8_t chunkSizeAtMip = Chunk::mipSize(mipLevel);
+        if (x >= chunkSizeAtMip || y >= chunkSizeAtMip) {
+            return UnpackedBlockMaterial{}.pack();
+        }
+        const uint8_t chunk_z = static_cast<uint8_t>(z / chunkSizeAtMip);
+        if (chunk_z >= HEIGHT) {
+            return UnpackedBlockMaterial{}.pack();
+        }
+        const uint8_t local_z = static_cast<uint8_t>(z % chunkSizeAtMip);
+        return chunks_[chunk_z].getBlock(x, y, local_z, mipLevel);
     }
 
     inline void setBlock(uint8_t x, uint8_t y, uint16_t z, const BlockMaterial blockID) {

@@ -5,14 +5,20 @@
 #include <algorithm>
 
 namespace {
+    constexpr uint16_t kAirBlockId = 0u;
+
     constexpr int kChunkSize = Chunk::SIZE;
     constexpr int kChunkSizePadded = kChunkSize + 2;
     constexpr int kPaddedPlaneArea = kChunkSizePadded * kChunkSizePadded;
     constexpr int kPaddedBlockCount = kChunkSizePadded * kChunkSizePadded * kChunkSizePadded;
 
-    // Assuming Block ID 0 is Air/Empty. Adjust this if your material logic is different.
-    inline bool IsSolid(BlockMaterial blockID) {
-        return blockID.unpack().id != 0u;
+    inline bool IsSolidForCulling(BlockMaterial blockID) {
+        return blockID.unpack().id != kAirBlockId;
+    }
+
+    inline bool IsRenderableSolid(BlockMaterial blockID) {
+        const uint16_t id = blockID.unpack().id;
+        return id != kAirBlockId && id != ChunkMesher::kCulledSolidBlockId;
     }
 
     std::vector<Meshlet> flattenMeshlets(const std::array<std::vector<Meshlet>, 6>& meshletsByDirection) {
@@ -113,7 +119,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
                 const int paddedZ = z + 1;
 
                 const BlockMaterial blockID = paddedBlockData[paddedIndex(paddedX, paddedY, paddedZ)];
-                if (!IsSolid(blockID)) {
+                if (!IsRenderableSolid(blockID)) {
                     continue;
                 }
 
@@ -126,7 +132,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
                     
                     BlockMaterial neighborBlockID = paddedBlockData[paddedIndex(neighborX, neighborY, neighborZ)];
                     
-                    if (IsSolid(neighborBlockID)) {
+                    if (IsSolidForCulling(neighborBlockID)) {
                         continue; // Face is occluded
                     }
 
@@ -142,7 +148,8 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
 std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                                        const BlockCoord& sectionOrigin,
                                        const glm::ivec3& sectionExtent,
-                                       const glm::ivec3& meshletOrigin) const {
+                                       const glm::ivec3& meshletOrigin,
+                                       uint32_t voxelScale) const {
     if (sectionExtent.x <= 0 || sectionExtent.y <= 0 || sectionExtent.z <= 0) {
         return {};
     }
@@ -159,6 +166,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
             Meshlet meshlet{};
             meshlet.origin = meshletOrigin;
             meshlet.faceDirection = dir;
+            meshlet.voxelScale = std::max(voxelScale, 1u);
             dirMeshlets.push_back(meshlet);
         }
 
@@ -177,7 +185,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                 };
 
                 const BlockMaterial blockID = source.getBlock(blockCoord);
-                if (!IsSolid(blockID)) {
+                if (!IsRenderableSolid(blockID)) {
                     continue;
                 }
 
@@ -190,7 +198,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                     };
 
                     const BlockMaterial neighborBlockID = source.getBlock(neighborCoord);
-                    if (IsSolid(neighborBlockID)) {
+                    if (IsSolidForCulling(neighborBlockID)) {
                         continue;
                     }
 

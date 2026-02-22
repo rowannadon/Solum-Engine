@@ -27,10 +27,11 @@ public:
         bool known = false;
     };
 
-    WorldSection(const World& world, const BlockCoord& origin, const glm::ivec3& extent);
+    WorldSection(const World& world, const BlockCoord& origin, const glm::ivec3& extent, uint8_t mipLevel = 0);
 
     const BlockCoord& origin() const { return origin_; }
     const glm::ivec3& extent() const { return extent_; }
+    uint8_t mipLevel() const { return mipLevel_; }
 
     BlockMaterial getBlock(const BlockCoord& coord) const override;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const;
@@ -42,6 +43,7 @@ private:
     const World& world_;
     BlockCoord origin_;
     glm::ivec3 extent_;
+    uint8_t mipLevel_ = 0;
 };
 
 class World : public IBlockSource {
@@ -64,10 +66,13 @@ public:
     void waitForIdle();
 
     BlockMaterial getBlock(const BlockCoord& coord) const override;
+    BlockMaterial getBlock(const BlockCoord& coord, uint8_t mipLevel) const;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const;
+    bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
     bool isColumnGenerated(const ColumnCoord& coord) const;
 
     WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent) const;
+    WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent, uint8_t mipLevel) const;
 
     bool hasPendingJobs() const;
 
@@ -81,7 +86,7 @@ private:
 
     void onColumnGenerated(const ColumnCoord& coord, Column&& column);
 
-    bool tryGetBlockLocked(const BlockCoord& coord, BlockMaterial& outBlock) const;
+    bool tryGetBlockLocked(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
     bool isColumnGeneratedLocked(const ColumnCoord& coord) const;
     bool isWithinActiveWindowLocked(const ColumnCoord& coord, int32_t extraRadius) const;
     Region* getOrCreateRegionLocked(const RegionCoord& coord);
