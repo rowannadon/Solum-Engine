@@ -17,32 +17,62 @@
 
 class World;
 
-struct LODChunkCoord {
-    ChunkCoord coord{};
-    uint8_t lodLevel = 0;
+struct MeshTileCoord {
+    int32_t x = 0;
+    int32_t y = 0;
 
-    friend bool operator==(const LODChunkCoord& a, const LODChunkCoord& b) {
-        return a.lodLevel == b.lodLevel && a.coord == b.coord;
+    friend bool operator==(const MeshTileCoord& a, const MeshTileCoord& b) {
+        return a.x == b.x && a.y == b.y;
     }
 
-    friend bool operator<(const LODChunkCoord& a, const LODChunkCoord& b) {
+    friend bool operator<(const MeshTileCoord& a, const MeshTileCoord& b) {
+        if (a.x != b.x) {
+            return a.x < b.x;
+        }
+        return a.y < b.y;
+    }
+};
+
+struct TileLodCoord {
+    MeshTileCoord tile{};
+    uint8_t lodLevel = 0;
+
+    friend bool operator==(const TileLodCoord& a, const TileLodCoord& b) {
+        return a.lodLevel == b.lodLevel && a.tile == b.tile;
+    }
+
+    friend bool operator<(const TileLodCoord& a, const TileLodCoord& b) {
         if (a.lodLevel != b.lodLevel) {
             return a.lodLevel < b.lodLevel;
         }
-        return a.coord < b.coord;
+        return a.tile < b.tile;
     }
 };
 
 namespace std {
 template <>
-struct hash<LODChunkCoord> {
-    size_t operator()(const LODChunkCoord& coord) const noexcept {
+struct hash<MeshTileCoord> {
+    size_t operator()(const MeshTileCoord& coord) const noexcept {
 #if SIZE_MAX > UINT32_MAX
         constexpr size_t kGoldenRatio = 0x9e3779b97f4a7c15ull;
 #else
         constexpr size_t kGoldenRatio = 0x9e3779b9u;
 #endif
-        size_t seed = hash<ChunkCoord>{}(coord.coord);
+        size_t seed = hash<int32_t>{}(coord.x);
+        seed ^= hash<int32_t>{}(coord.y) + kGoldenRatio + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
+
+template <>
+struct hash<TileLodCoord> {
+    size_t operator()(const TileLodCoord& coord) const noexcept {
+#if SIZE_MAX > UINT32_MAX
+        constexpr size_t kGoldenRatio = 0x9e3779b97f4a7c15ull;
+#else
+        constexpr size_t kGoldenRatio = 0x9e3779b9u;
+#endif
+        size_t seed = hash<MeshTileCoord>{}(coord.tile);
         seed ^= hash<uint8_t>{}(coord.lodLevel) + kGoldenRatio + (seed << 6) + (seed >> 2);
         return seed;
     }
@@ -74,44 +104,57 @@ public:
     bool hasPendingJobs() const;
 
 private:
+    struct MeshTileState {
+        std::unordered_map<uint8_t, std::vector<Meshlet>> lodMeshes;
+        int8_t desiredLod = -1;
+        int8_t renderedLod = -1;
+    };
+
     struct MeshGenerationResult;
 
-    void scheduleLodRingsAround(const ChunkCoord& centerChunk, int32_t centerShiftChunks);
+    void scheduleTilesAround(const ChunkCoord& centerChunk, int32_t centerShiftChunks);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);
-    void scheduleChunkMeshing(const LODChunkCoord& coord,
-                              jobsystem::Priority priority,
-                              bool forceRemesh,
-                              const ChunkCoord& centerChunkForSeams,
-                              int32_t activeWindowExtraChunks);
+    void scheduleTileLodMeshing(const TileLodCoord& coord,
+                                jobsystem::Priority priority,
+                                bool forceRemesh,
+                                int32_t activeWindowExtraChunks);
 
-    void onChunkMeshed(const LODChunkCoord& coord, std::vector<Meshlet>&& meshlets);
+    void onTileLodMeshed(const TileLodCoord& coord, std::vector<Meshlet>&& meshlets);
 
-    bool isInDesiredRingForCenter(const LODChunkCoord& coord,
-                                  const ChunkCoord& centerChunk,
-                                  int32_t extraChunks) const;
-    bool isWithinActiveWindowLocked(const LODChunkCoord& coord, int32_t extraChunks) const;
-    bool isFootprintGenerated(const LODChunkCoord& coord) const;
+    int8_t desiredLodForTile(const MeshTileCoord& tileCoord,
+                             const ChunkCoord& centerChunk,
+                             int32_t extraChunks) const;
+    bool isTileWithinActiveWindowLocked(const MeshTileCoord& tileCoord, int32_t extraChunks) const;
+    bool isTileFootprintGenerated(const MeshTileCoord& tileCoord) const;
+    int8_t chooseRenderableLodForTileLocked(const MeshTileState& state) const;
+    void refreshRenderedLodsLocked();
+
+    std::vector<Meshlet> meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const;
 
     int32_t maxConfiguredRadius() const;
 
     static uint8_t chunkSpanForLod(uint8_t lodLevel);
     static int32_t chunkZCountForLod(uint8_t lodLevel);
-    static jobsystem::Priority priorityFromDistanceSq(int32_t distanceSq);
+    static jobsystem::Priority priorityFromLodLevel(uint8_t lodLevel);
     static void sanitizeConfig(Config& config);
 
     const World& world_;
     Config config_;
     jobsystem::JobSystem jobs_;
+    int32_t meshTileSizeChunks_ = 1;
 
     mutable std::shared_mutex meshMutex_;
     std::unordered_set<ColumnCoord> knownGeneratedColumns_;
-    std::unordered_set<LODChunkCoord> pendingMeshJobs_;
-    std::unordered_set<LODChunkCoord> deferredRemeshChunks_;
-    std::unordered_map<LODChunkCoord, std::vector<Meshlet>> chunkMeshes_;
+    std::unordered_set<TileLodCoord> pendingTileJobs_;
+    std::unordered_set<TileLodCoord> deferredRemeshTileLods_;
+    std::unordered_map<MeshTileCoord, MeshTileState> meshTiles_;
 
     std::atomic<uint64_t> meshRevision_{0};
     std::atomic<bool> shuttingDown_{false};
 
     ChunkCoord lastScheduledCenterChunk_{0, 0, 0};
     bool hasLastScheduledCenter_ = false;
+    ColumnCoord remeshScanCenter_{0, 0};
+    bool hasRemeshScanCenter_ = false;
+    int32_t remeshScanNextIndex_ = 0;
 };
