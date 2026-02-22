@@ -37,13 +37,16 @@ private:
     std::optional<RenderServices> services_;
     std::optional<VoxelPipeline> voxelPipeline_;
 
+    jobsystem::JobSystem js;
+    jobsystem::JobSystem::Config jobcfg{4};
+
     bool resizePending = false;
 
     // Add this for ImGUI support
     RenderPassEncoder currentCommandEncoder = nullptr;
 
 public:
-    WebGPURenderer() = default;
+    WebGPURenderer() : js{jobcfg} {};
 
     bool initialize();
 

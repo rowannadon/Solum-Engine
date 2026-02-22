@@ -17,7 +17,7 @@ public:
         glm::ivec3(-1, 0, 0),  // MinusX
         glm::ivec3(0, 1, 0),   // PlusY
         glm::ivec3(0, -1, 0),  // MinusY
-        glm::ivec3(0, 0, 1),   // PlusZ
-        glm::ivec3(0, 0, -1),  // MinusZ
+        glm::ivec3(0, 0, 1),   // PlusZ (up in z-up world)
+        glm::ivec3(0, 0, -1),  // MinusZ (down in z-up world)
     };
 };

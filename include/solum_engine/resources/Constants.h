@@ -23,6 +23,7 @@ enum Direction {
     MinusX,
     PlusY,
     MinusY,
+    // In z-up mode, +Z/-Z are top/bottom.
     PlusZ,
     MinusZ
 };

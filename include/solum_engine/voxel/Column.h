@@ -9,20 +9,21 @@ public:
 
     Column() = default;
 
-    inline BlockMaterial getBlock(uint8_t x, uint16_t y, uint8_t z) const {
-        uint8_t chunk_y = y / Chunk::SIZE;
-        uint8_t local_y = y % Chunk::SIZE;
-        return chunks_[chunk_y].getBlock(x, local_y, z);
+    // Z is the vertical axis (z-up). X/Y address the horizontal plane.
+    inline BlockMaterial getBlock(uint8_t x, uint8_t y, uint16_t z) const {
+        uint8_t chunk_z = z / Chunk::SIZE;
+        uint8_t local_z = z % Chunk::SIZE;
+        return chunks_[chunk_z].getBlock(x, y, local_z);
     }
 
-    inline void setBlock(uint8_t x, uint16_t y, uint8_t z, const BlockMaterial blockID) {
-        uint8_t chunk_y = y / Chunk::SIZE;
-        uint8_t local_y = y % Chunk::SIZE;
-        chunks_[chunk_y].setBlock(x, local_y, z, blockID);
+    inline void setBlock(uint8_t x, uint8_t y, uint16_t z, const BlockMaterial blockID) {
+        uint8_t chunk_z = z / Chunk::SIZE;
+        uint8_t local_z = z % Chunk::SIZE;
+        chunks_[chunk_z].setBlock(x, y, local_z, blockID);
     }
 
-    Chunk& getChunk(uint8_t chunk_y) { return chunks_[chunk_y]; }
-    const Chunk& getChunk(uint8_t chunk_y) const { return chunks_[chunk_y]; }
+    Chunk& getChunk(uint8_t chunk_z) { return chunks_[chunk_z]; }
+    const Chunk& getChunk(uint8_t chunk_z) const { return chunks_[chunk_z]; }
 
 private:
     std::array<Chunk, HEIGHT> chunks_;

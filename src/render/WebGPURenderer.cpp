@@ -30,89 +30,32 @@ bool WebGPURenderer::initialize() {
 		if (!ubo) return false;
 	}
 
-    std::random_device dev;
-    std::mt19937 rng(dev());
-    std::uniform_int_distribution<std::mt19937::result_type> dist(1,10);
-    std::uniform_int_distribution<std::mt19937::result_type> dist2(1,10);
-
-	UnpackedBlockMaterial mat;
-	mat.id = 1;
-
-	UnpackedBlockMaterial air;
-	air.id = 0;
-
 	RegionManager rm;
-	RegionCoord coord = RegionCoord(glm::ivec3(0));
+	RegionCoord coord = RegionCoord(glm::ivec2(0));
 	rm.addRegion(coord);
 
 	Region* region = rm.getRegion(coord);
 
-	Column col = region->getColumn(0, 0);
-
 	TerrainGenerator gen;
 	
-	gen.generateColumn(glm::ivec3(0), col);
-
 	ChunkMesher mesher;
 
-	std::vector<const Chunk*> neighbors;
-	for (int i = 0; i < 8; i++) {
-		neighbors.push_back(nullptr);
-	}
+	std::vector<const Chunk*> neighbors(6, nullptr);
 
 	std::vector<Meshlet> totalMeshlets;
-	for (int i = 0; i < cfg::COLUMN_HEIGHT; i++) {
-		std::vector<Meshlet> chunkMeshlets = mesher.mesh(col.getChunk(i), ChunkCoord(glm::ivec3(0, 0, i)), neighbors);
-		totalMeshlets.insert(totalMeshlets.end(), chunkMeshlets.begin(), chunkMeshlets.end());
+	for (int x = 0; x < 8; x++) {
+		for (int y = 0; y < 8; y++) {
+			Column& col = region->getColumn(x, y);
+			gen.generateColumn(glm::ivec3(x * cfg::CHUNK_SIZE, y * cfg::CHUNK_SIZE, 0), col);
+
+			for (int chunk_z = 0; chunk_z < cfg::COLUMN_HEIGHT; chunk_z++) {
+				const ChunkCoord chunkCoord = column_local_to_chunk(ColumnCoord(x, y), chunk_z);
+				std::vector<Meshlet> chunkMeshlets = mesher.mesh(col.getChunk(static_cast<uint8_t>(chunk_z)), chunkCoord, neighbors);
+				totalMeshlets.insert(totalMeshlets.end(), chunkMeshlets.begin(), chunkMeshlets.end());
+			}
+		}
 	}
-
-	// for (int x = 0; x < cfg::CHUNK_SIZE; x++) {
-	// 	for (int y = 0; y < cfg::CHUNK_SIZE; y++) {
-	// 		for (int z = 0; z < cfg::CHUNK_SIZE; z++) {
-	// 			mat.id = dist2(rng);
-	// 			if (true) {
-	// 				chunk.setBlock(x, y, z, mat.pack());
-	// 			}
-	// 			else {
-	// 				chunk.setBlock(x, y, z, air.pack());
-	// 			}
-	// 		}
-	// 	}
-	// }
-
-	// for (int x = 0; x < cfg::CHUNK_SIZE; x++) {
-	// 	for (int y = 0; y < cfg::CHUNK_SIZE; y++) {
-	// 		for (int z = 0; z < cfg::CHUNK_SIZE; z++) {
-	// 			mat.id = dist2(rng);
-	// 			if (dist(rng) == 1) {
-	// 				chunk2.setBlock(x, y, z, mat.pack());
-	// 			}
-	// 			else {
-	// 				chunk2.setBlock(x, y, z, air.pack());
-	// 			}
-	// 		}
-	// 	}
-	// }
-    
-	// std::vector<const Chunk*> neighbors;
-	// neighbors.push_back(&chunk2);
-	// neighbors.push_back(nullptr);
-	// neighbors.push_back(nullptr);
-	// neighbors.push_back(nullptr);
-	// neighbors.push_back(nullptr);
-	// neighbors.push_back(nullptr);
-
-	// std::vector<Meshlet> chunkMeshlets = mesher.mesh(chunk, ChunkCoord(glm::ivec3(0)), neighbors);
-
-	// std::vector<const Chunk*> neighbors2;
-	// neighbors2.push_back(nullptr);
-	// neighbors2.push_back(&chunk);
-	// neighbors2.push_back(nullptr);
-	// neighbors2.push_back(nullptr);
-	// neighbors2.push_back(nullptr);
-	// neighbors2.push_back(nullptr);
-
-	// std::vector<Meshlet> chunkMeshlets2 = mesher.mesh(chunk2, ChunkCoord(glm::ivec3(1, 0, 0)), neighbors2);
+	
 
 	uint32_t totalMeshletCount = static_cast<uint32_t>(totalMeshlets.size());
 	uint32_t totalQuadCount = 0;

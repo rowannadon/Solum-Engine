@@ -88,6 +88,9 @@ using ColumnCoord = GridCoord2<ColumnTag>;
 using ChunkCoord  = GridCoord3<ChunkTag>;
 using BlockCoord  = GridCoord3<BlockTag>;
 
+// Axis convention used throughout the engine:
+// X/Y are the horizontal plane, Z is vertical (z-up).
+
 template <typename Tag>
 inline std::ostream& operator<<(std::ostream& os, const GridCoord2<Tag>& coord) {
     os << "(" << coord.v.x << ", " << coord.v.y << ")";
@@ -187,7 +190,7 @@ inline constexpr ColumnCoord region_local_to_column(RegionCoord r, int32_t local
 }
 
 // Column + local z -> global ChunkCoord.
-// In your setup, local_z is [0..COLUMN_HEIGHT_CHUNKS-1] and equals the chunk's global z.
+// local_z is [0..cfg::COLUMN_HEIGHT-1] and maps to the chunk's global z in a z-up world.
 inline constexpr ChunkCoord column_local_to_chunk(ColumnCoord col, int32_t local_z) {
     return ChunkCoord{ col.v.x, col.v.y, local_z };
 }

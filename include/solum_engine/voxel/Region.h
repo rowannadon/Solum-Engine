@@ -12,28 +12,28 @@ public:
 
     BlockMaterial getBlock(uint16_t x, uint16_t y, uint16_t z) const {
         uint8_t col_x = x / Chunk::SIZE;
-        uint8_t col_z = z / Chunk::SIZE;
+        uint8_t col_y = y / Chunk::SIZE;
         uint8_t local_x = x % Chunk::SIZE;
-        uint8_t local_z = z % Chunk::SIZE;
+        uint8_t local_y = y % Chunk::SIZE;
         
-        return getColumn(col_x, col_z).getBlock(local_x, y, local_z);
+        return getColumn(col_x, col_y).getBlock(local_x, local_y, z);
     }
 
     void setBlock(uint16_t x, uint16_t y, uint16_t z, BlockMaterial blockID) {
         uint8_t col_x = x / Chunk::SIZE;
-        uint8_t col_z = z / Chunk::SIZE;
+        uint8_t col_y = y / Chunk::SIZE;
         uint8_t local_x = x % Chunk::SIZE;
-        uint8_t local_z = z % Chunk::SIZE;
+        uint8_t local_y = y % Chunk::SIZE;
         
-        getColumn(col_x, col_z).setBlock(local_x, y, local_z, blockID);
+        getColumn(col_x, col_y).setBlock(local_x, local_y, z, blockID);
     }
 
-    Column& getColumn(uint8_t x, uint8_t z) {
-        return columns_[z * SIZE + x];
+    Column& getColumn(uint8_t x, uint8_t y) {
+        return columns_[y * SIZE + x];
     }
 
-    const Column& getColumn(uint8_t x, uint8_t z) const {
-        return columns_[z * SIZE + x];
+    const Column& getColumn(uint8_t x, uint8_t y) const {
+        return columns_[y * SIZE + x];
     }
 
     RegionCoord getCoord() const { return coord_; }
