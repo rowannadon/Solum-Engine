@@ -13,7 +13,7 @@
 
 namespace {
 
-constexpr int kHeightmapUpscaleFactor = 2;
+constexpr int kHeightmapUpscaleFactor = 4;
 constexpr int kFallbackTerrainHeight = 100;
 
 struct HeightmapData {
@@ -125,8 +125,11 @@ int sampleTerrainHeight(const HeightmapData& heightmap, int worldX, int worldY) 
         return std::clamp(kFallbackTerrainHeight, 0, cfg::COLUMN_HEIGHT_BLOCKS - 1);
     }
 
-    const int sx = wrapIndex(worldX, heightmap.width);
-    const int sy = wrapIndex(worldY, heightmap.height);
+    // Shift world-space sampling so the upscaled map center lands at world origin.
+    const int centerOffsetX = heightmap.width / 2;
+    const int centerOffsetY = heightmap.height / 2;
+    const int sx = wrapIndex(worldX + centerOffsetX, heightmap.width);
+    const int sy = wrapIndex(worldY + centerOffsetY, heightmap.height);
     const float normalized = heightmap.heights[static_cast<size_t>(sy) * static_cast<size_t>(heightmap.width) +
                                                static_cast<size_t>(sx)];
     const int maxTerrainHeight = cfg::COLUMN_HEIGHT_BLOCKS - 1;

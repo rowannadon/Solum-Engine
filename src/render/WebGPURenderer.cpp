@@ -40,7 +40,6 @@ bool WebGPURenderer::initialize() {
 
 	const glm::vec3 initialPlayerPosition(0.0f, 0.0f, 0.0f);
 	world_->updatePlayerPosition(initialPlayerPosition);
-	world_->waitForIdle();
 
 	const BlockCoord initialBlock{
 		static_cast<int32_t>(std::floor(initialPlayerPosition.x)),
@@ -48,14 +47,16 @@ bool WebGPURenderer::initialize() {
 		static_cast<int32_t>(std::floor(initialPlayerPosition.z))
 	};
 	const ColumnCoord initialColumn = chunk_to_column(block_to_chunk(initialBlock));
+	// Initialize meshlet buffers immediately (possibly empty), then stream in meshlets
+	// incrementally as jobs complete.
 	if (!uploadMeshlets(world_->copyMeshletsAround(initialColumn, uploadColumnRadius_))) {
-		std::cerr << "Failed to upload initial world meshlets." << std::endl;
+		std::cerr << "Failed to initialize meshlet buffers." << std::endl;
 		return false;
 	}
 	uploadedMeshRevision_ = world_->meshRevision();
 	uploadedCenterColumn_ = initialColumn;
 	hasUploadedCenterColumn_ = true;
-	lastMeshUploadTimeSeconds_ = glfwGetTime();
+	lastMeshUploadTimeSeconds_ = -1.0;
 
 	voxelPipeline_.emplace(*services_);
 	voxelPipeline_->setDrawConfig(meshletManager->getVerticesPerMeshlet(), meshletManager->getMeshletCount());
