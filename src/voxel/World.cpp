@@ -1,10 +1,12 @@
 #include "solum_engine/voxel/World.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
+#include <exception>
 #include <iostream>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/voxel/Column.h"
@@ -12,55 +14,16 @@
 #include "solum_engine/voxel/TerrainGenerator.h"
 
 namespace {
-constexpr int kChunkExtent = cfg::CHUNK_SIZE;
-constexpr int kPaddedChunkExtent = cfg::CHUNK_SIZE + 2;
-constexpr int kPaddedChunkArea = kPaddedChunkExtent * kPaddedChunkExtent;
-constexpr int kPaddedChunkVoxelCount = kPaddedChunkExtent * kPaddedChunkExtent * kPaddedChunkExtent;
-
 BlockMaterial airBlock() {
     static const BlockMaterial kAir = UnpackedBlockMaterial{}.pack();
     return kAir;
 }
-
-BlockMaterial unknownCullingBlock() {
-    static const BlockMaterial kSolid = UnpackedBlockMaterial{1, 0, Direction::PlusZ, 0}.pack();
-    return kSolid;
-}
-
-struct PaddedChunkBlockSource final : IBlockSource {
-    BlockCoord origin{};
-    std::array<BlockMaterial, kPaddedChunkVoxelCount> blocks{};
-
-    static constexpr int index(int x, int y, int z) {
-        return (x * kPaddedChunkArea) + (y * kPaddedChunkExtent) + z;
-    }
-
-    BlockMaterial getBlock(const BlockCoord& coord) const override {
-        const int lx = coord.v.x - origin.v.x;
-        const int ly = coord.v.y - origin.v.y;
-        const int lz = coord.v.z - origin.v.z;
-        if (lx < 0 || ly < 0 || lz < 0 ||
-            lx >= kPaddedChunkExtent ||
-            ly >= kPaddedChunkExtent ||
-            lz >= kPaddedChunkExtent) {
-            return airBlock();
-        }
-
-        return blocks[static_cast<size_t>(index(lx, ly, lz))];
-    }
-};
 }  // namespace
 
 struct World::ColumnGenerationResult {
     ColumnCoord coord;
     Column column;
     bool generated = false;
-};
-
-struct World::MeshGenerationResult {
-    ChunkCoord coord;
-    std::vector<Meshlet> meshlets;
-    bool meshed = false;
 };
 
 WorldSection::WorldSection(const World& world, const BlockCoord& origin, const glm::ivec3& extent)
@@ -70,12 +33,55 @@ BlockMaterial WorldSection::getBlock(const BlockCoord& coord) const {
     return world_.getBlock(coord);
 }
 
+bool WorldSection::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const {
+    return world_.tryGetBlock(coord, outBlock);
+}
+
 BlockMaterial WorldSection::getLocalBlock(int32_t x, int32_t y, int32_t z) const {
     return world_.getBlock(BlockCoord{
         origin_.v.x + x,
         origin_.v.y + y,
         origin_.v.z + z
     });
+}
+
+bool WorldSection::tryGetLocalBlock(int32_t x, int32_t y, int32_t z, BlockMaterial& outBlock) const {
+    return world_.tryGetBlock(BlockCoord{
+        origin_.v.x + x,
+        origin_.v.y + y,
+        origin_.v.z + z
+    }, outBlock);
+}
+
+void WorldSection::copySamples(std::vector<Sample>& outSamples) const {
+    if (extent_.x <= 0 || extent_.y <= 0 || extent_.z <= 0) {
+        outSamples.clear();
+        return;
+    }
+
+    const size_t yzArea = static_cast<size_t>(extent_.y) * static_cast<size_t>(extent_.z);
+    const size_t sampleCount = static_cast<size_t>(extent_.x) * yzArea;
+    outSamples.resize(sampleCount);
+
+    std::shared_lock<std::shared_mutex> lock(world_.worldMutex_);
+    for (int32_t x = 0; x < extent_.x; ++x) {
+        for (int32_t y = 0; y < extent_.y; ++y) {
+            for (int32_t z = 0; z < extent_.z; ++z) {
+                const size_t index =
+                    (static_cast<size_t>(x) * yzArea) +
+                    (static_cast<size_t>(y) * static_cast<size_t>(extent_.z)) +
+                    static_cast<size_t>(z);
+                Sample sample;
+                const BlockCoord coord{
+                    origin_.v.x + x,
+                    origin_.v.y + y,
+                    origin_.v.z + z
+                };
+                sample.known = world_.tryGetBlockLocked(coord, sample.block);
+                outSamples[index] = sample;
+            }
+        }
+    }
 }
 
 World::World()
@@ -104,6 +110,11 @@ BlockMaterial World::getBlock(const BlockCoord& coord) const {
 bool World::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
     return tryGetBlockLocked(coord, outBlock);
+}
+
+bool World::isColumnGenerated(const ColumnCoord& coord) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    return isColumnGeneratedLocked(coord);
 }
 
 bool World::tryGetBlockLocked(const BlockCoord& coord, BlockMaterial& outBlock) const {
@@ -322,276 +333,26 @@ void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
         return;
     }
 
-    std::unordered_set<ChunkCoord> chunksToRemesh;
-    {
-        std::unique_lock<std::shared_mutex> lock(worldMutex_);
-        pendingColumnJobs_.erase(coord);
+    std::unique_lock<std::shared_mutex> lock(worldMutex_);
+    pendingColumnJobs_.erase(coord);
 
-        Region* region = getOrCreateRegionLocked(column_to_region(coord));
-        if (region == nullptr) {
-            return;
-        }
-
-        const glm::ivec2 localColumn = column_local_in_region(coord);
-        region->getColumn(
-            static_cast<uint8_t>(localColumn.x),
-            static_cast<uint8_t>(localColumn.y)
-        ) = std::move(column);
-
-        generatedColumns_.insert(coord);
-
-        auto queueColumnChunks = [&chunksToRemesh](const ColumnCoord& columnCoord) {
-            for (int32_t chunkZ = 0; chunkZ < cfg::COLUMN_HEIGHT; ++chunkZ) {
-                chunksToRemesh.insert(column_local_to_chunk(columnCoord, chunkZ));
-            }
-        };
-
-        queueColumnChunks(coord);
-
-        static constexpr std::array<glm::ivec2, 4> kNeighbors = {
-            glm::ivec2{1, 0},
-            glm::ivec2{-1, 0},
-            glm::ivec2{0, 1},
-            glm::ivec2{0, -1}
-        };
-
-        for (const glm::ivec2& neighborOffset : kNeighbors) {
-            const ColumnCoord neighbor{
-                coord.v.x + neighborOffset.x,
-                coord.v.y + neighborOffset.y
-            };
-            if (generatedColumns_.find(neighbor) != generatedColumns_.end()) {
-                queueColumnChunks(neighbor);
-            }
-        }
-    }
-
-    for (const ChunkCoord& chunkCoord : chunksToRemesh) {
-        scheduleChunkMeshing(chunkCoord, jobsystem::Priority::Normal, true);
-    }
-}
-
-void World::scheduleChunkMeshing(const ChunkCoord& coord,
-                                 jobsystem::Priority priority,
-                                 bool forceRemesh) {
-    bool shouldSchedule = false;
-    {
-        std::unique_lock<std::shared_mutex> lock(worldMutex_);
-        if (pendingMeshJobs_.find(coord) != pendingMeshJobs_.end()) {
-            if (forceRemesh) {
-                deferredRemeshChunks_.insert(coord);
-            }
-            return;
-        }
-
-        if (!isColumnGeneratedLocked(chunk_to_column(coord))) {
-            return;
-        }
-
-        if (!isWithinActiveWindowLocked(chunk_to_column(coord), 1)) {
-            return;
-        }
-
-        if (!forceRemesh && chunkMeshes_.find(coord) != chunkMeshes_.end()) {
-            return;
-        }
-
-        pendingMeshJobs_.insert(coord);
-        shouldSchedule = true;
-    }
-
-    if (!shouldSchedule) {
+    Region* region = getOrCreateRegionLocked(column_to_region(coord));
+    if (region == nullptr) {
         return;
     }
 
-    try {
-        jobs_.schedule(
-            priority,
-            [this, coord]() -> MeshGenerationResult {
-                {
-                    std::shared_lock<std::shared_mutex> lock(worldMutex_);
-                    if (!isWithinActiveWindowLocked(chunk_to_column(coord), 1)) {
-                        return MeshGenerationResult{
-                            coord,
-                            {},
-                            false
-                        };
-                    }
-                }
+    const glm::ivec2 localColumn = column_local_in_region(coord);
+    region->getColumn(
+        static_cast<uint8_t>(localColumn.x),
+        static_cast<uint8_t>(localColumn.y)
+    ) = std::move(column);
 
-                ChunkMesher mesher;
-                const BlockCoord chunkOrigin = chunk_to_block_origin(coord);
-                const BlockCoord paddedOrigin{
-                    chunkOrigin.v.x - 1,
-                    chunkOrigin.v.y - 1,
-                    chunkOrigin.v.z - 1
-                };
-
-                PaddedChunkBlockSource snapshot;
-                snapshot.origin = paddedOrigin;
-                snapshot.blocks.fill(airBlock());
-
-                {
-                    std::shared_lock<std::shared_mutex> lock(worldMutex_);
-                    for (int x = 0; x < kPaddedChunkExtent; ++x) {
-                        for (int y = 0; y < kPaddedChunkExtent; ++y) {
-                            for (int z = 0; z < kPaddedChunkExtent; ++z) {
-                                const BlockCoord coordToCopy{
-                                    paddedOrigin.v.x + x,
-                                    paddedOrigin.v.y + y,
-                                    paddedOrigin.v.z + z
-                                };
-
-                                BlockMaterial block = airBlock();
-                                if (!tryGetBlockLocked(coordToCopy, block)) {
-                                    // Keep vertical world bounds exposed, but suppress faces against
-                                    // not-yet-generated lateral neighbors to avoid edge flicker/remesh churn.
-                                    if (coordToCopy.v.z >= 0 && coordToCopy.v.z < cfg::COLUMN_HEIGHT_BLOCKS) {
-                                        block = unknownCullingBlock();
-                                    } else {
-                                        block = airBlock();
-                                    }
-                                }
-                                snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(x, y, z))] = block;
-                            }
-                        }
-                    }
-                }
-
-                const glm::ivec3 chunkExtent{kChunkExtent, kChunkExtent, kChunkExtent};
-                std::vector<Meshlet> meshlets = mesher.mesh(
-                    snapshot,
-                    chunkOrigin,
-                    chunkExtent,
-                    chunkOrigin.v
-                );
-
-                return MeshGenerationResult{
-                    coord,
-                    std::move(meshlets),
-                    true
-                };
-            },
-            [this, coord](jobsystem::JobResult<MeshGenerationResult>&& result) {
-                if (!result.success()) {
-                    std::unique_lock<std::shared_mutex> lock(worldMutex_);
-                    pendingMeshJobs_.erase(coord);
-                    deferredRemeshChunks_.erase(coord);
-                    return;
-                }
-
-                MeshGenerationResult meshResult = std::move(result).value();
-                if (!meshResult.meshed) {
-                    std::unique_lock<std::shared_mutex> lock(worldMutex_);
-                    pendingMeshJobs_.erase(coord);
-                    deferredRemeshChunks_.erase(coord);
-                    return;
-                }
-                onChunkMeshed(meshResult.coord, std::move(meshResult.meshlets));
-            }
-        );
-    } catch (const std::exception&) {
-        std::unique_lock<std::shared_mutex> lock(worldMutex_);
-        pendingMeshJobs_.erase(coord);
-        deferredRemeshChunks_.erase(coord);
-    }
-}
-
-void World::onChunkMeshed(const ChunkCoord& coord, std::vector<Meshlet>&& meshlets) {
-    if (shuttingDown_.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    bool needsDeferredRemesh = false;
-    {
-        std::unique_lock<std::shared_mutex> lock(worldMutex_);
-        pendingMeshJobs_.erase(coord);
-        chunkMeshes_[coord] = std::move(meshlets);
-
-        auto deferredIt = deferredRemeshChunks_.find(coord);
-        if (deferredIt != deferredRemeshChunks_.end()) {
-            deferredRemeshChunks_.erase(deferredIt);
-            needsDeferredRemesh = true;
-        }
-    }
-    meshRevision_.fetch_add(1, std::memory_order_acq_rel);
-
-    if (needsDeferredRemesh) {
-        scheduleChunkMeshing(coord, jobsystem::Priority::High, true);
-    }
-}
-
-std::vector<Meshlet> World::copyMeshlets() const {
-    std::shared_lock<std::shared_mutex> lock(worldMutex_);
-
-    std::vector<const std::pair<const ChunkCoord, std::vector<Meshlet>>*> orderedChunks;
-    orderedChunks.reserve(chunkMeshes_.size());
-    for (const auto& entry : chunkMeshes_) {
-        orderedChunks.push_back(&entry);
-    }
-
-    std::sort(orderedChunks.begin(), orderedChunks.end(), [](const auto* a, const auto* b) {
-        return a->first < b->first;
-    });
-
-    size_t totalMeshletCount = 0;
-    for (const auto* chunkEntry : orderedChunks) {
-        totalMeshletCount += chunkEntry->second.size();
-    }
-
-    std::vector<Meshlet> meshlets;
-    meshlets.reserve(totalMeshletCount);
-
-    for (const auto* chunkEntry : orderedChunks) {
-        meshlets.insert(meshlets.end(), chunkEntry->second.begin(), chunkEntry->second.end());
-    }
-
-    return meshlets;
-}
-
-std::vector<Meshlet> World::copyMeshletsAround(const ColumnCoord& centerColumn, int32_t columnRadius) const {
-    std::shared_lock<std::shared_mutex> lock(worldMutex_);
-
-    std::vector<const std::pair<const ChunkCoord, std::vector<Meshlet>>*> orderedChunks;
-    orderedChunks.reserve(chunkMeshes_.size());
-    const int32_t clampedRadius = std::max(0, columnRadius);
-
-    for (const auto& entry : chunkMeshes_) {
-        const ColumnCoord column = chunk_to_column(entry.first);
-        const int32_t dx = std::abs(column.v.x - centerColumn.v.x);
-        const int32_t dy = std::abs(column.v.y - centerColumn.v.y);
-        if (dx > clampedRadius || dy > clampedRadius) {
-            continue;
-        }
-        orderedChunks.push_back(&entry);
-    }
-
-    std::sort(orderedChunks.begin(), orderedChunks.end(), [](const auto* a, const auto* b) {
-        return a->first < b->first;
-    });
-
-    size_t totalMeshletCount = 0;
-    for (const auto* chunkEntry : orderedChunks) {
-        totalMeshletCount += chunkEntry->second.size();
-    }
-
-    std::vector<Meshlet> meshlets;
-    meshlets.reserve(totalMeshletCount);
-
-    for (const auto* chunkEntry : orderedChunks) {
-        meshlets.insert(meshlets.end(), chunkEntry->second.begin(), chunkEntry->second.end());
-    }
-
-    return meshlets;
-}
-
-uint64_t World::meshRevision() const noexcept {
-    return meshRevision_.load(std::memory_order_acquire);
+    generatedColumns_.insert(coord);
 }
 
 bool World::hasPendingJobs() const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
-    return !pendingColumnJobs_.empty() || !pendingMeshJobs_.empty() || !deferredRemeshChunks_.empty();
+    return !pendingColumnJobs_.empty();
 }
 
 bool World::isColumnGeneratedLocked(const ColumnCoord& coord) const {

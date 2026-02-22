@@ -36,10 +36,16 @@ bool WebGPURenderer::initialize() {
 	worldConfig.columnLoadRadius = 16;
 	worldConfig.jobConfig.worker_threads = 4;
 	world_ = std::make_unique<World>(worldConfig);
-	uploadColumnRadius_ = std::max(1, worldConfig.columnLoadRadius + 1);
+
+	MeshManager::Config meshConfig;
+	meshConfig.columnMeshRadius = std::max(1, worldConfig.columnLoadRadius);
+	meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
+	voxelMeshManager_ = std::make_unique<MeshManager>(*world_, meshConfig);
+	uploadColumnRadius_ = std::max(1, meshConfig.columnMeshRadius + 1);
 
 	const glm::vec3 initialPlayerPosition(0.0f, 0.0f, 0.0f);
 	world_->updatePlayerPosition(initialPlayerPosition);
+	voxelMeshManager_->updatePlayerPosition(initialPlayerPosition);
 
 	const BlockCoord initialBlock{
 		static_cast<int32_t>(std::floor(initialPlayerPosition.x)),
@@ -49,11 +55,11 @@ bool WebGPURenderer::initialize() {
 	const ColumnCoord initialColumn = chunk_to_column(block_to_chunk(initialBlock));
 	// Initialize meshlet buffers immediately (possibly empty), then stream in meshlets
 	// incrementally as jobs complete.
-	if (!uploadMeshlets(world_->copyMeshletsAround(initialColumn, uploadColumnRadius_))) {
+	if (!uploadMeshlets(voxelMeshManager_->copyMeshletsAround(initialColumn, uploadColumnRadius_))) {
 		std::cerr << "Failed to initialize meshlet buffers." << std::endl;
 		return false;
 	}
-	uploadedMeshRevision_ = world_->meshRevision();
+	uploadedMeshRevision_ = voxelMeshManager_->meshRevision();
 	uploadedCenterColumn_ = initialColumn;
 	hasUploadedCenterColumn_ = true;
 	lastMeshUploadTimeSeconds_ = -1.0;
@@ -202,23 +208,25 @@ int32_t WebGPURenderer::cameraColumnChebyshevDistance(const ColumnCoord& a, cons
 }
 
 void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
-	if (!world_) {
+	if (!world_ || !voxelMeshManager_) {
 		return;
 	}
 
-	world_->updatePlayerPosition(extractCameraPosition(frameUniforms));
+	const glm::vec3 cameraPosition = extractCameraPosition(frameUniforms);
+	world_->updatePlayerPosition(cameraPosition);
+	voxelMeshManager_->updatePlayerPosition(cameraPosition);
 	const ColumnCoord centerColumn = extractCameraColumn(frameUniforms);
 	const bool centerChanged = !hasUploadedCenterColumn_ || !(centerColumn == uploadedCenterColumn_);
 	const int32_t centerShift = hasUploadedCenterColumn_
 		? cameraColumnChebyshevDistance(centerColumn, uploadedCenterColumn_)
 		: 0;
 
-	const uint64_t currentRevision = world_->meshRevision();
+	const uint64_t currentRevision = voxelMeshManager_->meshRevision();
 	if (!centerChanged && currentRevision == uploadedMeshRevision_) {
 		return;
 	}
 
-	const bool pendingJobs = world_->hasPendingJobs();
+	const bool pendingJobs = world_->hasPendingJobs() || voxelMeshManager_->hasPendingJobs();
 	const double now = glfwGetTime();
 	const double minUploadIntervalSeconds =
 		(uploadColumnRadius_ >= 8) ? 0.35 :
@@ -234,7 +242,7 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 		return;
 	}
 
-	const std::vector<Meshlet> meshlets = world_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
+	const std::vector<Meshlet> meshlets = voxelMeshManager_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
 	if (uploadMeshlets(meshlets)) {
 		uploadedMeshRevision_ = currentRevision;
 		uploadedCenterColumn_ = centerColumn;
@@ -359,6 +367,7 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 }
 
 void WebGPURenderer::terminate() {
+	voxelMeshManager_.reset();
 	world_.reset();
 	textureManager->terminate();
 	pipelineManager->terminate();

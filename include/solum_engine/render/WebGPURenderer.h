@@ -18,6 +18,7 @@
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 #include "solum_engine/render/MeshletManager.h"
+#include "solum_engine/voxel/MeshManager.h"
 #include "solum_engine/voxel/World.h"
 
 class WebGPURenderer {
@@ -29,6 +30,7 @@ private:
 
     std::unique_ptr<MeshletManager> meshletManager;
     std::unique_ptr<World> world_;
+    std::unique_ptr<MeshManager> voxelMeshManager_;
 
     std::optional<RenderServices> services_;
     std::optional<VoxelPipeline> voxelPipeline_;
