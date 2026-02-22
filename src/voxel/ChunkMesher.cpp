@@ -14,9 +14,27 @@ namespace {
     inline bool IsSolid(BlockMaterial blockID) {
         return blockID.unpack().id != 0u;
     }
+
+    std::vector<Meshlet> flattenMeshlets(const std::array<std::vector<Meshlet>, 6>& meshletsByDirection) {
+        size_t totalMeshletCount = 0;
+        for (const auto& dirMeshlets : meshletsByDirection) {
+            totalMeshletCount += dirMeshlets.size();
+        }
+
+        std::vector<Meshlet> meshlets;
+        meshlets.reserve(totalMeshletCount);
+
+        for (const auto& dirMeshlets : meshletsByDirection) {
+            meshlets.insert(meshlets.end(), dirMeshlets.begin(), dirMeshlets.end());
+        }
+
+        return meshlets;
+    }
 }
 
-std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk, const ChunkCoord& coord, const std::vector<const Chunk*>& neighbors) {
+std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
+                                       const ChunkCoord& coord,
+                                       const std::vector<const Chunk*>& neighbors) const {
     // We use a flat array of uint32_t to store the unpacked IDs for cache-friendly access
     std::array<BlockMaterial, kPaddedBlockCount> paddedBlockData;
     UnpackedBlockMaterial air{0, 0, Direction::PlusX, 0};
@@ -118,18 +136,74 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk, const ChunkCoord& coo
         }
     }
 
-    // 4. Flatten meshlets into the final vector
-    size_t totalMeshletCount = 0;
-    for (const auto& dirMeshlets : meshletsByDirection) {
-        totalMeshletCount += dirMeshlets.size();
+    return flattenMeshlets(meshletsByDirection);
+}
+
+std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
+                                       const BlockCoord& sectionOrigin,
+                                       const glm::ivec3& sectionExtent,
+                                       const glm::ivec3& meshletOrigin) const {
+    if (sectionExtent.x <= 0 || sectionExtent.y <= 0 || sectionExtent.z <= 0) {
+        return {};
     }
 
-    std::vector<Meshlet> meshlets;
-    meshlets.reserve(totalMeshletCount);
-
-    for (const auto& dirMeshlets : meshletsByDirection) {
-        meshlets.insert(meshlets.end(), dirMeshlets.begin(), dirMeshlets.end());
+    if (sectionExtent.x > 32 || sectionExtent.y > 32 || sectionExtent.z > 32) {
+        return {};
     }
 
-    return meshlets;
+    std::array<std::vector<Meshlet>, 6> meshletsByDirection;
+
+    auto appendQuad = [&](uint32_t dir, uint32_t x, uint32_t y, uint32_t z) {
+        auto& dirMeshlets = meshletsByDirection[dir];
+        if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
+            Meshlet meshlet{};
+            meshlet.origin = meshletOrigin;
+            meshlet.faceDirection = dir;
+            dirMeshlets.push_back(meshlet);
+        }
+
+        Meshlet& activeMeshlet = dirMeshlets.back();
+        activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
+        activeMeshlet.quadCount += 1;
+    };
+
+    for (int x = 0; x < sectionExtent.x; ++x) {
+        for (int y = 0; y < sectionExtent.y; ++y) {
+            for (int z = 0; z < sectionExtent.z; ++z) {
+                const BlockCoord blockCoord{
+                    sectionOrigin.v.x + x,
+                    sectionOrigin.v.y + y,
+                    sectionOrigin.v.z + z
+                };
+
+                const BlockMaterial blockID = source.getBlock(blockCoord);
+                if (!IsSolid(blockID)) {
+                    continue;
+                }
+
+                for (uint32_t dir = 0; dir < 6; ++dir) {
+                    const glm::ivec3& offset = directionOffsets[dir];
+                    const BlockCoord neighborCoord{
+                        blockCoord.v.x + offset.x,
+                        blockCoord.v.y + offset.y,
+                        blockCoord.v.z + offset.z
+                    };
+
+                    const BlockMaterial neighborBlockID = source.getBlock(neighborCoord);
+                    if (IsSolid(neighborBlockID)) {
+                        continue;
+                    }
+
+                    appendQuad(
+                        dir,
+                        static_cast<uint32_t>(x),
+                        static_cast<uint32_t>(y),
+                        static_cast<uint32_t>(z)
+                    );
+                }
+            }
+        }
+    }
+
+    return flattenMeshlets(meshletsByDirection);
 }

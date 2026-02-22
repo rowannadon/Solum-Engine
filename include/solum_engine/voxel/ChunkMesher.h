@@ -8,9 +8,19 @@
 #include <array>
 #include <vector>
 
+class IBlockSource {
+public:
+    virtual ~IBlockSource() = default;
+    virtual BlockMaterial getBlock(const BlockCoord& coord) const = 0;
+};
+
 class ChunkMesher {
 public:
-    std::vector<Meshlet> mesh(const Chunk& chunk, const ChunkCoord& coord, const std::vector<const Chunk*>& neighbors);
+    std::vector<Meshlet> mesh(const Chunk& chunk, const ChunkCoord& coord, const std::vector<const Chunk*>& neighbors) const;
+    std::vector<Meshlet> mesh(const IBlockSource& source,
+                              const BlockCoord& sectionOrigin,
+                              const glm::ivec3& sectionExtent,
+                              const glm::ivec3& meshletOrigin) const;
 
     static constexpr std::array<glm::ivec3, 6> directionOffsets = {
         glm::ivec3(1, 0, 0),   // PlusX

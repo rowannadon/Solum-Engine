@@ -1,6 +1,7 @@
 #include "solum_engine/render/MeshletManager.h"
 
 #include <cstddef>
+#include <cstring>
 #include <iostream>
 
 bool MeshletManager::initialize(BufferManager* manager, uint32_t maxMeshlets, uint32_t maxQuads) {
@@ -101,12 +102,27 @@ bool MeshletManager::upload() {
     }
 
     if (!quadDataCpu.empty()) {
-        bufferManager->writeBuffer(
-            kMeshDataBufferName,
-            0,
-            quadDataCpu.data(),
-            quadDataCpu.size() * sizeof(uint16_t)
-        );
+        const size_t dataBytes = quadDataCpu.size() * sizeof(uint16_t);
+        const size_t alignedBytes = (dataBytes + 3ull) & ~3ull;
+
+        if (alignedBytes == dataBytes) {
+            bufferManager->writeBuffer(
+                kMeshDataBufferName,
+                0,
+                quadDataCpu.data(),
+                dataBytes
+            );
+        } else {
+            // Queue::writeBuffer requires byte size to be a multiple of 4.
+            std::vector<uint8_t> padded(alignedBytes, 0u);
+            std::memcpy(padded.data(), quadDataCpu.data(), dataBytes);
+            bufferManager->writeBuffer(
+                kMeshDataBufferName,
+                0,
+                padded.data(),
+                alignedBytes
+            );
+        }
     }
 
     return true;

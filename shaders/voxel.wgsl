@@ -220,7 +220,10 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         (bitcast<u32>(worldBlockY) * 19349663u) ^
         (bitcast<u32>(worldBlockZ) * 83492791u);
     let meshletDebugEnabled = (frameUniforms.renderFlags.x & 0x1u) != 0u;
-    let meshletColorSeed = hash_u32(in.instance_idx ^ 0x9e3779b9u);
+    let meshletColorSeed = (bitcast<u32>(meshlet.originX) * 73856093u) ^
+        (bitcast<u32>(meshlet.originY) * 19349663u) ^
+        (bitcast<u32>(meshlet.originZ) * 83492791u) ^
+        (meshlet.faceDirection * 2654435761u);
     if (meshletDebugEnabled) {
         out.color = hash_to_color(meshletColorSeed);
     } else {

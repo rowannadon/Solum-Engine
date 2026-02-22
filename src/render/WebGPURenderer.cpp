@@ -1,9 +1,11 @@
 #include <algorithm>
-#include <random>
-#include <thread>
-#include <chrono>
+#include <cmath>
 #include <iostream>
+
 #include "solum_engine/render/WebGPURenderer.h"
+
+#include <imgui/imgui.h>
+#include <imgui/backends/imgui_impl_wgpu.h>
 
 bool WebGPURenderer::initialize() {
 	RenderConfig config;
@@ -30,53 +32,30 @@ bool WebGPURenderer::initialize() {
 		if (!ubo) return false;
 	}
 
-	RegionManager rm;
-	RegionCoord coord = RegionCoord(glm::ivec2(0));
-	rm.addRegion(coord);
+	World::Config worldConfig;
+	worldConfig.columnLoadRadius = 16;
+	worldConfig.jobConfig.worker_threads = 4;
+	world_ = std::make_unique<World>(worldConfig);
+	uploadColumnRadius_ = std::max(1, worldConfig.columnLoadRadius + 1);
 
-	Region* region = rm.getRegion(coord);
+	const glm::vec3 initialPlayerPosition(0.0f, 0.0f, 0.0f);
+	world_->updatePlayerPosition(initialPlayerPosition);
+	world_->waitForIdle();
 
-	TerrainGenerator gen;
-	
-	ChunkMesher mesher;
-
-	std::vector<const Chunk*> neighbors(6, nullptr);
-
-	std::vector<Meshlet> totalMeshlets;
-	for (int x = 0; x < 2; x++) {
-		for (int y = 0; y < 2; y++) {
-			Column& col = region->getColumn(x, y);
-			gen.generateColumn(glm::ivec3(x * cfg::CHUNK_SIZE, y * cfg::CHUNK_SIZE, 0), col);
-
-			for (int chunk_z = 0; chunk_z < cfg::COLUMN_HEIGHT; chunk_z++) {
-				const ChunkCoord chunkCoord = column_local_to_chunk(ColumnCoord(x, y), chunk_z);
-				std::vector<Meshlet> chunkMeshlets = mesher.mesh(col.getChunk(static_cast<uint8_t>(chunk_z)), chunkCoord, neighbors);
-				totalMeshlets.insert(totalMeshlets.end(), chunkMeshlets.begin(), chunkMeshlets.end());
-			}
-		}
-	}
-	
-
-	uint32_t totalMeshletCount = static_cast<uint32_t>(totalMeshlets.size());
-	uint32_t totalQuadCount = 0;
-	for (const Meshlet& meshlet : totalMeshlets) {
-		totalQuadCount += meshlet.quadCount;
-	}
-
-	const uint32_t meshletCapacity = std::max(totalMeshletCount + 16u, 64u);
-	const uint32_t quadCapacity = std::max(totalQuadCount + 1024u, meshletCapacity * MESHLET_QUAD_CAPACITY);
-
-	if (!meshletManager->initialize(bufferManager.get(), meshletCapacity, quadCapacity)) {
-		std::cerr << "Failed to create meshlet buffers." << std::endl;
+	const BlockCoord initialBlock{
+		static_cast<int32_t>(std::floor(initialPlayerPosition.x)),
+		static_cast<int32_t>(std::floor(initialPlayerPosition.y)),
+		static_cast<int32_t>(std::floor(initialPlayerPosition.z))
+	};
+	const ColumnCoord initialColumn = chunk_to_column(block_to_chunk(initialBlock));
+	if (!uploadMeshlets(world_->copyMeshletsAround(initialColumn, uploadColumnRadius_))) {
+		std::cerr << "Failed to upload initial world meshlets." << std::endl;
 		return false;
 	}
-
-	meshletManager->clear();
-	meshletManager->registerMeshletGroup(totalMeshlets);
-	if (!meshletManager->upload()) {
-		std::cerr << "Failed to upload meshlet buffers." << std::endl;
-		return false;
-	}
+	uploadedMeshRevision_ = world_->meshRevision();
+	uploadedCenterColumn_ = initialColumn;
+	hasUploadedCenterColumn_ = true;
+	lastMeshUploadTimeSeconds_ = glfwGetTime();
 
 	voxelPipeline_.emplace(*services_);
 	voxelPipeline_->setDrawConfig(meshletManager->getVerticesPerMeshlet(), meshletManager->getMeshletCount());
@@ -89,6 +68,9 @@ bool WebGPURenderer::initialize() {
 }
 
 void WebGPURenderer::createRenderingTextures() {
+	if (!voxelPipeline_.has_value()) {
+		return;
+	}
 	if (!voxelPipeline_->createResources()) {
 		std::cerr << "Failed to recreate voxel rendering resources." << std::endl;
 		return;
@@ -99,6 +81,9 @@ void WebGPURenderer::createRenderingTextures() {
 }
 
 void WebGPURenderer::removeRenderingTextures() {
+	if (!voxelPipeline_.has_value()) {
+		return;
+	}
 	voxelPipeline_->removeResources();
 }
 
@@ -140,6 +125,122 @@ BufferManager* WebGPURenderer::getBufferManager() {
 	return bufferManager.get();
 }
 
+bool WebGPURenderer::uploadMeshlets(const std::vector<Meshlet>& meshlets) {
+	uint32_t totalMeshletCount = static_cast<uint32_t>(meshlets.size());
+	uint32_t totalQuadCount = 0;
+	for (const Meshlet& meshlet : meshlets) {
+		totalQuadCount += meshlet.quadCount;
+	}
+
+	const uint32_t requiredMeshletCapacity = std::max(totalMeshletCount + 16u, 64u);
+	const uint32_t requiredQuadCapacity = std::max(
+		totalQuadCount + 1024u,
+		requiredMeshletCapacity * MESHLET_QUAD_CAPACITY
+	);
+
+	const bool requiresRecreate =
+		!meshletManager ||
+		meshletCapacity_ < requiredMeshletCapacity ||
+		quadCapacity_ < requiredQuadCapacity;
+
+	if (requiresRecreate) {
+		bufferManager->deleteBuffer(MeshletManager::kMeshMetadataBufferName);
+		bufferManager->deleteBuffer(MeshletManager::kMeshDataBufferName);
+
+		auto replacement = std::make_unique<MeshletManager>();
+		if (!replacement->initialize(bufferManager.get(), requiredMeshletCapacity, requiredQuadCapacity)) {
+			std::cerr << "Failed to create meshlet buffers." << std::endl;
+			return false;
+		}
+
+		meshletManager = std::move(replacement);
+		meshletCapacity_ = requiredMeshletCapacity;
+		quadCapacity_ = requiredQuadCapacity;
+
+		if (voxelPipeline_.has_value() && !voxelPipeline_->createBindGroup()) {
+			std::cerr << "Failed to recreate voxel bind group after meshlet buffer resize." << std::endl;
+			return false;
+		}
+	}
+
+	meshletManager->clear();
+	meshletManager->registerMeshletGroup(meshlets);
+	if (!meshletManager->upload()) {
+		std::cerr << "Failed to upload meshlet buffers." << std::endl;
+		return false;
+	}
+
+	if (voxelPipeline_.has_value()) {
+		voxelPipeline_->setDrawConfig(
+			meshletManager->getVerticesPerMeshlet(),
+			meshletManager->getMeshletCount()
+		);
+	}
+
+	return true;
+}
+
+glm::vec3 WebGPURenderer::extractCameraPosition(const FrameUniforms& frameUniforms) const {
+	return glm::vec3(frameUniforms.inverseViewMatrix[3]);
+}
+
+ColumnCoord WebGPURenderer::extractCameraColumn(const FrameUniforms& frameUniforms) const {
+	const glm::vec3 cameraPosition = extractCameraPosition(frameUniforms);
+	const BlockCoord cameraBlock{
+		static_cast<int32_t>(std::floor(cameraPosition.x)),
+		static_cast<int32_t>(std::floor(cameraPosition.y)),
+		static_cast<int32_t>(std::floor(cameraPosition.z))
+	};
+	return chunk_to_column(block_to_chunk(cameraBlock));
+}
+
+int32_t WebGPURenderer::cameraColumnChebyshevDistance(const ColumnCoord& a, const ColumnCoord& b) const {
+	const int32_t dx = std::abs(a.v.x - b.v.x);
+	const int32_t dy = std::abs(a.v.y - b.v.y);
+	return std::max(dx, dy);
+}
+
+void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
+	if (!world_) {
+		return;
+	}
+
+	world_->updatePlayerPosition(extractCameraPosition(frameUniforms));
+	const ColumnCoord centerColumn = extractCameraColumn(frameUniforms);
+	const bool centerChanged = !hasUploadedCenterColumn_ || !(centerColumn == uploadedCenterColumn_);
+	const int32_t centerShift = hasUploadedCenterColumn_
+		? cameraColumnChebyshevDistance(centerColumn, uploadedCenterColumn_)
+		: 0;
+
+	const uint64_t currentRevision = world_->meshRevision();
+	if (!centerChanged && currentRevision == uploadedMeshRevision_) {
+		return;
+	}
+
+	const bool pendingJobs = world_->hasPendingJobs();
+	const double now = glfwGetTime();
+	const double minUploadIntervalSeconds =
+		(uploadColumnRadius_ >= 8) ? 0.35 :
+		(uploadColumnRadius_ >= 4) ? 0.25 :
+		0.15;
+	const bool intervalElapsed =
+		lastMeshUploadTimeSeconds_ < 0.0 || (now - lastMeshUploadTimeSeconds_) >= minUploadIntervalSeconds;
+	const bool forceForLargeCenterShift = centerShift >= 2;
+
+	// Avoid full-buffer upload every single column-step while generation is in flight.
+	// We still force upload when the camera moved far enough to avoid appearing frozen.
+	if (pendingJobs && !intervalElapsed && !forceForLargeCenterShift) {
+		return;
+	}
+
+	const std::vector<Meshlet> meshlets = world_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
+	if (uploadMeshlets(meshlets)) {
+		uploadedMeshRevision_ = currentRevision;
+		uploadedCenterColumn_ = centerColumn;
+		hasUploadedCenterColumn_ = true;
+		lastMeshUploadTimeSeconds_ = now;
+	}
+}
 
 void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 	int fbWidth = 0;
@@ -156,7 +257,10 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 		}
 	}
 
+	updateWorldStreaming(uniforms);
+
 	auto [surfaceTexture, targetView] = GetNextSurfaceViewData();
+	(void)surfaceTexture;
 	if (!targetView) return;
 
 	CommandEncoderDescriptor encoderDesc = Default;
@@ -254,6 +358,7 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 }
 
 void WebGPURenderer::terminate() {
+	world_.reset();
 	textureManager->terminate();
 	pipelineManager->terminate();
 	bufferManager->terminate();
