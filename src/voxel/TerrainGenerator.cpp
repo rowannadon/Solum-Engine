@@ -22,7 +22,12 @@ void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
         {
             for (int x = 0; x < cfg::CHUNK_SIZE; x++)
             {
-                if (dist(rng) > 8) {
+                if (fnGenerator->GenSingle3D(
+                    static_cast<float>(origin.x + x) * noiseScale, 
+                    static_cast<float>(origin.z + z) * noiseScale, 
+                    static_cast<float>(origin.y + y) * noiseScale, 
+                    seed
+                ) > 0.0f) {
                     col.setBlock(x, y, z, solidPacked);
                 } else {
                     col.setBlock(x, y, z, airPacked);

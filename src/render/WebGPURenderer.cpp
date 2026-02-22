@@ -43,8 +43,8 @@ bool WebGPURenderer::initialize() {
 	std::vector<const Chunk*> neighbors(6, nullptr);
 
 	std::vector<Meshlet> totalMeshlets;
-	for (int x = 0; x < 8; x++) {
-		for (int y = 0; y < 8; y++) {
+	for (int x = 0; x < 2; x++) {
+		for (int y = 0; y < 2; y++) {
 			Column& col = region->getColumn(x, y);
 			gen.generateColumn(glm::ivec3(x * cfg::CHUNK_SIZE, y * cfg::CHUNK_SIZE, 0), col);
 
