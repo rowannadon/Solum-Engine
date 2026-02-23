@@ -70,6 +70,9 @@ public:
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
     bool isColumnGenerated(const ColumnCoord& coord) const;
+    uint64_t generationRevision() const;
+    void copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const;
+    void copyGeneratedColumnsAround(const ColumnCoord& centerColumn, int32_t radius, std::vector<ColumnCoord>& outColumns) const;
 
     WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent) const;
     WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent, uint8_t mipLevel) const;
@@ -100,6 +103,7 @@ private:
     std::unordered_map<RegionCoord, std::unique_ptr<Region>> regions_;
     std::unordered_set<ColumnCoord> generatedColumns_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
+    std::atomic<uint64_t> generationRevision_{0};
     std::atomic<bool> shuttingDown_{false};
 
     ColumnCoord lastScheduledCenter_{0, 0};

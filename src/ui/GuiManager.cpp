@@ -43,7 +43,7 @@ bool GuiManager:: initImGUI(GLFWwindow* window, Device device, TextureFormat for
     return true;    
 }
 
-void GuiManager::renderImGUI(const FrameUniforms& uniforms, const std::vector<float>& frameTimes, FirstPersonCamera& camera, float frameTime) {
+void GuiManager::renderImGUI(FrameUniforms& uniforms, const std::vector<float>& frameTimes, FirstPersonCamera& camera, float frameTime) {
     // Main control window
     if (imguiState.showMainWindow) {
         ImGui::Begin("Engine Controls", &imguiState.showMainWindow);
@@ -105,6 +105,55 @@ void GuiManager::renderImGUI(const FrameUniforms& uniforms, const std::vector<fl
                     frameTimeMs.push_back(ft * 1000.0f);
                 }
                 ImGui::PlotLines("Frame Time (ms)", frameTimeMs.data(), frameTimeMs.size(), 0, nullptr, 0.0f, 50.0f, ImVec2(0, 80));
+            }
+        }
+
+        if (imguiState.showDebugControls && ImGui::CollapsingHeader("Debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+            bool meshletDebugEnabled = (uniforms.renderFlags[0] & kRenderFlagMeshletDebug) != 0u;
+            if (ImGui::Checkbox("Meshlet Debug", &meshletDebugEnabled)) {
+                if (meshletDebugEnabled) {
+                    uniforms.renderFlags[0] |= kRenderFlagMeshletDebug;
+                } else {
+                    uniforms.renderFlags[0] &= ~kRenderFlagMeshletDebug;
+                }
+            }
+
+            bool boundsMasterEnabled = (uniforms.renderFlags[0] & kRenderFlagBoundsDebug) != 0u;
+            if (ImGui::Checkbox("Bounds Master", &boundsMasterEnabled)) {
+                if (boundsMasterEnabled) {
+                    uniforms.renderFlags[0] |= kRenderFlagBoundsDebug;
+                } else {
+                    uniforms.renderFlags[0] &= ~kRenderFlagBoundsDebug;
+                }
+            }
+            ImGui::Separator();
+
+            bool showChunks = (uniforms.renderFlags[0] & kRenderFlagBoundsChunks) != 0u;
+            bool showColumns = (uniforms.renderFlags[0] & kRenderFlagBoundsColumns) != 0u;
+            bool showRegions = (uniforms.renderFlags[0] & kRenderFlagBoundsRegions) != 0u;
+
+            if (ImGui::Checkbox("Chunks", &showChunks)) {
+                if (showChunks) {
+                    uniforms.renderFlags[0] |= kRenderFlagBoundsChunks;
+                } else {
+                    uniforms.renderFlags[0] &= ~kRenderFlagBoundsChunks;
+                }
+            }
+
+            if (ImGui::Checkbox("Columns", &showColumns)) {
+                if (showColumns) {
+                    uniforms.renderFlags[0] |= kRenderFlagBoundsColumns;
+                } else {
+                    uniforms.renderFlags[0] &= ~kRenderFlagBoundsColumns;
+                }
+            }
+
+            if (ImGui::Checkbox("Regions", &showRegions)) {
+                if (showRegions) {
+                    uniforms.renderFlags[0] |= kRenderFlagBoundsRegions;
+                } else {
+                    uniforms.renderFlags[0] &= ~kRenderFlagBoundsRegions;
+                }
             }
         }
 

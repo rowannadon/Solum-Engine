@@ -131,6 +131,42 @@ bool World::isColumnGenerated(const ColumnCoord& coord) const {
     return isColumnGeneratedLocked(coord);
 }
 
+uint64_t World::generationRevision() const {
+    return generationRevision_.load(std::memory_order_acquire);
+}
+
+void World::copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    outColumns.clear();
+    outColumns.reserve(generatedColumns_.size());
+    for (const ColumnCoord& coord : generatedColumns_) {
+        outColumns.push_back(coord);
+    }
+    std::sort(outColumns.begin(), outColumns.end());
+}
+
+void World::copyGeneratedColumnsAround(const ColumnCoord& centerColumn,
+                                       int32_t radius,
+                                       std::vector<ColumnCoord>& outColumns) const {
+    const int32_t clampedRadius = std::max(0, radius);
+    const int32_t diameter = (clampedRadius * 2) + 1;
+    const size_t maxInWindow = static_cast<size_t>(diameter) * static_cast<size_t>(diameter);
+
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    outColumns.clear();
+    outColumns.reserve(std::min(maxInWindow, generatedColumns_.size()));
+
+    for (const ColumnCoord& coord : generatedColumns_) {
+        const int32_t dx = std::abs(coord.v.x - centerColumn.v.x);
+        const int32_t dy = std::abs(coord.v.y - centerColumn.v.y);
+        if (dx <= clampedRadius && dy <= clampedRadius) {
+            outColumns.push_back(coord);
+        }
+    }
+
+    std::sort(outColumns.begin(), outColumns.end());
+}
+
 bool World::tryGetBlockLocked(const BlockCoord& coord,
                               BlockMaterial& outBlock,
                               uint8_t mipLevel) const {
@@ -392,7 +428,10 @@ void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
         static_cast<uint8_t>(localColumn.y)
     ) = std::move(column);
 
-    generatedColumns_.insert(coord);
+    const auto insertedResult = generatedColumns_.insert(coord);
+    if (insertedResult.second) {
+        generationRevision_.fetch_add(1, std::memory_order_release);
+    }
 }
 
 bool World::hasPendingJobs() const {

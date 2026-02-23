@@ -1,3 +1,5 @@
+#pragma once
+
 #include "solum_engine/render/BufferManager.h"
 #include "solum_engine/render/TextureManager.h"
 #include "solum_engine/render/PipelineManager.h"

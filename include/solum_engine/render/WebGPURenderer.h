@@ -20,6 +20,7 @@
 #include "solum_engine/render/TextureManager.h"
 #include "solum_engine/platform/WebGPUContext.h"
 #include "solum_engine/render/Uniforms.h"
+#include "solum_engine/render/pipelines/BoundsDebugPipeline.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 #include "solum_engine/render/MeshletManager.h"
 #include "solum_engine/voxel/MeshManager.h"
@@ -44,10 +45,13 @@ private:
 
     std::optional<RenderServices> services_;
     std::optional<VoxelPipeline> voxelPipeline_;
+    std::optional<BoundsDebugPipeline> boundsDebugPipeline_;
 
     uint32_t meshletCapacity_ = 0;
     uint32_t quadCapacity_ = 0;
     uint64_t uploadedMeshRevision_ = 0;
+    uint64_t uploadedDebugBoundsRevision_ = 0;
+    uint32_t uploadedDebugBoundsLayerMask_ = 0u;
     ColumnCoord uploadedCenterColumn_{0, 0};
     bool hasUploadedCenterColumn_ = false;
     int32_t uploadColumnRadius_ = 1;
@@ -69,6 +73,8 @@ private:
 
     bool uploadMeshlets(const std::vector<Meshlet>& meshlets);
     void updateWorldStreaming(const FrameUniforms& frameUniforms);
+    void updateDebugBounds(const FrameUniforms& frameUniforms);
+    void rebuildDebugBounds(uint32_t layerMask);
     void startStreamingThread(const glm::vec3& initialCameraPosition, const ColumnCoord& initialCenterColumn);
     void stopStreamingThread();
     void streamingThreadMain();

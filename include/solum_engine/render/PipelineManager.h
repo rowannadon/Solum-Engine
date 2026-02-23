@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <fstream> 
 #include <vector>
+#include <cstddef>
+#include <cstdint>
 
 #include "solum_engine/render/VertexAttributes.h"
 
@@ -25,6 +27,7 @@ struct PipelineConfig {
     bool depthWriteEnabled = true;
     CompareFunction depthCompare = CompareFunction::Less;
     bool useVertexBuffers = true;  // New flag to control vertex buffer usage
+    uint64_t vertexBufferStride = sizeof(VertexAttributes);
     bool useColorTarget = true;
     bool useCustomBlending = false;
     BlendState blendState;

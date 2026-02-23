@@ -32,6 +32,9 @@ class GuiManager {
         glm::vec3 lightDirection = glm::vec3(0.3f, 0.3f, -0.7f);
         glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 0.9f);
         float lightIntensity = 1.0f;
+
+        // Debug controls
+        bool showDebugControls = true;
     };
 
     ImGUIState imguiState;  // Add ImGUI state
@@ -42,7 +45,7 @@ public:
     }
 
     bool initImGUI(GLFWwindow* window, Device device, TextureFormat format);
-    void renderImGUI(const FrameUniforms& uniforms, const std::vector<float>& frameTimes, FirstPersonCamera& camera, float frameTime);
+    void renderImGUI(FrameUniforms& uniforms, const std::vector<float>& frameTimes, FirstPersonCamera& camera, float frameTime);
     void terminateImGUI();
     void updateImGUIFrame();
 };

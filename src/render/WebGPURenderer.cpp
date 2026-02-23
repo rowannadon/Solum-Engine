@@ -1,12 +1,47 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <exception>
+#include <unordered_set>
 
 #include "solum_engine/render/WebGPURenderer.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
+
+namespace {
+constexpr glm::vec4 kChunkBoundsColor{0.2f, 0.95f, 0.35f, 0.22f};
+constexpr glm::vec4 kColumnBoundsColor{1.0f, 0.7f, 0.2f, 0.6f};
+constexpr glm::vec4 kRegionBoundsColor{0.2f, 0.8f, 1.0f, 0.95f};
+
+void appendWireBox(std::vector<DebugLineVertex>& vertices,
+                   const glm::vec3& minCorner,
+                   const glm::vec3& maxCorner,
+                   const glm::vec4& color) {
+	const std::array<glm::vec3, 8> corners{
+		glm::vec3{minCorner.x, minCorner.y, minCorner.z},
+		glm::vec3{maxCorner.x, minCorner.y, minCorner.z},
+		glm::vec3{maxCorner.x, maxCorner.y, minCorner.z},
+		glm::vec3{minCorner.x, maxCorner.y, minCorner.z},
+		glm::vec3{minCorner.x, minCorner.y, maxCorner.z},
+		glm::vec3{maxCorner.x, minCorner.y, maxCorner.z},
+		glm::vec3{maxCorner.x, maxCorner.y, maxCorner.z},
+		glm::vec3{minCorner.x, maxCorner.y, maxCorner.z},
+	};
+
+	constexpr std::array<uint8_t, 24> edgeIndices{
+		0, 1, 1, 2, 2, 3, 3, 0,
+		4, 5, 5, 6, 6, 7, 7, 4,
+		0, 4, 1, 5, 2, 6, 3, 7
+	};
+
+	for (size_t i = 0; i < edgeIndices.size(); i += 2) {
+		vertices.push_back(DebugLineVertex{corners[edgeIndices[i]], color});
+		vertices.push_back(DebugLineVertex{corners[edgeIndices[i + 1]], color});
+	}
+}
+}  // namespace
 
 WebGPURenderer::~WebGPURenderer() {
 	stopStreamingThread();
@@ -38,7 +73,7 @@ bool WebGPURenderer::initialize() {
 	}
 
 	World::Config worldConfig;
-	worldConfig.columnLoadRadius = 255;
+	worldConfig.columnLoadRadius = 32;
 	worldConfig.jobConfig.worker_threads = 4;
 
 	MeshManager::Config meshConfig;
@@ -79,6 +114,13 @@ bool WebGPURenderer::initialize() {
 		std::cerr << "Failed to create voxel pipeline and resources." << std::endl;
 		return false;
 	}
+	boundsDebugPipeline_.emplace(*services_);
+	if (!boundsDebugPipeline_->build()) {
+		std::cerr << "Failed to create bounds debug pipeline and resources." << std::endl;
+		return false;
+	}
+	uploadedDebugBoundsRevision_ = 0;
+	uploadedDebugBoundsLayerMask_ = 0u;
 
 	try {
 		startStreamingThread(initialPlayerPosition, initialColumn);
@@ -384,6 +426,117 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 	}
 }
 
+void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
+	if (!world_ || !boundsDebugPipeline_.has_value()) {
+		return;
+	}
+
+	std::vector<ColumnCoord> generatedColumns;
+	world_->copyGeneratedColumns(generatedColumns);
+
+	std::vector<DebugLineVertex> vertices;
+	const size_t chunkBoxCount = generatedColumns.size() * static_cast<size_t>(cfg::COLUMN_HEIGHT);
+	const size_t columnBoxCount = generatedColumns.size();
+	const size_t regionBoxEstimate = std::max<size_t>(1, generatedColumns.size() / static_cast<size_t>(cfg::REGION_VOLUME_COLUMNS));
+	vertices.reserve((chunkBoxCount + columnBoxCount + regionBoxEstimate) * 24ull);
+
+	std::unordered_set<RegionCoord> visibleRegions;
+	visibleRegions.reserve(generatedColumns.size());
+
+	for (const ColumnCoord& columnCoord : generatedColumns) {
+		const ChunkCoord baseChunk = column_local_to_chunk(columnCoord, 0);
+		const BlockCoord columnOrigin = chunk_to_block_origin(baseChunk);
+		const glm::vec3 columnMin{
+			static_cast<float>(columnOrigin.v.x),
+			static_cast<float>(columnOrigin.v.y),
+			static_cast<float>(columnOrigin.v.z)
+		};
+		if ((layerMask & kRenderFlagBoundsColumns) != 0u) {
+			const glm::vec3 columnMax = columnMin + glm::vec3(
+				static_cast<float>(cfg::CHUNK_SIZE),
+				static_cast<float>(cfg::CHUNK_SIZE),
+				static_cast<float>(cfg::COLUMN_HEIGHT_BLOCKS)
+			);
+			appendWireBox(vertices, columnMin, columnMax, kColumnBoundsColor);
+		}
+
+		visibleRegions.insert(column_to_region(columnCoord));
+
+		if ((layerMask & kRenderFlagBoundsChunks) != 0u) {
+			for (int32_t localZ = 0; localZ < cfg::COLUMN_HEIGHT; ++localZ) {
+				const ChunkCoord chunkCoord = column_local_to_chunk(columnCoord, localZ);
+				const BlockCoord chunkOrigin = chunk_to_block_origin(chunkCoord);
+				const glm::vec3 chunkMin{
+					static_cast<float>(chunkOrigin.v.x),
+					static_cast<float>(chunkOrigin.v.y),
+					static_cast<float>(chunkOrigin.v.z)
+				};
+				const glm::vec3 chunkMax = chunkMin + glm::vec3(
+					static_cast<float>(cfg::CHUNK_SIZE),
+					static_cast<float>(cfg::CHUNK_SIZE),
+					static_cast<float>(cfg::CHUNK_SIZE)
+				);
+				appendWireBox(vertices, chunkMin, chunkMax, kChunkBoundsColor);
+			}
+		}
+	}
+
+	if ((layerMask & kRenderFlagBoundsRegions) != 0u) {
+		std::vector<RegionCoord> sortedRegions(visibleRegions.begin(), visibleRegions.end());
+		std::sort(sortedRegions.begin(), sortedRegions.end());
+		for (const RegionCoord& regionCoord : sortedRegions) {
+			const ColumnCoord regionOriginColumn = region_to_column_origin(regionCoord);
+			const ChunkCoord regionBaseChunk = column_local_to_chunk(regionOriginColumn, 0);
+			const BlockCoord regionOrigin = chunk_to_block_origin(regionBaseChunk);
+			const glm::vec3 regionMin{
+				static_cast<float>(regionOrigin.v.x),
+				static_cast<float>(regionOrigin.v.y),
+				static_cast<float>(regionOrigin.v.z)
+			};
+			const glm::vec3 regionMax = regionMin + glm::vec3(
+				static_cast<float>(cfg::REGION_SIZE_BLOCKS),
+				static_cast<float>(cfg::REGION_SIZE_BLOCKS),
+				static_cast<float>(cfg::COLUMN_HEIGHT_BLOCKS)
+			);
+			appendWireBox(vertices, regionMin, regionMax, kRegionBoundsColor);
+		}
+	}
+
+	if (!boundsDebugPipeline_->updateVertices(vertices)) {
+		std::cerr << "Failed to upload debug bounds vertices." << std::endl;
+	}
+}
+
+void WebGPURenderer::updateDebugBounds(const FrameUniforms& frameUniforms) {
+	if (!boundsDebugPipeline_.has_value() || !world_) {
+		return;
+	}
+
+	const bool enabled = (frameUniforms.renderFlags[0] & kRenderFlagBoundsDebug) != 0u;
+	boundsDebugPipeline_->setEnabled(enabled);
+	if (!enabled) {
+		return;
+	}
+
+	const uint64_t worldRevision = world_->generationRevision();
+	const uint32_t layerMask = frameUniforms.renderFlags[0] & kRenderFlagBoundsLayerMask;
+	if (layerMask == 0u) {
+		boundsDebugPipeline_->updateVertices({});
+		uploadedDebugBoundsLayerMask_ = 0u;
+		uploadedDebugBoundsRevision_ = worldRevision;
+		return;
+	}
+
+	const bool layersChanged = layerMask != uploadedDebugBoundsLayerMask_;
+	if (!layersChanged && worldRevision == uploadedDebugBoundsRevision_) {
+		return;
+	}
+
+	rebuildDebugBounds(layerMask);
+	uploadedDebugBoundsRevision_ = worldRevision;
+	uploadedDebugBoundsLayerMask_ = layerMask;
+}
+
 void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 	int fbWidth = 0;
 	int fbHeight = 0;
@@ -400,6 +553,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 	}
 
 	updateWorldStreaming(uniforms);
+	updateDebugBounds(uniforms);
 
 	auto [surfaceTexture, targetView] = GetNextSurfaceViewData();
 	(void)surfaceTexture;
@@ -412,6 +566,9 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 	// GEOMETRY RENDER PASS
 	{
 		voxelPipeline_->render(targetView, encoder, [&](RenderPassEncoder& pass) {
+			if (boundsDebugPipeline_.has_value()) {
+				boundsDebugPipeline_->draw(pass);
+			}
 			ImGui::Render();
 			ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
 		});
@@ -501,6 +658,14 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 
 void WebGPURenderer::terminate() {
 	stopStreamingThread();
+	if (boundsDebugPipeline_.has_value()) {
+		boundsDebugPipeline_->removeResources();
+		boundsDebugPipeline_.reset();
+	}
+	if (voxelPipeline_.has_value()) {
+		voxelPipeline_->removeResources();
+		voxelPipeline_.reset();
+	}
 	voxelMeshManager_.reset();
 	world_.reset();
 	textureManager->terminate();
