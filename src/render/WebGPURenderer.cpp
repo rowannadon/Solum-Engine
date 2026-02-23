@@ -38,11 +38,11 @@ bool WebGPURenderer::initialize() {
 	}
 
 	World::Config worldConfig;
-	worldConfig.columnLoadRadius = 1024;
+	worldConfig.columnLoadRadius = 255;
 	worldConfig.jobConfig.worker_threads = 4;
 
 	MeshManager::Config meshConfig;
-	meshConfig.lodChunkRadii = {8, 32, 128, 512};
+	meshConfig.lodChunkRadii = {16, 32, 64, 128};
 	meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
 	const int32_t maxLodSpanChunks = 1 << (static_cast<int32_t>(meshConfig.lodChunkRadii.size()) - 1);
 	const int32_t requiredGenerationRadius = meshConfig.lodChunkRadii.back() + (maxLodSpanChunks - 1);

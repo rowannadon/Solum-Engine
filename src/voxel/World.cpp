@@ -213,6 +213,16 @@ void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
 
     ColumnCoord previousCenter{};
     bool hadPreviousCenter = false;
+
+    // Fast path for unchanged center without taking the write lock. Worker mesh jobs
+    // hold shared locks frequently; avoiding a per-frame writer lock reduces stalls.
+    {
+        std::shared_lock<std::shared_mutex> lock(worldMutex_);
+        if (hasLastScheduledCenter_ && centerColumn == lastScheduledCenter_) {
+            return;
+        }
+    }
+
     {
         std::unique_lock<std::shared_mutex> lock(worldMutex_);
         if (hasLastScheduledCenter_ && centerColumn == lastScheduledCenter_) {

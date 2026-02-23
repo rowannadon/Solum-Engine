@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <solum_engine/resources/Constants.h>
+#include "solum_engine/resources/Constants.h"
 
 struct BlockMaterial;
 
@@ -18,7 +18,13 @@ struct BlockMaterial {
     uint32_t data = 0;
 
     bool operator==(const BlockMaterial& other) const { return data == other.data; }
-    bool operator!=(const BlockMaterial& other) const { return !(*this == other); }
+    bool operator!=(const BlockMaterial& other) const { return data != other.data; }
 
     UnpackedBlockMaterial unpack() const;
 };
+
+inline BlockMaterial generateMaterial(uint16_t materialId) {
+    static const BlockMaterial bm = UnpackedBlockMaterial{materialId, 0, Direction::PlusZ, 0}.pack();
+
+    return bm;
+}
