@@ -174,7 +174,9 @@ private:
                              int32_t extraChunks) const;
     bool isTileWithinActiveWindowLocked(const MeshTileCoord& tileCoord, int32_t extraChunks) const;
     bool isTileFootprintGenerated(const MeshTileCoord& tileCoord) const;
-    bool isLodCellAllAir(const ChunkCoord& cellCoord, uint8_t lodLevel) const;
+    bool isLodCellAllAir(const ChunkCoord& cellCoord,
+                         uint8_t lodLevel,
+                         std::unordered_map<ColumnCoord, uint32_t>& emptyMaskCache) const;
     int8_t chooseRenderableLodForTileLocked(const MeshTileState& state) const;
     void refreshRenderedLodsLocked();
 

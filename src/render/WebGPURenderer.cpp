@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cmath>
 #include <iostream>
 #include <exception>
@@ -14,6 +15,60 @@ namespace {
 constexpr glm::vec4 kChunkBoundsColor{0.2f, 0.95f, 0.35f, 0.22f};
 constexpr glm::vec4 kColumnBoundsColor{1.0f, 0.7f, 0.2f, 0.6f};
 constexpr glm::vec4 kRegionBoundsColor{0.2f, 0.8f, 1.0f, 0.95f};
+
+struct PreparedMeshUploadData {
+	std::vector<MeshletMetadataGPU> metadata;
+	std::vector<uint16_t> quadData;
+	uint32_t totalMeshletCount = 0;
+	uint32_t totalQuadCount = 0;
+	uint32_t requiredMeshletCapacity = 64u;
+	uint32_t requiredQuadCapacity = 64u * MESHLET_QUAD_CAPACITY;
+};
+
+PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlets) {
+	PreparedMeshUploadData prepared;
+
+	for (const Meshlet& meshlet : meshlets) {
+		if (meshlet.quadCount == 0) {
+			continue;
+		}
+		++prepared.totalMeshletCount;
+		prepared.totalQuadCount += meshlet.quadCount;
+	}
+
+	prepared.metadata.reserve(prepared.totalMeshletCount);
+	prepared.quadData.reserve(prepared.totalQuadCount);
+
+	for (const Meshlet& meshlet : meshlets) {
+		if (meshlet.quadCount == 0) {
+			continue;
+		}
+
+		MeshletMetadataGPU metadata{};
+		metadata.originX = meshlet.origin.x;
+		metadata.originY = meshlet.origin.y;
+		metadata.originZ = meshlet.origin.z;
+		metadata.quadCount = meshlet.quadCount;
+		metadata.faceDirection = meshlet.faceDirection;
+		metadata.dataOffset = static_cast<uint32_t>(prepared.quadData.size());
+		metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
+		prepared.metadata.push_back(metadata);
+
+		prepared.quadData.insert(
+			prepared.quadData.end(),
+			meshlet.packedQuadLocalOffsets.begin(),
+			meshlet.packedQuadLocalOffsets.begin() + static_cast<std::ptrdiff_t>(meshlet.quadCount)
+		);
+	}
+
+	prepared.requiredMeshletCapacity = std::max(prepared.totalMeshletCount + 16u, 64u);
+	prepared.requiredQuadCapacity = std::max(
+		prepared.totalQuadCount + 1024u,
+		prepared.requiredMeshletCapacity * MESHLET_QUAD_CAPACITY
+	);
+
+	return prepared;
+}
 
 void appendWireBox(std::vector<DebugLineVertex>& vertices,
                    const glm::vec3& minCorner,
@@ -73,7 +128,7 @@ bool WebGPURenderer::initialize() {
 	}
 
 	World::Config worldConfig;
-	worldConfig.columnLoadRadius = 32;
+	worldConfig.columnLoadRadius = 128;
 	worldConfig.jobConfig.worker_threads = 4;
 
 	MeshManager::Config meshConfig;
@@ -100,22 +155,18 @@ bool WebGPURenderer::initialize() {
 	);
 
 	const glm::vec3 initialPlayerPosition(0.0f, 0.0f, 0.0f);
-	world_->updatePlayerPosition(initialPlayerPosition);
-	voxelMeshManager_->updatePlayerPosition(initialPlayerPosition);
-
 	const BlockCoord initialBlock{
 		static_cast<int32_t>(std::floor(initialPlayerPosition.x)),
 		static_cast<int32_t>(std::floor(initialPlayerPosition.y)),
 		static_cast<int32_t>(std::floor(initialPlayerPosition.z))
 	};
 	const ColumnCoord initialColumn = chunk_to_column(block_to_chunk(initialBlock));
-	// Initialize meshlet buffers immediately (possibly empty), then stream in meshlets
-	// incrementally as jobs complete.
-	if (!uploadMeshlets(voxelMeshManager_->copyMeshletsAround(initialColumn, uploadColumnRadius_))) {
+	// Initialize meshlet buffers empty; world/mesh scheduling occurs on the streaming thread.
+	if (!uploadMeshlets(PendingMeshUpload{})) {
 		std::cerr << "Failed to initialize meshlet buffers." << std::endl;
 		return false;
 	}
-	uploadedMeshRevision_ = voxelMeshManager_->meshRevision();
+	uploadedMeshRevision_ = 0;
 	uploadedCenterColumn_ = initialColumn;
 	hasUploadedCenterColumn_ = true;
 	lastMeshUploadTimeSeconds_ = -1.0;
@@ -202,17 +253,17 @@ BufferManager* WebGPURenderer::getBufferManager() {
 	return bufferManager.get();
 }
 
-bool WebGPURenderer::uploadMeshlets(const std::vector<Meshlet>& meshlets) {
-	uint32_t totalMeshletCount = static_cast<uint32_t>(meshlets.size());
-	uint32_t totalQuadCount = 0;
-	for (const Meshlet& meshlet : meshlets) {
-		totalQuadCount += meshlet.quadCount;
-	}
-
-	const uint32_t requiredMeshletCapacity = std::max(totalMeshletCount + 16u, 64u);
+bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
+	const uint32_t requiredMeshletCapacity = std::max(
+		upload.requiredMeshletCapacity,
+		std::max(upload.totalMeshletCount + 16u, 64u)
+	);
 	const uint32_t requiredQuadCapacity = std::max(
-		totalQuadCount + 1024u,
-		requiredMeshletCapacity * MESHLET_QUAD_CAPACITY
+		upload.requiredQuadCapacity,
+		std::max(
+			upload.totalQuadCount + 1024u,
+			requiredMeshletCapacity * MESHLET_QUAD_CAPACITY
+		)
 	);
 
 	const bool requiresRecreate =
@@ -240,8 +291,7 @@ bool WebGPURenderer::uploadMeshlets(const std::vector<Meshlet>& meshlets) {
 		}
 	}
 
-	meshletManager->clear();
-	meshletManager->registerMeshletGroup(meshlets);
+	meshletManager->adoptPreparedData(std::move(upload.metadata), std::move(upload.quadData));
 	if (!meshletManager->upload()) {
 		std::cerr << "Failed to upload meshlet buffers." << std::endl;
 		return false;
@@ -378,6 +428,7 @@ void WebGPURenderer::streamingThreadMain() {
 		}
 
 		std::vector<Meshlet> meshlets = voxelMeshManager_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
+		PreparedMeshUploadData prepared = prepareMeshUploadData(meshlets);
 
 		{
 			std::lock_guard<std::mutex> lock(streamingMutex_);
@@ -385,7 +436,12 @@ void WebGPURenderer::streamingThreadMain() {
 				return;
 			}
 			pendingMeshUpload_ = PendingMeshUpload{
-				std::move(meshlets),
+				std::move(prepared.metadata),
+				std::move(prepared.quadData),
+				prepared.totalMeshletCount,
+				prepared.totalQuadCount,
+				prepared.requiredMeshletCapacity,
+				prepared.requiredQuadCapacity,
 				currentRevision,
 				centerColumn
 			};
@@ -425,16 +481,11 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 		return;
 	}
 
-	if (uploadMeshlets(pendingUpload->meshlets)) {
+	if (uploadMeshlets(std::move(*pendingUpload))) {
 		uploadedMeshRevision_ = pendingUpload->meshRevision;
 		uploadedCenterColumn_ = pendingUpload->centerColumn;
 		hasUploadedCenterColumn_ = true;
 		lastMeshUploadTimeSeconds_ = glfwGetTime();
-	} else {
-		std::lock_guard<std::mutex> lock(streamingMutex_);
-		if (!pendingMeshUpload_.has_value()) {
-			pendingMeshUpload_ = std::move(pendingUpload);
-		}
 	}
 }
 

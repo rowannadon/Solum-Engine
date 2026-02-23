@@ -734,6 +734,10 @@ void MeshManager::scheduleTileLodCellMeshing(const TileLodCellCoord& coord,
                 const int32_t localEndY = std::min(cellsPerAxis, localStartY + cellSpanLodCells);
 
                 std::vector<Meshlet> meshlets;
+                std::unordered_map<ColumnCoord, uint32_t> emptyMaskCache;
+                const int32_t cacheColumnsX = std::max(1, (localEndX - localStartX) * spanChunks);
+                const int32_t cacheColumnsY = std::max(1, (localEndY - localStartY) * spanChunks);
+                emptyMaskCache.reserve(static_cast<size_t>(cacheColumnsX * cacheColumnsY));
 
                 for (int32_t y = localStartY; y < localEndY; ++y) {
                     for (int32_t x = localStartX; x < localEndX; ++x) {
@@ -743,7 +747,7 @@ void MeshManager::scheduleTileLodCellMeshing(const TileLodCellCoord& coord,
                                 baseCellY + y,
                                 z
                             };
-                            if (isLodCellAllAir(cellCoord, lodLevel)) {
+                            if (isLodCellAllAir(cellCoord, lodLevel, emptyMaskCache)) {
                                 continue;
                             }
 
@@ -876,19 +880,8 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
     meshlets.reserve(totalMeshletCount);
 
     for (const SelectedTileLodState& entry : selected) {
-        std::vector<uint32_t> sortedCellKeys;
-        sortedCellKeys.reserve(entry.lodState->cellMeshes.size());
-        for (const auto& [cellKey, _] : entry.lodState->cellMeshes) {
-            sortedCellKeys.push_back(cellKey);
-        }
-        std::sort(sortedCellKeys.begin(), sortedCellKeys.end());
-
-        for (uint32_t cellKey : sortedCellKeys) {
-            const auto cellIt = entry.lodState->cellMeshes.find(cellKey);
-            if (cellIt == entry.lodState->cellMeshes.end()) {
-                continue;
-            }
-            meshlets.insert(meshlets.end(), cellIt->second.begin(), cellIt->second.end());
+        for (const auto& [_, cellMeshlets] : entry.lodState->cellMeshes) {
+            meshlets.insert(meshlets.end(), cellMeshlets.begin(), cellMeshlets.end());
         }
     }
 
@@ -962,19 +955,8 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
     meshlets.reserve(totalMeshletCount);
 
     for (const SelectedTileLodState& entry : selected) {
-        std::vector<uint32_t> sortedCellKeys;
-        sortedCellKeys.reserve(entry.lodState->cellMeshes.size());
-        for (const auto& [cellKey, _] : entry.lodState->cellMeshes) {
-            sortedCellKeys.push_back(cellKey);
-        }
-        std::sort(sortedCellKeys.begin(), sortedCellKeys.end());
-
-        for (uint32_t cellKey : sortedCellKeys) {
-            const auto cellIt = entry.lodState->cellMeshes.find(cellKey);
-            if (cellIt == entry.lodState->cellMeshes.end()) {
-                continue;
-            }
-            meshlets.insert(meshlets.end(), cellIt->second.begin(), cellIt->second.end());
+        for (const auto& [_, cellMeshlets] : entry.lodState->cellMeshes) {
+            meshlets.insert(meshlets.end(), cellMeshlets.begin(), cellMeshlets.end());
         }
     }
 
@@ -1046,7 +1028,9 @@ bool MeshManager::isTileFootprintGenerated(const MeshTileCoord& tileCoord) const
     return true;
 }
 
-bool MeshManager::isLodCellAllAir(const ChunkCoord& cellCoord, uint8_t lodLevel) const {
+bool MeshManager::isLodCellAllAir(const ChunkCoord& cellCoord,
+                                  uint8_t lodLevel,
+                                  std::unordered_map<ColumnCoord, uint32_t>& emptyMaskCache) const {
     const int32_t spanChunks = static_cast<int32_t>(chunkSpanForLod(lodLevel));
     const int32_t zStart = cellCoord.v.z * spanChunks;
     if (zStart < 0 || zStart >= cfg::COLUMN_HEIGHT) {
@@ -1069,11 +1053,17 @@ bool MeshManager::isLodCellAllAir(const ChunkCoord& cellCoord, uint8_t lodLevel)
 
     for (int32_t dy = 0; dy < spanChunks; ++dy) {
         for (int32_t dx = 0; dx < spanChunks; ++dx) {
+            const ColumnCoord columnCoord{baseColumnX + dx, baseColumnY + dy};
             uint32_t emptyMask = 0u;
-            if (!world_.tryGetColumnEmptyChunkMask(
-                    ColumnCoord{baseColumnX + dx, baseColumnY + dy},
-                    emptyMask)) {
-                return false;
+
+            const auto cacheIt = emptyMaskCache.find(columnCoord);
+            if (cacheIt != emptyMaskCache.end()) {
+                emptyMask = cacheIt->second;
+            } else {
+                if (!world_.tryGetColumnEmptyChunkMask(columnCoord, emptyMask)) {
+                    return false;
+                }
+                emptyMaskCache.emplace(columnCoord, emptyMask);
             }
 
             if ((emptyMask & zMask) != zMask) {

@@ -89,6 +89,12 @@ MeshletGroupHandle MeshletManager::registerMeshletGroup(const std::vector<Meshle
     return handle;
 }
 
+void MeshletManager::adoptPreparedData(std::vector<MeshletMetadataGPU>&& metadata,
+                                       std::vector<uint16_t>&& quadData) {
+    metadataCpu = std::move(metadata);
+    quadDataCpu = std::move(quadData);
+}
+
 bool MeshletManager::upload() {
     if (bufferManager == nullptr) {
         return false;
@@ -115,14 +121,24 @@ bool MeshletManager::upload() {
                 dataBytes
             );
         } else {
-            // Queue::writeBuffer requires byte size to be a multiple of 4.
-            std::vector<uint8_t> padded(alignedBytes, 0u);
-            std::memcpy(padded.data(), quadDataCpu.data(), dataBytes);
+            // Queue::writeBuffer requires byte sizes aligned to 4 bytes. Upload the aligned prefix,
+            // then emit a 4-byte tail containing the final 2-byte value and padding.
+            const size_t prefixBytes = dataBytes - sizeof(uint16_t);
+            if (prefixBytes > 0) {
+                bufferManager->writeBuffer(
+                    kMeshDataBufferName,
+                    0,
+                    quadDataCpu.data(),
+                    prefixBytes
+                );
+            }
+
+            uint32_t tail = static_cast<uint32_t>(quadDataCpu.back());
             bufferManager->writeBuffer(
                 kMeshDataBufferName,
-                0,
-                padded.data(),
-                alignedBytes
+                prefixBytes,
+                &tail,
+                sizeof(uint32_t)
             );
         }
     }

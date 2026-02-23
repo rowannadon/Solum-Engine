@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <queue>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -109,6 +110,22 @@ private:
 
     static jobsystem::Priority priorityFromDistanceSq(int32_t distanceSq);
 
+    struct QueuedColumnEntry {
+        ColumnCoord coord{};
+        int32_t distanceSq = 0;
+        uint64_t centerVersion = 0;
+        uint64_t sequence = 0;
+    };
+
+    struct QueuedColumnEntryCompare {
+        bool operator()(const QueuedColumnEntry& a, const QueuedColumnEntry& b) const noexcept {
+            if (a.distanceSq != b.distanceSq) {
+                return a.distanceSq > b.distanceSq;
+            }
+            return a.sequence > b.sequence;
+        }
+    };
+
     Config config_;
     jobsystem::JobSystem jobs_;
 
@@ -117,9 +134,16 @@ private:
     std::unordered_set<ColumnCoord> generatedColumns_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
     std::unordered_set<ColumnCoord> queuedColumnJobs_;
+    std::priority_queue<
+        QueuedColumnEntry,
+        std::vector<QueuedColumnEntry>,
+        QueuedColumnEntryCompare
+    > queuedColumnHeap_;
     std::atomic<uint64_t> generationRevision_{0};
     std::atomic<bool> shuttingDown_{false};
     std::size_t maxInFlightColumnJobs_ = 1;
+    uint64_t queueSequence_ = 0;
+    uint64_t queueCenterVersion_ = 0;
 
     ColumnCoord lastScheduledCenter_{0, 0};
     bool hasLastScheduledCenter_ = false;

@@ -29,7 +29,12 @@
 class WebGPURenderer {
 private:
     struct PendingMeshUpload {
-        std::vector<Meshlet> meshlets;
+        std::vector<MeshletMetadataGPU> metadata;
+        std::vector<uint16_t> quadData;
+        uint32_t totalMeshletCount = 0;
+        uint32_t totalQuadCount = 0;
+        uint32_t requiredMeshletCapacity = 0;
+        uint32_t requiredQuadCapacity = 0;
         uint64_t meshRevision = 0;
         ColumnCoord centerColumn{0, 0};
     };
@@ -71,7 +76,7 @@ private:
 
     bool resizePending = false;
 
-    bool uploadMeshlets(const std::vector<Meshlet>& meshlets);
+    bool uploadMeshlets(PendingMeshUpload&& upload);
     void updateWorldStreaming(const FrameUniforms& frameUniforms);
     void updateDebugBounds(const FrameUniforms& frameUniforms);
     void rebuildDebugBounds(uint32_t layerMask);

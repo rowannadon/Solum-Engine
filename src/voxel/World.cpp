@@ -332,6 +332,7 @@ void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
         previousCenter = lastScheduledCenter_;
         lastScheduledCenter_ = centerColumn;
         hasLastScheduledCenter_ = true;
+        ++queueCenterVersion_;
     }
 
     if (!hadPreviousCenter) {
@@ -411,6 +412,15 @@ void World::enqueueColumnGenerationLocked(const ColumnCoord& coord) {
         return;
     }
     queuedColumnJobs_.insert(coord);
+    const int32_t distanceSq = hasLastScheduledCenter_
+        ? distanceSqToCenter(coord, lastScheduledCenter_)
+        : 0;
+    queuedColumnHeap_.push(QueuedColumnEntry{
+        coord,
+        distanceSq,
+        queueCenterVersion_,
+        queueSequence_++
+    });
 }
 
 void World::enqueueColumnGenerationBatch(const std::vector<ColumnCoord>& coords) {
@@ -420,53 +430,82 @@ void World::enqueueColumnGenerationBatch(const std::vector<ColumnCoord>& coords)
         for (const ColumnCoord& coord : coords) {
             enqueueColumnGenerationLocked(coord);
         }
-        pruneQueuedColumnsOutsideActiveWindowLocked();
         collectColumnJobsToScheduleLocked(jobsToSchedule);
     }
     dispatchScheduledColumnJobs(std::move(jobsToSchedule));
 }
 
 void World::pruneQueuedColumnsOutsideActiveWindowLocked() {
-    for (auto it = queuedColumnJobs_.begin(); it != queuedColumnJobs_.end();) {
-        if (!isWithinActiveWindowLocked(*it, 0) || isColumnGeneratedLocked(*it)) {
-            it = queuedColumnJobs_.erase(it);
+    // Bounded heap cleanup to cap per-pump overhead when radius grows.
+    constexpr size_t kPruneBudget = 256;
+    size_t processed = 0;
+    while (processed < kPruneBudget && !queuedColumnHeap_.empty()) {
+        const QueuedColumnEntry top = queuedColumnHeap_.top();
+
+        auto queuedIt = queuedColumnJobs_.find(top.coord);
+        if (queuedIt == queuedColumnJobs_.end()) {
+            queuedColumnHeap_.pop();
+            ++processed;
             continue;
         }
-        if (pendingColumnJobs_.find(*it) != pendingColumnJobs_.end()) {
-            it = queuedColumnJobs_.erase(it);
+
+        if (!isWithinActiveWindowLocked(top.coord, 0) ||
+            isColumnGeneratedLocked(top.coord) ||
+            pendingColumnJobs_.find(top.coord) != pendingColumnJobs_.end()) {
+            queuedColumnJobs_.erase(queuedIt);
+            queuedColumnHeap_.pop();
+            ++processed;
             continue;
         }
-        ++it;
+
+        if (top.centerVersion != queueCenterVersion_) {
+            queuedColumnHeap_.pop();
+            queuedColumnHeap_.push(QueuedColumnEntry{
+                top.coord,
+                hasLastScheduledCenter_ ? distanceSqToCenter(top.coord, lastScheduledCenter_) : 0,
+                queueCenterVersion_,
+                queueSequence_++
+            });
+            ++processed;
+            continue;
+        }
+
+        break;
     }
 }
 
 void World::collectColumnJobsToScheduleLocked(std::vector<ScheduledColumnJob>& outJobs) {
-    if (!hasLastScheduledCenter_) {
-        return;
-    }
+    while (pendingColumnJobs_.size() < maxInFlightColumnJobs_ && !queuedColumnHeap_.empty()) {
+        const QueuedColumnEntry top = queuedColumnHeap_.top();
+        queuedColumnHeap_.pop();
 
-    while (pendingColumnJobs_.size() < maxInFlightColumnJobs_ && !queuedColumnJobs_.empty()) {
-        auto bestIt = queuedColumnJobs_.end();
-        int32_t bestDistanceSq = std::numeric_limits<int32_t>::max();
-
-        for (auto it = queuedColumnJobs_.begin(); it != queuedColumnJobs_.end(); ++it) {
-            const int32_t distanceSq = distanceSqToCenter(*it, lastScheduledCenter_);
-            if (bestIt == queuedColumnJobs_.end() || distanceSq < bestDistanceSq) {
-                bestIt = it;
-                bestDistanceSq = distanceSq;
-            }
+        auto queuedIt = queuedColumnJobs_.find(top.coord);
+        if (queuedIt == queuedColumnJobs_.end()) {
+            continue;
         }
 
-        if (bestIt == queuedColumnJobs_.end()) {
-            return;
+        if (!isWithinActiveWindowLocked(top.coord, 0) ||
+            isColumnGeneratedLocked(top.coord) ||
+            pendingColumnJobs_.find(top.coord) != pendingColumnJobs_.end()) {
+            queuedColumnJobs_.erase(queuedIt);
+            continue;
         }
 
-        const ColumnCoord coord = *bestIt;
-        queuedColumnJobs_.erase(bestIt);
-        pendingColumnJobs_.insert(coord);
+        if (top.centerVersion != queueCenterVersion_) {
+            queuedColumnHeap_.push(QueuedColumnEntry{
+                top.coord,
+                hasLastScheduledCenter_ ? distanceSqToCenter(top.coord, lastScheduledCenter_) : 0,
+                queueCenterVersion_,
+                queueSequence_++
+            });
+            continue;
+        }
+
+        queuedColumnJobs_.erase(queuedIt);
+        pendingColumnJobs_.insert(top.coord);
         outJobs.push_back(ScheduledColumnJob{
-            coord,
-            priorityFromDistanceSq(bestDistanceSq)
+            top.coord,
+            priorityFromDistanceSq(top.distanceSq)
         });
     }
 }
@@ -533,6 +572,15 @@ void World::dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsTo
                     isWithinActiveWindowLocked(coord, 0) &&
                     !isColumnGeneratedLocked(coord)) {
                     queuedColumnJobs_.insert(coord);
+                    const int32_t distanceSq = hasLastScheduledCenter_
+                        ? distanceSqToCenter(coord, lastScheduledCenter_)
+                        : 0;
+                    queuedColumnHeap_.push(QueuedColumnEntry{
+                        coord,
+                        distanceSq,
+                        queueCenterVersion_,
+                        queueSequence_++
+                    });
                 }
             }
         }

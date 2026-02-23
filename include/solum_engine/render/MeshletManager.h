@@ -23,6 +23,7 @@ public:
     void clear();
 
     MeshletGroupHandle registerMeshletGroup(const std::vector<Meshlet>& meshlets);
+    void adoptPreparedData(std::vector<MeshletMetadataGPU>&& metadata, std::vector<uint16_t>&& quadData);
 
     bool upload();
 
