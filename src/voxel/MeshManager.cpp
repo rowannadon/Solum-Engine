@@ -167,11 +167,14 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk, int32_t cen
     struct ScheduledTileLod {
         int32_t distanceSq = 0;
         TileLodCoord coord{};
+        jobsystem::Priority priority = jobsystem::Priority::Low;
         bool forceRemesh = false;
         int32_t activeWindowExtraChunks = 0;
     };
 
-    std::vector<ScheduledTileLod> jobsToSchedule;
+    // Schedule the tile's currently visible LOD first, then backfill neighbor LODs.
+    std::vector<ScheduledTileLod> primaryJobsToSchedule;
+    std::vector<ScheduledTileLod> backfillJobsToSchedule;
     std::unordered_map<MeshTileCoord, int8_t> desiredLodByTile;
 
     const int32_t maxRadiusChunks = std::max(0, maxConfiguredRadius());
@@ -217,10 +220,22 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk, int32_t cen
             const int32_t lodMax = std::min<int32_t>(maxLod, static_cast<int32_t>(baseDesired) + 1);
             const int32_t activeWindowExtraChunks = prefetchChunks + meshTileSizeChunks_;
 
+            primaryJobsToSchedule.push_back(ScheduledTileLod{
+                distanceSq,
+                TileLodCoord{tileCoord, static_cast<uint8_t>(baseDesired)},
+                priorityFromLodLevel(static_cast<uint8_t>(baseDesired)),
+                false,
+                activeWindowExtraChunks
+            });
+
             for (int32_t lod = lodMin; lod <= lodMax; ++lod) {
-                jobsToSchedule.push_back(ScheduledTileLod{
+                if (lod == baseDesired) {
+                    continue;
+                }
+                backfillJobsToSchedule.push_back(ScheduledTileLod{
                     distanceSq,
                     TileLodCoord{tileCoord, static_cast<uint8_t>(lod)},
+                    jobsystem::Priority::Low,
                     false,
                     activeWindowExtraChunks
                 });
@@ -228,15 +243,19 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk, int32_t cen
         }
     }
 
-    std::sort(jobsToSchedule.begin(), jobsToSchedule.end(), [](const ScheduledTileLod& a, const ScheduledTileLod& b) {
-        if (a.coord.lodLevel != b.coord.lodLevel) {
+    auto sortScheduledJobs = [](std::vector<ScheduledTileLod>& jobs) {
+        std::sort(jobs.begin(), jobs.end(), [](const ScheduledTileLod& a, const ScheduledTileLod& b) {
+            if (a.distanceSq != b.distanceSq) {
+                return a.distanceSq < b.distanceSq;
+            }
+            if (!(a.coord.tile == b.coord.tile)) {
+                return a.coord.tile < b.coord.tile;
+            }
             return a.coord.lodLevel < b.coord.lodLevel;
-        }
-        if (a.distanceSq != b.distanceSq) {
-            return a.distanceSq < b.distanceSq;
-        }
-        return a.coord < b.coord;
-    });
+        });
+    };
+    sortScheduledJobs(primaryJobsToSchedule);
+    sortScheduledJobs(backfillJobsToSchedule);
 
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
@@ -278,10 +297,19 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk, int32_t cen
         }
     }
 
-    for (const ScheduledTileLod& scheduled : jobsToSchedule) {
+    for (const ScheduledTileLod& scheduled : primaryJobsToSchedule) {
         scheduleTileLodMeshing(
             scheduled.coord,
-            priorityFromLodLevel(scheduled.coord.lodLevel),
+            scheduled.priority,
+            scheduled.forceRemesh,
+            scheduled.activeWindowExtraChunks
+        );
+    }
+
+    for (const ScheduledTileLod& scheduled : backfillJobsToSchedule) {
+        scheduleTileLodMeshing(
+            scheduled.coord,
+            scheduled.priority,
             scheduled.forceRemesh,
             scheduled.activeWindowExtraChunks
         );
@@ -420,10 +448,20 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
         const int32_t lodMax = std::min<int32_t>(maxLod, static_cast<int32_t>(baseDesired) + 1);
         const int32_t activeWindowExtraChunks = kMinPrefetchChunks + meshTileSizeChunks_;
 
+        scheduleTileLodMeshing(
+            TileLodCoord{tileCoord, static_cast<uint8_t>(baseDesired)},
+            priorityFromLodLevel(static_cast<uint8_t>(baseDesired)),
+            true,
+            activeWindowExtraChunks
+        );
+
         for (int32_t lod = lodMin; lod <= lodMax; ++lod) {
+            if (lod == baseDesired) {
+                continue;
+            }
             scheduleTileLodMeshing(
                 TileLodCoord{tileCoord, static_cast<uint8_t>(lod)},
-                priorityFromLodLevel(static_cast<uint8_t>(lod)),
+                jobsystem::Priority::Low,
                 true,
                 activeWindowExtraChunks
             );
