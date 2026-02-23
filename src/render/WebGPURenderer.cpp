@@ -77,15 +77,27 @@ bool WebGPURenderer::initialize() {
 	worldConfig.jobConfig.worker_threads = 4;
 
 	MeshManager::Config meshConfig;
-	meshConfig.lodChunkRadii = {16, 32, 64, 128};
+	meshConfig.lodChunkRadii = {8, 16, 32, 128};
 	meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
-	const int32_t maxLodSpanChunks = 1 << (static_cast<int32_t>(meshConfig.lodChunkRadii.size()) - 1);
-	const int32_t requiredGenerationRadius = meshConfig.lodChunkRadii.back() + (maxLodSpanChunks - 1);
-	worldConfig.columnLoadRadius = std::max(worldConfig.columnLoadRadius, requiredGenerationRadius);
+	const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
+	for (int32_t& lodRadius : meshConfig.lodChunkRadii) {
+		lodRadius = std::min(lodRadius, clampedWorldRadius);
+	}
+	std::sort(meshConfig.lodChunkRadii.begin(), meshConfig.lodChunkRadii.end());
+	meshConfig.lodChunkRadii.erase(
+		std::unique(meshConfig.lodChunkRadii.begin(), meshConfig.lodChunkRadii.end()),
+		meshConfig.lodChunkRadii.end()
+	);
+	if (meshConfig.lodChunkRadii.empty()) {
+		meshConfig.lodChunkRadii.push_back(clampedWorldRadius);
+	}
 
 	world_ = std::make_unique<World>(worldConfig);
 	voxelMeshManager_ = std::make_unique<MeshManager>(*world_, meshConfig);
-	uploadColumnRadius_ = std::max(1, meshConfig.lodChunkRadii.back() + 1);
+	uploadColumnRadius_ = std::min(
+		clampedWorldRadius,
+		std::max(1, meshConfig.lodChunkRadii.back() + 1)
+	);
 
 	const glm::vec3 initialPlayerPosition(0.0f, 0.0f, 0.0f);
 	world_->updatePlayerPosition(initialPlayerPosition);

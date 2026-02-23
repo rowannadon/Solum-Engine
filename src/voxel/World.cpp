@@ -4,6 +4,7 @@
 #include <cmath>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -17,6 +18,16 @@ namespace {
 BlockMaterial airBlock() {
     static const BlockMaterial kAir = UnpackedBlockMaterial{}.pack();
     return kAir;
+}
+
+int32_t distanceSqToCenter(const ColumnCoord& coord, const ColumnCoord& center) {
+    const int64_t dx = static_cast<int64_t>(coord.v.x) - static_cast<int64_t>(center.v.x);
+    const int64_t dy = static_cast<int64_t>(coord.v.y) - static_cast<int64_t>(center.v.y);
+    const int64_t distanceSq = (dx * dx) + (dy * dy);
+    if (distanceSq > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+        return std::numeric_limits<int32_t>::max();
+    }
+    return static_cast<int32_t>(distanceSq);
 }
 }  // namespace
 
@@ -95,7 +106,15 @@ World::World()
 
 World::World(Config config)
     : config_(std::move(config)),
-      jobs_(config_.jobConfig) {}
+      jobs_(config_.jobConfig) {
+    const std::size_t configuredMaxInFlight = config_.maxInFlightColumnJobs;
+    const std::size_t workerCount = std::max<std::size_t>(std::size_t{1}, jobs_.worker_count());
+    const std::size_t autoMaxInFlight = workerCount * 2;
+    maxInFlightColumnJobs_ = std::max<std::size_t>(
+        std::size_t{1},
+        (configuredMaxInFlight > 0) ? configuredMaxInFlight : autoMaxInFlight
+    );
+}
 
 World::~World() {
     shuttingDown_.store(true, std::memory_order_release);
@@ -104,7 +123,15 @@ World::~World() {
 }
 
 void World::waitForIdle() {
-    jobs_.wait_for_idle();
+    for (;;) {
+        pumpColumnGenerationQueue();
+        jobs_.wait_for_idle();
+
+        std::shared_lock<std::shared_mutex> lock(worldMutex_);
+        if (pendingColumnJobs_.empty() && queuedColumnJobs_.empty()) {
+            return;
+        }
+    }
 }
 
 BlockMaterial World::getBlock(const BlockCoord& coord) const {
@@ -281,29 +308,20 @@ void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
 
 void World::scheduleColumnsAround(const ColumnCoord& centerColumn) {
     const int32_t radius = std::max(0, config_.columnLoadRadius);
-
-    std::vector<std::pair<int32_t, ColumnCoord>> columns;
     const int32_t diameter = (radius * 2) + 1;
+    std::vector<ColumnCoord> columns;
     columns.reserve(static_cast<size_t>(diameter * diameter));
 
     for (int32_t dy = -radius; dy <= radius; ++dy) {
         for (int32_t dx = -radius; dx <= radius; ++dx) {
-            const ColumnCoord coord{
+            columns.push_back(ColumnCoord{
                 centerColumn.v.x + dx,
                 centerColumn.v.y + dy
-            };
-            const int32_t distanceSq = (dx * dx) + (dy * dy);
-            columns.emplace_back(distanceSq, coord);
+            });
         }
     }
 
-    std::sort(columns.begin(), columns.end(), [](const auto& a, const auto& b) {
-        return a.first < b.first;
-    });
-
-    for (const auto& [distanceSq, coord] : columns) {
-        scheduleColumnGeneration(coord, priorityFromDistanceSq(distanceSq));
-    }
+    enqueueColumnGenerationBatch(columns);
 }
 
 void World::scheduleColumnsDelta(const ColumnCoord& previousCenter, const ColumnCoord& newCenter) {
@@ -326,6 +344,9 @@ void World::scheduleColumnsDelta(const ColumnCoord& previousCenter, const Column
         return;
     }
 
+    std::vector<ColumnCoord> columnsToSchedule;
+    columnsToSchedule.reserve(static_cast<size_t>((radius * 8) + 4));
+
     for (int32_t y = newMinY; y <= newMaxY; ++y) {
         for (int32_t x = newMinX; x <= newMaxX; ++x) {
             if (x >= previousMinX && x <= previousMaxX &&
@@ -333,80 +354,167 @@ void World::scheduleColumnsDelta(const ColumnCoord& previousCenter, const Column
                 continue;
             }
 
-            const ColumnCoord coord{x, y};
-            const int32_t dx = x - newCenter.v.x;
-            const int32_t dy = y - newCenter.v.y;
-            const int32_t distanceSq = (dx * dx) + (dy * dy);
-            scheduleColumnGeneration(coord, priorityFromDistanceSq(distanceSq));
+            columnsToSchedule.push_back(ColumnCoord{x, y});
+        }
+    }
+
+    enqueueColumnGenerationBatch(columnsToSchedule);
+}
+
+void World::enqueueColumnGenerationLocked(const ColumnCoord& coord) {
+    if (!isWithinActiveWindowLocked(coord, 0)) {
+        return;
+    }
+    if (isColumnGeneratedLocked(coord)) {
+        return;
+    }
+    if (pendingColumnJobs_.find(coord) != pendingColumnJobs_.end()) {
+        return;
+    }
+    if (queuedColumnJobs_.find(coord) != queuedColumnJobs_.end()) {
+        return;
+    }
+    queuedColumnJobs_.insert(coord);
+}
+
+void World::enqueueColumnGenerationBatch(const std::vector<ColumnCoord>& coords) {
+    std::vector<ScheduledColumnJob> jobsToSchedule;
+    {
+        std::unique_lock<std::shared_mutex> lock(worldMutex_);
+        for (const ColumnCoord& coord : coords) {
+            enqueueColumnGenerationLocked(coord);
+        }
+        pruneQueuedColumnsOutsideActiveWindowLocked();
+        collectColumnJobsToScheduleLocked(jobsToSchedule);
+    }
+    dispatchScheduledColumnJobs(std::move(jobsToSchedule));
+}
+
+void World::pruneQueuedColumnsOutsideActiveWindowLocked() {
+    for (auto it = queuedColumnJobs_.begin(); it != queuedColumnJobs_.end();) {
+        if (!isWithinActiveWindowLocked(*it, 0) || isColumnGeneratedLocked(*it)) {
+            it = queuedColumnJobs_.erase(it);
+            continue;
+        }
+        if (pendingColumnJobs_.find(*it) != pendingColumnJobs_.end()) {
+            it = queuedColumnJobs_.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
+void World::collectColumnJobsToScheduleLocked(std::vector<ScheduledColumnJob>& outJobs) {
+    if (!hasLastScheduledCenter_) {
+        return;
+    }
+
+    while (pendingColumnJobs_.size() < maxInFlightColumnJobs_ && !queuedColumnJobs_.empty()) {
+        auto bestIt = queuedColumnJobs_.end();
+        int32_t bestDistanceSq = std::numeric_limits<int32_t>::max();
+
+        for (auto it = queuedColumnJobs_.begin(); it != queuedColumnJobs_.end(); ++it) {
+            const int32_t distanceSq = distanceSqToCenter(*it, lastScheduledCenter_);
+            if (bestIt == queuedColumnJobs_.end() || distanceSq < bestDistanceSq) {
+                bestIt = it;
+                bestDistanceSq = distanceSq;
+            }
+        }
+
+        if (bestIt == queuedColumnJobs_.end()) {
+            return;
+        }
+
+        const ColumnCoord coord = *bestIt;
+        queuedColumnJobs_.erase(bestIt);
+        pendingColumnJobs_.insert(coord);
+        outJobs.push_back(ScheduledColumnJob{
+            coord,
+            priorityFromDistanceSq(bestDistanceSq)
+        });
+    }
+}
+
+void World::dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsToSchedule) {
+    for (const ScheduledColumnJob& scheduled : jobsToSchedule) {
+        const ColumnCoord coord = scheduled.coord;
+        try {
+            jobs_.schedule(
+                scheduled.priority,
+                [this, coord]() -> ColumnGenerationResult {
+                    {
+                        std::shared_lock<std::shared_mutex> lock(worldMutex_);
+                        if (!isWithinActiveWindowLocked(coord, 0)) {
+                            return ColumnGenerationResult{
+                                coord,
+                                Column{},
+                                false
+                            };
+                        }
+                    }
+
+                    TerrainGenerator generator;
+                    Column generatedColumn;
+
+                    const ChunkCoord columnBaseChunk = column_local_to_chunk(coord, 0);
+                    const BlockCoord columnOrigin = chunk_to_block_origin(columnBaseChunk);
+                    generator.generateColumn(columnOrigin.v, generatedColumn);
+
+                    return ColumnGenerationResult{
+                        coord,
+                        std::move(generatedColumn),
+                        true
+                    };
+                },
+                [this, coord](jobsystem::JobResult<ColumnGenerationResult>&& result) {
+                    if (!result.success()) {
+                        {
+                            std::unique_lock<std::shared_mutex> lock(worldMutex_);
+                            pendingColumnJobs_.erase(coord);
+                        }
+                        pumpColumnGenerationQueue();
+                        return;
+                    }
+
+                    ColumnGenerationResult generated = std::move(result).value();
+                    if (!generated.generated) {
+                        {
+                            std::unique_lock<std::shared_mutex> lock(worldMutex_);
+                            pendingColumnJobs_.erase(coord);
+                        }
+                        pumpColumnGenerationQueue();
+                        return;
+                    }
+                    onColumnGenerated(generated.coord, std::move(generated.column));
+                    pumpColumnGenerationQueue();
+                }
+            );
+        } catch (const std::exception&) {
+            {
+                std::unique_lock<std::shared_mutex> lock(worldMutex_);
+                pendingColumnJobs_.erase(coord);
+                if (!shuttingDown_.load(std::memory_order_acquire) &&
+                    isWithinActiveWindowLocked(coord, 0) &&
+                    !isColumnGeneratedLocked(coord)) {
+                    queuedColumnJobs_.insert(coord);
+                }
+            }
         }
     }
 }
 
-void World::scheduleColumnGeneration(const ColumnCoord& coord, jobsystem::Priority priority) {
-    bool shouldSchedule = false;
-    {
-        std::unique_lock<std::shared_mutex> lock(worldMutex_);
-        if (!isColumnGeneratedLocked(coord) && pendingColumnJobs_.find(coord) == pendingColumnJobs_.end()) {
-            if (!isWithinActiveWindowLocked(coord, 1)) {
-                return;
-            }
-            pendingColumnJobs_.insert(coord);
-            shouldSchedule = true;
-        }
-    }
-
-    if (!shouldSchedule) {
+void World::pumpColumnGenerationQueue() {
+    if (shuttingDown_.load(std::memory_order_acquire)) {
         return;
     }
 
-    try {
-        jobs_.schedule(
-            priority,
-            [this, coord]() -> ColumnGenerationResult {
-                {
-                    std::shared_lock<std::shared_mutex> lock(worldMutex_);
-                    if (!isWithinActiveWindowLocked(coord, 1)) {
-                        return ColumnGenerationResult{
-                            coord,
-                            Column{},
-                            false
-                        };
-                    }
-                }
-
-                TerrainGenerator generator;
-                Column generatedColumn;
-
-                const ChunkCoord columnBaseChunk = column_local_to_chunk(coord, 0);
-                const BlockCoord columnOrigin = chunk_to_block_origin(columnBaseChunk);
-                generator.generateColumn(columnOrigin.v, generatedColumn);
-
-                return ColumnGenerationResult{
-                    coord,
-                    std::move(generatedColumn),
-                    true
-                };
-            },
-            [this, coord](jobsystem::JobResult<ColumnGenerationResult>&& result) {
-                if (!result.success()) {
-                    std::unique_lock<std::shared_mutex> lock(worldMutex_);
-                    pendingColumnJobs_.erase(coord);
-                    return;
-                }
-
-                ColumnGenerationResult generated = std::move(result).value();
-                if (!generated.generated) {
-                    std::unique_lock<std::shared_mutex> lock(worldMutex_);
-                    pendingColumnJobs_.erase(coord);
-                    return;
-                }
-                onColumnGenerated(generated.coord, std::move(generated.column));
-            }
-        );
-    } catch (const std::exception&) {
+    std::vector<ScheduledColumnJob> jobsToSchedule;
+    {
         std::unique_lock<std::shared_mutex> lock(worldMutex_);
-        pendingColumnJobs_.erase(coord);
+        pruneQueuedColumnsOutsideActiveWindowLocked();
+        collectColumnJobsToScheduleLocked(jobsToSchedule);
     }
+    dispatchScheduledColumnJobs(std::move(jobsToSchedule));
 }
 
 void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
@@ -416,6 +524,9 @@ void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
 
     std::unique_lock<std::shared_mutex> lock(worldMutex_);
     pendingColumnJobs_.erase(coord);
+    if (!isWithinActiveWindowLocked(coord, 0)) {
+        return;
+    }
 
     Region* region = getOrCreateRegionLocked(column_to_region(coord));
     if (region == nullptr) {
@@ -436,7 +547,7 @@ void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
 
 bool World::hasPendingJobs() const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
-    return !pendingColumnJobs_.empty();
+    return !pendingColumnJobs_.empty() || !queuedColumnJobs_.empty();
 }
 
 bool World::isColumnGeneratedLocked(const ColumnCoord& coord) const {

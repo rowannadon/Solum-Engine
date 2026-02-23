@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <shared_mutex>
@@ -50,6 +51,7 @@ class World : public IBlockSource {
 public:
     struct Config {
         int32_t columnLoadRadius = 1;
+        std::size_t maxInFlightColumnJobs = 0;
         jobsystem::JobSystem::Config jobConfig{};
     };
 
@@ -81,11 +83,20 @@ public:
 
 private:
     struct ColumnGenerationResult;
+    struct ScheduledColumnJob {
+        ColumnCoord coord{};
+        jobsystem::Priority priority = jobsystem::Priority::Low;
+    };
     friend class WorldSection;
 
     void scheduleColumnsAround(const ColumnCoord& centerColumn);
     void scheduleColumnsDelta(const ColumnCoord& previousCenter, const ColumnCoord& newCenter);
-    void scheduleColumnGeneration(const ColumnCoord& coord, jobsystem::Priority priority);
+    void enqueueColumnGenerationLocked(const ColumnCoord& coord);
+    void enqueueColumnGenerationBatch(const std::vector<ColumnCoord>& coords);
+    void pruneQueuedColumnsOutsideActiveWindowLocked();
+    void collectColumnJobsToScheduleLocked(std::vector<ScheduledColumnJob>& outJobs);
+    void dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsToSchedule);
+    void pumpColumnGenerationQueue();
 
     void onColumnGenerated(const ColumnCoord& coord, Column&& column);
 
@@ -103,8 +114,10 @@ private:
     std::unordered_map<RegionCoord, std::unique_ptr<Region>> regions_;
     std::unordered_set<ColumnCoord> generatedColumns_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
+    std::unordered_set<ColumnCoord> queuedColumnJobs_;
     std::atomic<uint64_t> generationRevision_{0};
     std::atomic<bool> shuttingDown_{false};
+    std::size_t maxInFlightColumnJobs_ = 1;
 
     ColumnCoord lastScheduledCenter_{0, 0};
     bool hasLastScheduledCenter_ = false;
