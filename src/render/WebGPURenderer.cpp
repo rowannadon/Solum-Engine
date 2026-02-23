@@ -1,11 +1,16 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <exception>
 
 #include "solum_engine/render/WebGPURenderer.h"
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_wgpu.h>
+
+WebGPURenderer::~WebGPURenderer() {
+	stopStreamingThread();
+}
 
 bool WebGPURenderer::initialize() {
 	RenderConfig config;
@@ -72,6 +77,13 @@ bool WebGPURenderer::initialize() {
 	voxelPipeline_->setDrawConfig(meshletManager->getVerticesPerMeshlet(), meshletManager->getMeshletCount());
 	if (!voxelPipeline_->build()) {
 		std::cerr << "Failed to create voxel pipeline and resources." << std::endl;
+		return false;
+	}
+
+	try {
+		startStreamingThread(initialPlayerPosition, initialColumn);
+	} catch (const std::exception& ex) {
+		std::cerr << "Failed to start streaming thread: " << ex.what() << std::endl;
 		return false;
 	}
 
@@ -211,49 +223,164 @@ int32_t WebGPURenderer::cameraColumnChebyshevDistance(const ColumnCoord& a, cons
 	return std::max(dx, dy);
 }
 
+void WebGPURenderer::startStreamingThread(const glm::vec3& initialCameraPosition, const ColumnCoord& initialCenterColumn) {
+	stopStreamingThread();
+
+	{
+		std::lock_guard<std::mutex> lock(streamingMutex_);
+		streamingStopRequested_ = false;
+		hasLatestStreamingCamera_ = true;
+		latestStreamingCamera_ = initialCameraPosition;
+		pendingMeshUpload_.reset();
+		streamerLastPreparedRevision_ = uploadedMeshRevision_;
+		streamerLastPreparedCenter_ = initialCenterColumn;
+		streamerHasLastPreparedCenter_ = true;
+		streamerLastSnapshotTime_.reset();
+	}
+
+	streamingThread_ = std::thread([this] {
+		streamingThreadMain();
+	});
+}
+
+void WebGPURenderer::stopStreamingThread() {
+	{
+		std::lock_guard<std::mutex> lock(streamingMutex_);
+		streamingStopRequested_ = true;
+		hasLatestStreamingCamera_ = false;
+	}
+	streamingCv_.notify_all();
+
+	if (streamingThread_.joinable()) {
+		streamingThread_.join();
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(streamingMutex_);
+		streamingStopRequested_ = false;
+		pendingMeshUpload_.reset();
+		streamerLastSnapshotTime_.reset();
+	}
+}
+
+void WebGPURenderer::streamingThreadMain() {
+	glm::vec3 cameraPosition{0.0f, 0.0f, 0.0f};
+	bool hasCameraPosition = false;
+
+	while (true) {
+		{
+			std::unique_lock<std::mutex> lock(streamingMutex_);
+			streamingCv_.wait_for(lock, std::chrono::milliseconds(16), [this] {
+				return streamingStopRequested_ || hasLatestStreamingCamera_;
+			});
+			if (streamingStopRequested_) {
+				return;
+			}
+			if (hasLatestStreamingCamera_) {
+				cameraPosition = latestStreamingCamera_;
+				hasLatestStreamingCamera_ = false;
+				hasCameraPosition = true;
+			}
+		}
+
+		if (!hasCameraPosition || !world_ || !voxelMeshManager_) {
+			continue;
+		}
+
+		world_->updatePlayerPosition(cameraPosition);
+		voxelMeshManager_->updatePlayerPosition(cameraPosition);
+
+		const BlockCoord cameraBlock{
+			static_cast<int32_t>(std::floor(cameraPosition.x)),
+			static_cast<int32_t>(std::floor(cameraPosition.y)),
+			static_cast<int32_t>(std::floor(cameraPosition.z))
+		};
+		const ColumnCoord centerColumn = chunk_to_column(block_to_chunk(cameraBlock));
+		const bool centerChanged = !streamerHasLastPreparedCenter_ || !(centerColumn == streamerLastPreparedCenter_);
+		const int32_t centerShift = streamerHasLastPreparedCenter_
+			? cameraColumnChebyshevDistance(centerColumn, streamerLastPreparedCenter_)
+			: 0;
+		const int32_t centerUploadStrideChunks = std::max(2, uploadColumnRadius_ / 8);
+
+		const uint64_t currentRevision = voxelMeshManager_->meshRevision();
+		if (currentRevision == streamerLastPreparedRevision_ &&
+			(!centerChanged || centerShift < centerUploadStrideChunks)) {
+			continue;
+		}
+
+		const bool pendingJobs = world_->hasPendingJobs() || voxelMeshManager_->hasPendingJobs();
+		const double minSnapshotIntervalSeconds =
+			(uploadColumnRadius_ >= 8) ? 0.35 :
+			(uploadColumnRadius_ >= 4) ? 0.25 :
+			0.15;
+		const auto now = std::chrono::steady_clock::now();
+		const bool intervalElapsed =
+			!streamerLastSnapshotTime_.has_value() ||
+			std::chrono::duration<double>(now - *streamerLastSnapshotTime_).count() >= minSnapshotIntervalSeconds;
+		const bool forceForCenterChange = centerChanged && centerShift >= centerUploadStrideChunks;
+
+		if (pendingJobs && !intervalElapsed && !forceForCenterChange) {
+			continue;
+		}
+
+		std::vector<Meshlet> meshlets = voxelMeshManager_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
+
+		{
+			std::lock_guard<std::mutex> lock(streamingMutex_);
+			if (streamingStopRequested_) {
+				return;
+			}
+			pendingMeshUpload_ = PendingMeshUpload{
+				std::move(meshlets),
+				currentRevision,
+				centerColumn
+			};
+		}
+
+		streamerLastPreparedRevision_ = currentRevision;
+		streamerLastPreparedCenter_ = centerColumn;
+		streamerHasLastPreparedCenter_ = true;
+		streamerLastSnapshotTime_ = now;
+	}
+}
+
 void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 	if (!world_ || !voxelMeshManager_) {
 		return;
 	}
 
 	const glm::vec3 cameraPosition = extractCameraPosition(frameUniforms);
-	world_->updatePlayerPosition(cameraPosition);
-	voxelMeshManager_->updatePlayerPosition(cameraPosition);
-	const ColumnCoord centerColumn = extractCameraColumn(frameUniforms);
-	const bool centerChanged = !hasUploadedCenterColumn_ || !(centerColumn == uploadedCenterColumn_);
-	const int32_t centerShift = hasUploadedCenterColumn_
-		? cameraColumnChebyshevDistance(centerColumn, uploadedCenterColumn_)
-		: 0;
-	const int32_t centerUploadStrideChunks = std::max(2, uploadColumnRadius_ / 8);
 
-	const uint64_t currentRevision = voxelMeshManager_->meshRevision();
-	if (currentRevision == uploadedMeshRevision_ &&
-		(!centerChanged || centerShift < centerUploadStrideChunks)) {
+	{
+		std::lock_guard<std::mutex> lock(streamingMutex_);
+		hasLatestStreamingCamera_ = true;
+		latestStreamingCamera_ = cameraPosition;
+	}
+	streamingCv_.notify_one();
+
+	std::optional<PendingMeshUpload> pendingUpload;
+	{
+		std::lock_guard<std::mutex> lock(streamingMutex_);
+		if (pendingMeshUpload_.has_value()) {
+			pendingUpload = std::move(pendingMeshUpload_);
+			pendingMeshUpload_.reset();
+		}
+	}
+
+	if (!pendingUpload.has_value()) {
 		return;
 	}
 
-	const bool pendingJobs = world_->hasPendingJobs() || voxelMeshManager_->hasPendingJobs();
-	const double now = glfwGetTime();
-	const double minUploadIntervalSeconds =
-		(uploadColumnRadius_ >= 8) ? 0.35 :
-		(uploadColumnRadius_ >= 4) ? 0.25 :
-		0.15;
-	const bool intervalElapsed =
-		lastMeshUploadTimeSeconds_ < 0.0 || (now - lastMeshUploadTimeSeconds_) >= minUploadIntervalSeconds;
-	const bool forceForCenterChange = centerChanged && centerShift >= centerUploadStrideChunks;
-
-	// Avoid full-buffer upload every single column-step while generation is in flight.
-	// We still force upload for center changes so visible LOD rings can switch as the player moves.
-	if (pendingJobs && !intervalElapsed && !forceForCenterChange) {
-		return;
-	}
-
-	const std::vector<Meshlet> meshlets = voxelMeshManager_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
-	if (uploadMeshlets(meshlets)) {
-		uploadedMeshRevision_ = currentRevision;
-		uploadedCenterColumn_ = centerColumn;
+	if (uploadMeshlets(pendingUpload->meshlets)) {
+		uploadedMeshRevision_ = pendingUpload->meshRevision;
+		uploadedCenterColumn_ = pendingUpload->centerColumn;
 		hasUploadedCenterColumn_ = true;
-		lastMeshUploadTimeSeconds_ = now;
+		lastMeshUploadTimeSeconds_ = glfwGetTime();
+	} else {
+		std::lock_guard<std::mutex> lock(streamingMutex_);
+		if (!pendingMeshUpload_.has_value()) {
+			pendingMeshUpload_ = std::move(pendingUpload);
+		}
 	}
 }
 
@@ -373,6 +500,7 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 }
 
 void WebGPURenderer::terminate() {
+	stopStreamingThread();
 	voxelMeshManager_.reset();
 	world_.reset();
 	textureManager->terminate();
