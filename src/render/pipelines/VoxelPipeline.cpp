@@ -83,7 +83,7 @@ bool VoxelPipeline::createPipeline() {
     config.colorFormat = r_.ctx.getSurfaceFormat();
     config.depthFormat = TextureFormat::Depth32Float;
     config.sampleCount = 4;
-    config.cullMode = CullMode::None;
+    config.cullMode = CullMode::Back;
     config.depthWriteEnabled = true;
     config.depthCompare = CompareFunction::Less;
     config.fragmentShaderName = "fs_main";

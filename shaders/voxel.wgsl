@@ -65,68 +65,15 @@ fn decode_local_offset(packed: u32) -> vec3u {
     );
 }
 
-fn corner_from_triangle_vertex(face: u32, triangleVertex: u32) -> u32 {
-    switch face {
-        case 0u: {
-            switch triangleVertex {
-                case 0u: { return 0u; }
-                case 1u: { return 1u; }
-                case 2u: { return 2u; }
-                case 3u: { return 1u; }
-                case 4u: { return 3u; }
-                default: { return 2u; }
-            }
-        }
-        case 1u: {
-            switch triangleVertex {
-                case 0u: { return 0u; }
-                case 1u: { return 2u; }
-                case 2u: { return 1u; }
-                case 3u: { return 1u; }
-                case 4u: { return 2u; }
-                default: { return 3u; }
-            }
-        }
-        case 2u: {
-            switch triangleVertex {
-                case 0u: { return 0u; }
-                case 1u: { return 2u; }
-                case 2u: { return 1u; }
-                case 3u: { return 1u; }
-                case 4u: { return 2u; }
-                default: { return 3u; }
-            }
-        }
-        case 3u: {
-            switch triangleVertex {
-                case 0u: { return 0u; }
-                case 1u: { return 1u; }
-                case 2u: { return 2u; }
-                case 3u: { return 1u; }
-                case 4u: { return 3u; }
-                default: { return 2u; }
-            }
-        }
-        case 4u: {
-            switch triangleVertex {
-                case 0u: { return 0u; }
-                case 1u: { return 1u; }
-                case 2u: { return 2u; }
-                case 3u: { return 1u; }
-                case 4u: { return 3u; }
-                default: { return 2u; }
-            }
-        }
-        default: {
-            switch triangleVertex {
-                case 0u: { return 0u; }
-                case 1u: { return 2u; }
-                case 2u: { return 1u; }
-                case 3u: { return 1u; }
-                case 4u: { return 3u; }
-                default: { return 2u; }
-            }
-        }
+fn corner_from_triangle_vertex(triangleVertex: u32) -> u32 {
+    // Shared CCW quad index order for all faces: [0,1,2] and [2,1,3].
+    switch triangleVertex {
+        case 0u: { return 0u; }
+        case 1u: { return 1u; }
+        case 2u: { return 2u; }
+        case 3u: { return 2u; }
+        case 4u: { return 1u; }
+        default: { return 3u; }
     }
 }
 
@@ -135,48 +82,48 @@ fn face_corner_offset(face: u32, corner: u32) -> vec3f {
         case 0u: {
             switch corner {
                 case 0u: { return vec3f(1.0, 0.0, 0.0); }
-                case 1u: { return vec3f(1.0, 0.0, 1.0); }
-                case 2u: { return vec3f(1.0, 1.0, 0.0); }
+                case 1u: { return vec3f(1.0, 1.0, 0.0); }
+                case 2u: { return vec3f(1.0, 0.0, 1.0); }
                 default: { return vec3f(1.0, 1.0, 1.0); }
             }
         }
         case 1u: {
             switch corner {
                 case 0u: { return vec3f(0.0, 0.0, 0.0); }
-                case 1u: { return vec3f(0.0, 1.0, 0.0); }
-                case 2u: { return vec3f(0.0, 0.0, 1.0); }
+                case 1u: { return vec3f(0.0, 0.0, 1.0); }
+                case 2u: { return vec3f(0.0, 1.0, 0.0); }
                 default: { return vec3f(0.0, 1.0, 1.0); }
             }
         }
         case 2u: {
             switch corner {
                 case 0u: { return vec3f(0.0, 1.0, 0.0); }
-                case 1u: { return vec3f(1.0, 1.0, 0.0); }
-                case 2u: { return vec3f(0.0, 1.0, 1.0); }
+                case 1u: { return vec3f(0.0, 1.0, 1.0); }
+                case 2u: { return vec3f(1.0, 1.0, 0.0); }
                 default: { return vec3f(1.0, 1.0, 1.0); }
             }
         }
         case 3u: {
             switch corner {
                 case 0u: { return vec3f(0.0, 0.0, 0.0); }
-                case 1u: { return vec3f(0.0, 0.0, 1.0); }
-                case 2u: { return vec3f(1.0, 0.0, 0.0); }
+                case 1u: { return vec3f(1.0, 0.0, 0.0); }
+                case 2u: { return vec3f(0.0, 0.0, 1.0); }
                 default: { return vec3f(1.0, 0.0, 1.0); }
             }
         }
         case 4u: {
             switch corner {
                 case 0u: { return vec3f(0.0, 0.0, 1.0); }
-                case 1u: { return vec3f(0.0, 1.0, 1.0); }
-                case 2u: { return vec3f(1.0, 0.0, 1.0); }
+                case 1u: { return vec3f(1.0, 0.0, 1.0); }
+                case 2u: { return vec3f(0.0, 1.0, 1.0); }
                 default: { return vec3f(1.0, 1.0, 1.0); }
             }
         }
         default: {
             switch corner {
                 case 0u: { return vec3f(0.0, 0.0, 0.0); }
-                case 1u: { return vec3f(1.0, 0.0, 0.0); }
-                case 2u: { return vec3f(0.0, 1.0, 0.0); }
+                case 1u: { return vec3f(0.0, 1.0, 0.0); }
+                case 2u: { return vec3f(1.0, 0.0, 0.0); }
                 default: { return vec3f(1.0, 1.0, 0.0); }
             }
         }
@@ -200,7 +147,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     let packedOffset = fetch_packed_quad(meshlet.dataOffset + quadIdx);
     let blockLocal = decode_local_offset(packedOffset);
-    let corner = corner_from_triangle_vertex(meshlet.faceDirection, triangleVertex);
+    let corner = corner_from_triangle_vertex(triangleVertex);
     let cornerOffset = face_corner_offset(meshlet.faceDirection, corner);
     let voxelScale = f32(max(meshlet.voxelScale, 1u));
 
