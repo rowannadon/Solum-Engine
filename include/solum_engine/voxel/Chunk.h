@@ -18,6 +18,7 @@ public:
     // High performance getters and setters
     BlockMaterial getBlock(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel = 0) const;
     void setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockID);
+    bool isAllAir() const noexcept { return solidVoxelCount_ == 0; }
     static constexpr uint8_t mipSize(uint8_t mipLevel) {
         return (mipLevel > MAX_MIP_LEVEL) ? 1u : static_cast<uint8_t>(SIZE >> mipLevel);
     }
@@ -31,6 +32,7 @@ private:
     };
 
     std::array<MipStorage, MAX_MIP_LEVEL + 1> mips_{};
+    uint16_t solidVoxelCount_ = 0;
 
     static uint16_t getVoxelIndex(uint8_t x, uint8_t y, uint8_t z, uint8_t size);
     static uint32_t getPaletteIndex(const MipStorage& storage, uint16_t voxelIndex);

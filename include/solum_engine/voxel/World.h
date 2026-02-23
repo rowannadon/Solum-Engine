@@ -72,6 +72,8 @@ public:
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
     bool isColumnGenerated(const ColumnCoord& coord) const;
+    bool isChunkEmpty(const ChunkCoord& coord) const;
+    bool tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const;
     uint64_t generationRevision() const;
     void copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const;
     void copyGeneratedColumnsAround(const ColumnCoord& centerColumn, int32_t radius, std::vector<ColumnCoord>& outColumns) const;

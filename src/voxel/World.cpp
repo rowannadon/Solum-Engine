@@ -158,6 +158,42 @@ bool World::isColumnGenerated(const ColumnCoord& coord) const {
     return isColumnGeneratedLocked(coord);
 }
 
+bool World::isChunkEmpty(const ChunkCoord& coord) const {
+    if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT) {
+        return true;
+    }
+
+    uint32_t emptyMask = 0u;
+    if (!tryGetColumnEmptyChunkMask(chunk_to_column(coord), emptyMask)) {
+        return false;
+    }
+
+    return (emptyMask & (1u << static_cast<uint32_t>(coord.v.z))) != 0u;
+}
+
+bool World::tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    if (!isColumnGeneratedLocked(coord)) {
+        outMask = 0u;
+        return false;
+    }
+
+    const RegionCoord regionCoord = column_to_region(coord);
+    const auto regionIt = regions_.find(regionCoord);
+    if (regionIt == regions_.end() || regionIt->second == nullptr) {
+        outMask = 0u;
+        return false;
+    }
+
+    const glm::ivec2 localColumn = column_local_in_region(coord);
+    const Column& column = regionIt->second->getColumn(
+        static_cast<uint8_t>(localColumn.x),
+        static_cast<uint8_t>(localColumn.y)
+    );
+    outMask = column.getEmptyChunkMask();
+    return true;
+}
+
 uint64_t World::generationRevision() const {
     return generationRevision_.load(std::memory_order_acquire);
 }
@@ -527,6 +563,9 @@ void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
     if (!isWithinActiveWindowLocked(coord, 0)) {
         return;
     }
+
+    // Keep occupancy metadata coherent even if a generator path bypasses Column::setBlock.
+    column.rebuildEmptyChunkMask();
 
     Region* region = getOrCreateRegionLocked(column_to_region(coord));
     if (region == nullptr) {

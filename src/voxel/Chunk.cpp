@@ -18,6 +18,7 @@ Chunk::Chunk() {
         storage.palette.assign(1, airBlock());
         storage.data.clear();
     }
+    solidVoxelCount_ = 0;
 }
 
 BlockMaterial Chunk::getBlock(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel) const {
@@ -44,10 +45,22 @@ void Chunk::setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockI
         return;
     }
 
+    const BlockMaterial previousBlock = getBlock(x, y, z, 0);
+    const bool previousSolid = isSolid(previousBlock);
+    const bool newSolid = isSolid(blockID);
+
     bool levelChanged = false;
     setBlockInStorage(mips_[0], x, y, z, blockID, &levelChanged);
     if (!levelChanged) {
         return;
+    }
+
+    if (previousSolid != newSolid) {
+        if (newSolid) {
+            ++solidVoxelCount_;
+        } else if (solidVoxelCount_ > 0) {
+            --solidVoxelCount_;
+        }
     }
 
     uint8_t px = x;
