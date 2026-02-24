@@ -16,11 +16,6 @@ namespace {
         return blockID.unpack().id != kAirBlockId;
     }
 
-    inline bool IsRenderableSolid(BlockMaterial blockID) {
-        const uint16_t id = blockID.unpack().id;
-        return id != kAirBlockId && id != ChunkMesher::kCulledSolidBlockId;
-    }
-
     std::vector<Meshlet> flattenMeshlets(const std::array<std::vector<Meshlet>, 6>& meshletsByDirection) {
         size_t totalMeshletCount = 0;
         for (const auto& dirMeshlets : meshletsByDirection) {
@@ -96,7 +91,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
     BlockCoord chunkOrigin = chunk_to_block_origin(coord);
     std::array<std::vector<Meshlet>, 6> meshletsByDirection;
 
-    auto appendQuad = [&](uint32_t dir, uint32_t x, uint32_t y, uint32_t z) {
+    auto appendQuad = [&](uint32_t dir, uint32_t x, uint32_t y, uint32_t z, uint16_t materialId) {
         auto& dirMeshlets = meshletsByDirection[dir];
         if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
             Meshlet meshlet{};
@@ -107,6 +102,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
 
         Meshlet& activeMeshlet = dirMeshlets.back();
         activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
+        activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
         activeMeshlet.quadCount += 1;
     };
 
@@ -119,7 +115,8 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
                 const int paddedZ = z + 1;
 
                 const BlockMaterial blockID = paddedBlockData[paddedIndex(paddedX, paddedY, paddedZ)];
-                if (!IsRenderableSolid(blockID)) {
+                const uint16_t materialId = blockID.unpack().id;
+                if (materialId == kAirBlockId || materialId == ChunkMesher::kCulledSolidBlockId) {
                     continue;
                 }
 
@@ -136,7 +133,13 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
                         continue; // Face is occluded
                     }
 
-                    appendQuad(dir, static_cast<uint32_t>(x), static_cast<uint32_t>(y), static_cast<uint32_t>(z));
+                    appendQuad(
+                        dir,
+                        static_cast<uint32_t>(x),
+                        static_cast<uint32_t>(y),
+                        static_cast<uint32_t>(z),
+                        materialId
+                    );
                 }
             }
         }
@@ -160,7 +163,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
 
     std::array<std::vector<Meshlet>, 6> meshletsByDirection;
 
-    auto appendQuad = [&](uint32_t dir, uint32_t x, uint32_t y, uint32_t z) {
+    auto appendQuad = [&](uint32_t dir, uint32_t x, uint32_t y, uint32_t z, uint16_t materialId) {
         auto& dirMeshlets = meshletsByDirection[dir];
         if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
             Meshlet meshlet{};
@@ -172,6 +175,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
 
         Meshlet& activeMeshlet = dirMeshlets.back();
         activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
+        activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
         activeMeshlet.quadCount += 1;
     };
 
@@ -185,7 +189,8 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                 };
 
                 const BlockMaterial blockID = source.getBlock(blockCoord);
-                if (!IsRenderableSolid(blockID)) {
+                const uint16_t materialId = blockID.unpack().id;
+                if (materialId == kAirBlockId || materialId == ChunkMesher::kCulledSolidBlockId) {
                     continue;
                 }
 
@@ -206,7 +211,8 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                         dir,
                         static_cast<uint32_t>(x),
                         static_cast<uint32_t>(y),
-                        static_cast<uint32_t>(z)
+                        static_cast<uint32_t>(z),
+                        materialId
                     );
                 }
             }

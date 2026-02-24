@@ -1,7 +1,7 @@
 #include "solum_engine/render/TextureManager.h"
 #include <cstring>
 #include <iostream>
-#include "stb_image.h"
+#include "stb/stb_image.h"
 #include <glm/glm.hpp>
 
 // ---------- basic IO ----------
@@ -43,12 +43,28 @@ Sampler TextureManager::createSampler(const std::string& samplerName, const Samp
 }
 
 void TextureManager::terminate() {
+    for (auto& kv : textureViews) {
+        if (kv.second) {
+            kv.second.release();
+        }
+    }
+
+    for (auto& kv : samplers) {
+        if (kv.second) {
+            kv.second.release();
+        }
+    }
+
     for (auto& kv : textures) {
         if (kv.second) {
             kv.second.destroy();
             kv.second.release();
         }
     }
+
+    textureViews.clear();
+    samplers.clear();
+    textures.clear();
 }
 
 uint32_t TextureManager::bit_width(uint32_t m) {
@@ -335,5 +351,13 @@ void TextureManager::removeTexture(const std::string& name) {
     if (it != textures.end()) {
         it->second.release();
         textures.erase(it);
+    }
+}
+
+void TextureManager::removeSampler(const std::string& name) {
+    auto it = samplers.find(name);
+    if (it != samplers.end()) {
+        it->second.release();
+        samplers.erase(it);
     }
 }

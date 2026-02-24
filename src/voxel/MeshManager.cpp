@@ -957,7 +957,8 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
     auto appendSkirtStrip = [&skirtMeshlets](uint32_t faceDirection,
                                              const glm::ivec3& origin,
                                              uint32_t length,
-                                             bool advanceAlongY) {
+                                             bool advanceAlongY,
+                                             uint16_t materialId) {
         uint32_t emitted = 0;
         while (emitted < length) {
             const uint32_t batch = std::min<uint32_t>(
@@ -978,6 +979,7 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
                 const uint32_t localY = advanceAlongY ? i : 0u;
                 skirt.packedQuadLocalOffsets[skirt.quadCount] =
                     packMeshletLocalOffset(localX, localY, 0u);
+                skirt.quadMaterialIds[skirt.quadCount] = materialId;
                 skirt.quadCount += 1u;
             }
 
@@ -1018,6 +1020,7 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
                 const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
                 for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
                     const uint16_t packed = meshlet.packedQuadLocalOffsets[quadIndex];
+                    const uint16_t materialId = meshlet.quadMaterialIds[quadIndex];
                     const uint32_t localX = static_cast<uint32_t>(packed & 0x1Fu);
                     const uint32_t localY = static_cast<uint32_t>((packed >> 5u) & 0x1Fu);
                     const uint32_t localZ = static_cast<uint32_t>((packed >> 10u) & 0x1Fu);
@@ -1032,7 +1035,8 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
                             Direction::MinusX,
                             glm::ivec3(worldX, worldY, skirtZ),
                             voxelScale,
-                            true
+                            true,
+                            materialId
                         );
                     }
                     if (skirtPlusX && (worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
@@ -1040,7 +1044,8 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
                             Direction::PlusX,
                             glm::ivec3(worldX + static_cast<int32_t>(voxelScale) - 1, worldY, skirtZ),
                             voxelScale,
-                            true
+                            true,
+                            materialId
                         );
                     }
                     if (skirtMinusY && worldY == tileMinY) {
@@ -1048,7 +1053,8 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
                             Direction::MinusY,
                             glm::ivec3(worldX, worldY, skirtZ),
                             voxelScale,
-                            false
+                            false,
+                            materialId
                         );
                     }
                     if (skirtPlusY && (worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
@@ -1056,7 +1062,8 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
                             Direction::PlusY,
                             glm::ivec3(worldX, worldY + static_cast<int32_t>(voxelScale) - 1, skirtZ),
                             voxelScale,
-                            false
+                            false,
+                            materialId
                         );
                     }
                 }
@@ -1152,7 +1159,8 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
     auto appendSkirtStrip = [&skirtMeshlets](uint32_t faceDirection,
                                              const glm::ivec3& origin,
                                              uint32_t length,
-                                             bool advanceAlongY) {
+                                             bool advanceAlongY,
+                                             uint16_t materialId) {
         uint32_t emitted = 0;
         while (emitted < length) {
             const uint32_t batch = std::min<uint32_t>(
@@ -1173,6 +1181,7 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
                 const uint32_t localY = advanceAlongY ? i : 0u;
                 skirt.packedQuadLocalOffsets[skirt.quadCount] =
                     packMeshletLocalOffset(localX, localY, 0u);
+                skirt.quadMaterialIds[skirt.quadCount] = materialId;
                 skirt.quadCount += 1u;
             }
 
@@ -1213,6 +1222,7 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
                 const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
                 for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
                     const uint16_t packed = meshlet.packedQuadLocalOffsets[quadIndex];
+                    const uint16_t materialId = meshlet.quadMaterialIds[quadIndex];
                     const uint32_t localX = static_cast<uint32_t>(packed & 0x1Fu);
                     const uint32_t localY = static_cast<uint32_t>((packed >> 5u) & 0x1Fu);
                     const uint32_t localZ = static_cast<uint32_t>((packed >> 10u) & 0x1Fu);
@@ -1227,7 +1237,8 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
                             Direction::MinusX,
                             glm::ivec3(worldX, worldY, skirtZ),
                             voxelScale,
-                            true
+                            true,
+                            materialId
                         );
                     }
                     if (skirtPlusX && (worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
@@ -1235,7 +1246,8 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
                             Direction::PlusX,
                             glm::ivec3(worldX + static_cast<int32_t>(voxelScale) - 1, worldY, skirtZ),
                             voxelScale,
-                            true
+                            true,
+                            materialId
                         );
                     }
                     if (skirtMinusY && worldY == tileMinY) {
@@ -1243,7 +1255,8 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
                             Direction::MinusY,
                             glm::ivec3(worldX, worldY, skirtZ),
                             voxelScale,
-                            false
+                            false,
+                            materialId
                         );
                     }
                     if (skirtPlusY && (worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
@@ -1251,7 +1264,8 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
                             Direction::PlusY,
                             glm::ivec3(worldX, worldY + static_cast<int32_t>(voxelScale) - 1, skirtZ),
                             voxelScale,
-                            false
+                            false,
+                            materialId
                         );
                     }
                 }

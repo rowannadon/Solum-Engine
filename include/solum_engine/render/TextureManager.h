@@ -44,6 +44,7 @@ public:
     void writeTexture(const TexelCopyTextureInfo& destination, const void* data, size_t size, const TexelCopyBufferLayout& source, const Extent3D& writeSize);
     void removeTextureView(const std::string& name);
     void removeTexture(const std::string& name);
+    void removeSampler(const std::string& name);
     void terminate();
 
 private:

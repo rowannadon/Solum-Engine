@@ -23,7 +23,7 @@ public:
     void clear();
 
     MeshletGroupHandle registerMeshletGroup(const std::vector<Meshlet>& meshlets);
-    void adoptPreparedData(std::vector<MeshletMetadataGPU>&& metadata, std::vector<uint16_t>&& quadData);
+    void adoptPreparedData(std::vector<MeshletMetadataGPU>&& metadata, std::vector<uint32_t>&& quadData);
 
     bool upload();
 
@@ -37,5 +37,5 @@ private:
     uint32_t quadCapacity = 0;
 
     std::vector<MeshletMetadataGPU> metadataCpu;
-    std::vector<uint16_t> quadDataCpu;
+    std::vector<uint32_t> quadDataCpu;
 };

@@ -33,7 +33,7 @@ bool MeshletManager::initialize(BufferManager* manager, uint32_t maxMeshlets, ui
 
     BufferDescriptor meshDataDesc = Default;
     meshDataDesc.label = StringView("meshlet data buffer");
-    meshDataDesc.size = (static_cast<uint64_t>(quadCapacity) * sizeof(uint16_t) + 3ull) & ~3ull;
+    meshDataDesc.size = static_cast<uint64_t>(quadCapacity) * sizeof(uint32_t);
     meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     meshDataDesc.mappedAtCreation = false;
 
@@ -81,6 +81,12 @@ MeshletGroupHandle MeshletManager::registerMeshletGroup(const std::vector<Meshle
             meshlet.packedQuadLocalOffsets.begin(),
             meshlet.packedQuadLocalOffsets.begin() + static_cast<std::ptrdiff_t>(meshlet.quadCount)
         );
+        const size_t start = quadDataCpu.size() - static_cast<size_t>(meshlet.quadCount);
+        for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
+            const size_t idx = start + static_cast<size_t>(i);
+            const uint16_t packedLocalOffset = static_cast<uint16_t>(quadDataCpu[idx]);
+            quadDataCpu[idx] = packMeshletQuadData(packedLocalOffset, meshlet.quadMaterialIds[i]);
+        }
 
         handle.meshletCount += 1;
         handle.quadCount += meshlet.quadCount;
@@ -90,7 +96,7 @@ MeshletGroupHandle MeshletManager::registerMeshletGroup(const std::vector<Meshle
 }
 
 void MeshletManager::adoptPreparedData(std::vector<MeshletMetadataGPU>&& metadata,
-                                       std::vector<uint16_t>&& quadData) {
+                                       std::vector<uint32_t>&& quadData) {
     metadataCpu = std::move(metadata);
     quadDataCpu = std::move(quadData);
 }
@@ -110,37 +116,13 @@ bool MeshletManager::upload() {
     }
 
     if (!quadDataCpu.empty()) {
-        const size_t dataBytes = quadDataCpu.size() * sizeof(uint16_t);
-        const size_t alignedBytes = (dataBytes + 3ull) & ~3ull;
-
-        if (alignedBytes == dataBytes) {
-            bufferManager->writeBuffer(
-                kMeshDataBufferName,
-                0,
-                quadDataCpu.data(),
-                dataBytes
-            );
-        } else {
-            // Queue::writeBuffer requires byte sizes aligned to 4 bytes. Upload the aligned prefix,
-            // then emit a 4-byte tail containing the final 2-byte value and padding.
-            const size_t prefixBytes = dataBytes - sizeof(uint16_t);
-            if (prefixBytes > 0) {
-                bufferManager->writeBuffer(
-                    kMeshDataBufferName,
-                    0,
-                    quadDataCpu.data(),
-                    prefixBytes
-                );
-            }
-
-            uint32_t tail = static_cast<uint32_t>(quadDataCpu.back());
-            bufferManager->writeBuffer(
-                kMeshDataBufferName,
-                prefixBytes,
-                &tail,
-                sizeof(uint32_t)
-            );
-        }
+        const size_t dataBytes = quadDataCpu.size() * sizeof(uint32_t);
+        bufferManager->writeBuffer(
+            kMeshDataBufferName,
+            0,
+            quadDataCpu.data(),
+            dataBytes
+        );
     }
 
     return true;

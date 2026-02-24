@@ -21,6 +21,7 @@
 #include "solum_engine/render/PipelineManager.h"
 #include "solum_engine/render/BufferManager.h"
 #include "solum_engine/render/TextureManager.h"
+#include "solum_engine/render/MaterialManager.h"
 #include "solum_engine/platform/WebGPUContext.h"
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/RuntimeTiming.h"
@@ -69,7 +70,7 @@ private:
 
     struct PendingMeshUpload {
         std::vector<MeshletMetadataGPU> metadata;
-        std::vector<uint16_t> quadData;
+        std::vector<uint32_t> quadData;
         uint32_t totalMeshletCount = 0;
         uint32_t totalQuadCount = 0;
         uint32_t requiredMeshletCapacity = 0;
@@ -82,6 +83,7 @@ private:
     std::unique_ptr<PipelineManager> pipelineManager;
     std::unique_ptr<BufferManager> bufferManager;
     std::unique_ptr<TextureManager> textureManager;
+    std::unique_ptr<MaterialManager> materialManager;
 
     std::unique_ptr<MeshletManager> meshletManager;
     std::unique_ptr<World> world_;

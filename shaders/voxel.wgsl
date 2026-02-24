@@ -15,6 +15,9 @@ struct MeshletMetadata {
 };
 
 @group(0) @binding(2) var<storage, read> meshletMetadata: array<MeshletMetadata>;
+@group(0) @binding(3) var<storage, read> materialToTexture: array<u32, 65536>;
+@group(0) @binding(4) var materialTextures: texture_2d_array<f32>;
+@group(0) @binding(5) var materialSampler: sampler;
 
 struct VertexInput {
     @builtin(instance_index) instance_idx: u32,
@@ -24,7 +27,9 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4f,
     @location(0) worldPosition: vec3f,
-    @location(1) color: vec3f,
+    @location(1) texCoord: vec2f,
+    @location(2) @interpolate(flat) materialId: u32,
+    @location(3) debugColor: vec3f,
 };
 
 fn hash_u32(x: u32) -> u32 {
@@ -49,20 +54,21 @@ fn hash_to_color(id: u32) -> vec3f {
     );
 }
 
-fn fetch_packed_quad(quadOffset: u32) -> u32 {
-    let word = meshletDataWords[quadOffset >> 1u];
-    if ((quadOffset & 1u) == 0u) {
-        return word & 0xffffu;
-    }
-    return (word >> 16u) & 0xffffu;
+fn fetch_quad_data(quadOffset: u32) -> u32 {
+    return meshletDataWords[quadOffset];
 }
 
 fn decode_local_offset(packed: u32) -> vec3u {
+    let offset = packed & 0xffffu;
     return vec3u(
-        packed & 0x1fu,
-        (packed >> 5u) & 0x1fu,
-        (packed >> 10u) & 0x1fu
+        offset & 0x1fu,
+        (offset >> 5u) & 0x1fu,
+        (offset >> 10u) & 0x1fu
     );
+}
+
+fn decode_material_id(packed: u32) -> u32 {
+    return (packed >> 16u) & 0xffffu;
 }
 
 fn corner_from_triangle_vertex(triangleVertex: u32) -> u32 {
@@ -130,6 +136,16 @@ fn face_corner_offset(face: u32, corner: u32) -> vec3f {
     }
 }
 
+fn face_uv(face: u32, cornerOffset: vec3f) -> vec2f {
+    if (face == 0u || face == 1u) {
+        return vec2f(cornerOffset.y, cornerOffset.z);
+    }
+    if (face == 2u || face == 3u) {
+        return vec2f(cornerOffset.x, cornerOffset.z);
+    }
+    return vec2f(cornerOffset.x, cornerOffset.y);
+}
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -141,12 +157,14 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     if (quadIdx >= meshlet.quadCount) {
         out.position = vec4f(2.0, 2.0, 2.0, 1.0);
         out.worldPosition = vec3f(0.0, 0.0, 0.0);
-        out.color = vec3f(0.0, 0.0, 0.0);
+        out.texCoord = vec2f(0.0, 0.0);
+        out.materialId = 0u;
+        out.debugColor = vec3f(0.0, 0.0, 0.0);
         return out;
     }
 
-    let packedOffset = fetch_packed_quad(meshlet.dataOffset + quadIdx);
-    let blockLocal = decode_local_offset(packedOffset);
+    let quadData = fetch_quad_data(meshlet.dataOffset + quadIdx);
+    let blockLocal = decode_local_offset(quadData);
     let corner = corner_from_triangle_vertex(triangleVertex);
     let cornerOffset = face_corner_offset(meshlet.faceDirection, corner);
     let voxelScale = f32(max(meshlet.voxelScale, 1u));
@@ -161,24 +179,14 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.position = frameUniforms.projectionMatrix * viewPosition;
 
     out.worldPosition = worldSpacePosition.xyz;
+    out.texCoord = face_uv(meshlet.faceDirection, cornerOffset);
+    out.materialId = decode_material_id(quadData);
 
-    let worldBlockX = meshlet.originX + i32(blockLocal.x) * i32(max(meshlet.voxelScale, 1u));
-    let worldBlockY = meshlet.originY + i32(blockLocal.y) * i32(max(meshlet.voxelScale, 1u));
-    let worldBlockZ = meshlet.originZ + i32(blockLocal.z) * i32(max(meshlet.voxelScale, 1u));
-
-    let colorSeed = (bitcast<u32>(worldBlockX) * 73856093u) ^
-        (bitcast<u32>(worldBlockY) * 19349663u) ^
-        (bitcast<u32>(worldBlockZ) * 83492791u);
-    let meshletDebugEnabled = (frameUniforms.renderFlags.x & 0x1u) != 0u;
     let meshletColorSeed = (bitcast<u32>(meshlet.originX) * 73856093u) ^
         (bitcast<u32>(meshlet.originY) * 19349663u) ^
         (bitcast<u32>(meshlet.originZ) * 83492791u) ^
         (meshlet.faceDirection * 2654435761u);
-    if (meshletDebugEnabled) {
-        out.color = hash_to_color(meshletColorSeed);
-    } else {
-        out.color = hash_to_color(colorSeed);
-    }
+    out.debugColor = hash_to_color(meshletColorSeed);
 
     return out;
 }
@@ -194,6 +202,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let ambient = 0.3;
     let shade = ambient + (1.0 - ambient) * ndotl;
 
-    let linearColor = in.color * shade;
+    let meshletDebugEnabled = (frameUniforms.renderFlags.x & 0x1u) != 0u;
+    var baseColor = vec3f(0.5, 0.5, 0.5);
+    if (meshletDebugEnabled) {
+        baseColor = in.debugColor;
+    } else {
+        let safeMaterialId = min(in.materialId, 65535u);
+        let textureLayer = materialToTexture[safeMaterialId];
+        baseColor = textureSample(materialTextures, materialSampler, in.texCoord, i32(textureLayer)).rgb;
+    }
+
+    let linearColor = baseColor * shade;
     return vec4f(linearColor, 1.0);
 }

@@ -18,7 +18,7 @@ constexpr glm::vec4 kRegionBoundsColor{0.2f, 0.8f, 1.0f, 0.95f};
 
 struct PreparedMeshUploadData {
 	std::vector<MeshletMetadataGPU> metadata;
-	std::vector<uint16_t> quadData;
+	std::vector<uint32_t> quadData;
 	uint32_t totalMeshletCount = 0;
 	uint32_t totalQuadCount = 0;
 	uint32_t requiredMeshletCapacity = 64u;
@@ -59,6 +59,12 @@ PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlet
 			meshlet.packedQuadLocalOffsets.begin(),
 			meshlet.packedQuadLocalOffsets.begin() + static_cast<std::ptrdiff_t>(meshlet.quadCount)
 		);
+		const size_t start = prepared.quadData.size() - static_cast<size_t>(meshlet.quadCount);
+		for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
+			const size_t idx = start + static_cast<size_t>(i);
+			const uint16_t packedLocalOffset = static_cast<uint16_t>(prepared.quadData[idx]);
+			prepared.quadData[idx] = packMeshletQuadData(packedLocalOffset, meshlet.quadMaterialIds[i]);
+		}
 	}
 
 	prepared.requiredMeshletCapacity = std::max(prepared.totalMeshletCount + 16u, 64u);
@@ -113,6 +119,7 @@ bool WebGPURenderer::initialize() {
 	pipelineManager = std::make_unique<PipelineManager>(context->getDevice(), context->getSurfaceFormat());
 	bufferManager = std::make_unique<BufferManager>(context->getDevice(), context->getQueue());
 	textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
+	materialManager = std::make_unique<MaterialManager>();
 	meshletManager = std::make_unique<MeshletManager>();
 
 	services_.emplace(*bufferManager, *textureManager, *pipelineManager, *context);
@@ -125,6 +132,11 @@ bool WebGPURenderer::initialize() {
 		desc.mappedAtCreation = false;
 		Buffer ubo = bufferManager->createBuffer("uniform_buffer", desc);
 		if (!ubo) return false;
+	}
+
+	if (!materialManager->initialize(*bufferManager, *textureManager)) {
+		std::cerr << "Failed to initialize material manager resources." << std::endl;
+		return false;
 	}
 
 	World::Config worldConfig;
@@ -1047,6 +1059,10 @@ void WebGPURenderer::terminate() {
 	}
 	voxelMeshManager_.reset();
 	world_.reset();
+	if (materialManager) {
+		materialManager->terminate(*bufferManager, *textureManager);
+		materialManager.reset();
+	}
 	textureManager->terminate();
 	pipelineManager->terminate();
 	bufferManager->terminate();
