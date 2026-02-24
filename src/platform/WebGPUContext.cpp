@@ -2,6 +2,9 @@
 #include "solum_engine/render/VertexAttributes.h"
 #include <cstddef>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <optional>
 #include <thread>
 
 namespace {
@@ -30,7 +33,35 @@ PresentMode choosePreferredPresentMode(const SurfaceCapabilities& capabilities) 
         return false;
     };
 
-#ifdef _WIN32
+    auto parseEnvPresentMode = []() -> std::optional<PresentMode> {
+        const char* modeValue = std::getenv("SOL_PRESENT_MODE");
+        if (modeValue == nullptr) {
+            return std::nullopt;
+        }
+        if (std::strcmp(modeValue, "immediate") == 0) {
+            return PresentMode::Immediate;
+        }
+        if (std::strcmp(modeValue, "mailbox") == 0) {
+            return PresentMode::Mailbox;
+        }
+        if (std::strcmp(modeValue, "fifo") == 0) {
+            return PresentMode::Fifo;
+        }
+        if (std::strcmp(modeValue, "fifo_relaxed") == 0) {
+            return PresentMode::FifoRelaxed;
+        }
+        return std::nullopt;
+    };
+
+    if (const std::optional<PresentMode> envMode = parseEnvPresentMode(); envMode.has_value()) {
+        if (supports(*envMode)) {
+            return *envMode;
+        }
+        std::cout << "Requested present mode via SOL_PRESENT_MODE is unavailable: "
+                  << presentModeName(*envMode) << std::endl;
+    }
+
+#if defined(_WIN32) || defined(__APPLE__)
     if (supports(PresentMode::Immediate)) {
         return PresentMode::Immediate;
     }
