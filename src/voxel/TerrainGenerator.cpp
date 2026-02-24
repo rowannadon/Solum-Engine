@@ -13,7 +13,7 @@
 
 namespace {
 
-constexpr int kHeightmapUpscaleFactor = 4;
+constexpr int kHeightmapUpscaleFactor = 2;
 constexpr int kFallbackTerrainHeight = 100;
 
 struct HeightmapData {
@@ -142,10 +142,12 @@ int sampleTerrainHeight(const HeightmapData& heightmap, int worldX, int worldY) 
 void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
     const HeightmapData& heightmap = getHeightmapData();
 
-    UnpackedBlockMaterial solid{1, 0, Direction::PlusZ, 0};
+    UnpackedBlockMaterial stone{1, 0, Direction::PlusZ, 0};
+    UnpackedBlockMaterial grass{2, 0, Direction::PlusZ, 0};
     UnpackedBlockMaterial air{0, 0, Direction::PlusZ, 0};
 
-    const BlockMaterial solidPacked = solid.pack();
+    const BlockMaterial stonePacked = stone.pack();
+    const BlockMaterial grassPacked = grass.pack();
     const BlockMaterial airPacked = air.pack();
 
     std::array<int, static_cast<size_t>(cfg::CHUNK_SIZE) * static_cast<size_t>(cfg::CHUNK_SIZE)> columnHeights{};
@@ -169,7 +171,8 @@ void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
                                                         static_cast<size_t>(cfg::CHUNK_SIZE) +
                                                         static_cast<size_t>(x)];
                 if (z <= terrainHeight) {
-                    col.setBlock(x, y, z, solidPacked);
+                    const BlockMaterial block = (z == terrainHeight) ? grassPacked : stonePacked;
+                    col.setBlock(x, y, z, block);
                 } else {
                     col.setBlock(x, y, z, airPacked);
                 }

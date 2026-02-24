@@ -954,38 +954,18 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
     }
 
     std::vector<Meshlet> skirtMeshlets;
-    auto appendSkirtStrip = [&skirtMeshlets](uint32_t faceDirection,
-                                             const glm::ivec3& origin,
-                                             uint32_t length,
-                                             bool advanceAlongY,
-                                             uint16_t materialId) {
-        uint32_t emitted = 0;
-        while (emitted < length) {
-            const uint32_t batch = std::min<uint32_t>(
-                32u,
-                std::min<uint32_t>(MESHLET_QUAD_CAPACITY, length - emitted)
-            );
-            const glm::ivec3 batchOrigin = advanceAlongY
-                ? glm::ivec3(origin.x, origin.y + static_cast<int32_t>(emitted), origin.z)
-                : glm::ivec3(origin.x + static_cast<int32_t>(emitted), origin.y, origin.z);
-
-            Meshlet skirt{};
-            skirt.origin = batchOrigin;
-            skirt.faceDirection = faceDirection;
-            skirt.voxelScale = 1u;
-
-            for (uint32_t i = 0; i < batch; ++i) {
-                const uint32_t localX = advanceAlongY ? 0u : i;
-                const uint32_t localY = advanceAlongY ? i : 0u;
-                skirt.packedQuadLocalOffsets[skirt.quadCount] =
-                    packMeshletLocalOffset(localX, localY, 0u);
-                skirt.quadMaterialIds[skirt.quadCount] = materialId;
-                skirt.quadCount += 1u;
-            }
-
-            skirtMeshlets.push_back(skirt);
-            emitted += batch;
-        }
+    auto appendSkirtQuad = [&skirtMeshlets](uint32_t faceDirection,
+                                            const glm::ivec3& origin,
+                                            uint32_t voxelScale,
+                                            uint16_t materialId) {
+        Meshlet skirt{};
+        skirt.origin = origin;
+        skirt.faceDirection = faceDirection;
+        skirt.voxelScale = std::max(voxelScale, 1u);
+        skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
+        skirt.quadMaterialIds[0] = materialId;
+        skirt.quadCount = 1u;
+        skirtMeshlets.push_back(skirt);
     };
 
     for (const SelectedTileLodState& entry : selected) {
@@ -1028,41 +1008,36 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
                     const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(localX * voxelScale);
                     const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(localY * voxelScale);
                     const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(localZ * voxelScale);
-                    const int32_t skirtZ = worldZ + static_cast<int32_t>(voxelScale) - 1;
 
                     if (skirtMinusX && worldX == tileMinX) {
-                        appendSkirtStrip(
+                        appendSkirtQuad(
                             Direction::MinusX,
-                            glm::ivec3(worldX, worldY, skirtZ),
+                            glm::ivec3(worldX, worldY, worldZ),
                             voxelScale,
-                            true,
                             materialId
                         );
                     }
                     if (skirtPlusX && (worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
-                        appendSkirtStrip(
+                        appendSkirtQuad(
                             Direction::PlusX,
-                            glm::ivec3(worldX + static_cast<int32_t>(voxelScale) - 1, worldY, skirtZ),
+                            glm::ivec3(worldX, worldY, worldZ),
                             voxelScale,
-                            true,
                             materialId
                         );
                     }
                     if (skirtMinusY && worldY == tileMinY) {
-                        appendSkirtStrip(
+                        appendSkirtQuad(
                             Direction::MinusY,
-                            glm::ivec3(worldX, worldY, skirtZ),
+                            glm::ivec3(worldX, worldY, worldZ),
                             voxelScale,
-                            false,
                             materialId
                         );
                     }
                     if (skirtPlusY && (worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
-                        appendSkirtStrip(
+                        appendSkirtQuad(
                             Direction::PlusY,
-                            glm::ivec3(worldX, worldY + static_cast<int32_t>(voxelScale) - 1, skirtZ),
+                            glm::ivec3(worldX, worldY, worldZ),
                             voxelScale,
-                            false,
                             materialId
                         );
                     }
@@ -1156,38 +1131,18 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
     }
 
     std::vector<Meshlet> skirtMeshlets;
-    auto appendSkirtStrip = [&skirtMeshlets](uint32_t faceDirection,
-                                             const glm::ivec3& origin,
-                                             uint32_t length,
-                                             bool advanceAlongY,
-                                             uint16_t materialId) {
-        uint32_t emitted = 0;
-        while (emitted < length) {
-            const uint32_t batch = std::min<uint32_t>(
-                32u,
-                std::min<uint32_t>(MESHLET_QUAD_CAPACITY, length - emitted)
-            );
-            const glm::ivec3 batchOrigin = advanceAlongY
-                ? glm::ivec3(origin.x, origin.y + static_cast<int32_t>(emitted), origin.z)
-                : glm::ivec3(origin.x + static_cast<int32_t>(emitted), origin.y, origin.z);
-
-            Meshlet skirt{};
-            skirt.origin = batchOrigin;
-            skirt.faceDirection = faceDirection;
-            skirt.voxelScale = 1u;
-
-            for (uint32_t i = 0; i < batch; ++i) {
-                const uint32_t localX = advanceAlongY ? 0u : i;
-                const uint32_t localY = advanceAlongY ? i : 0u;
-                skirt.packedQuadLocalOffsets[skirt.quadCount] =
-                    packMeshletLocalOffset(localX, localY, 0u);
-                skirt.quadMaterialIds[skirt.quadCount] = materialId;
-                skirt.quadCount += 1u;
-            }
-
-            skirtMeshlets.push_back(skirt);
-            emitted += batch;
-        }
+    auto appendSkirtQuad = [&skirtMeshlets](uint32_t faceDirection,
+                                            const glm::ivec3& origin,
+                                            uint32_t voxelScale,
+                                            uint16_t materialId) {
+        Meshlet skirt{};
+        skirt.origin = origin;
+        skirt.faceDirection = faceDirection;
+        skirt.voxelScale = std::max(voxelScale, 1u);
+        skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
+        skirt.quadMaterialIds[0] = materialId;
+        skirt.quadCount = 1u;
+        skirtMeshlets.push_back(skirt);
     };
 
     for (const SelectedTileLodState& entry : selected) {
@@ -1230,41 +1185,36 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
                     const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(localX * voxelScale);
                     const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(localY * voxelScale);
                     const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(localZ * voxelScale);
-                    const int32_t skirtZ = worldZ + static_cast<int32_t>(voxelScale) - 1;
 
                     if (skirtMinusX && worldX == tileMinX) {
-                        appendSkirtStrip(
+                        appendSkirtQuad(
                             Direction::MinusX,
-                            glm::ivec3(worldX, worldY, skirtZ),
+                            glm::ivec3(worldX, worldY, worldZ),
                             voxelScale,
-                            true,
                             materialId
                         );
                     }
                     if (skirtPlusX && (worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
-                        appendSkirtStrip(
+                        appendSkirtQuad(
                             Direction::PlusX,
-                            glm::ivec3(worldX + static_cast<int32_t>(voxelScale) - 1, worldY, skirtZ),
+                            glm::ivec3(worldX, worldY, worldZ),
                             voxelScale,
-                            true,
                             materialId
                         );
                     }
                     if (skirtMinusY && worldY == tileMinY) {
-                        appendSkirtStrip(
+                        appendSkirtQuad(
                             Direction::MinusY,
-                            glm::ivec3(worldX, worldY, skirtZ),
+                            glm::ivec3(worldX, worldY, worldZ),
                             voxelScale,
-                            false,
                             materialId
                         );
                     }
                     if (skirtPlusY && (worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
-                        appendSkirtStrip(
+                        appendSkirtQuad(
                             Direction::PlusY,
-                            glm::ivec3(worldX, worldY + static_cast<int32_t>(voxelScale) - 1, skirtZ),
+                            glm::ivec3(worldX, worldY, worldZ),
                             voxelScale,
-                            false,
                             materialId
                         );
                     }

@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "solum_engine/render/BufferManager.h"
@@ -36,6 +37,8 @@ public:
 
 private:
     bool buildDefaultMaterials(BufferManager& bufferManager, TextureManager& textureManager);
+    static bool loadMaterialConfig(const std::filesystem::path& path,
+                                   std::vector<std::pair<std::string, std::string>>& outMaterials);
     static bool loadPngRgba8(const std::filesystem::path& path,
                              std::vector<uint8_t>& outPixels,
                              uint32_t& outWidth,

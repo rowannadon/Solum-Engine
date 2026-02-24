@@ -1,13 +1,26 @@
 #include "solum_engine/render/MaterialManager.h"
 
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 
 #include "lodepng/lodepng.h"
+#include "nlohmann_json/json.hpp"
+
+using json = nlohmann::json;
 
 namespace {
-constexpr uint32_t kStoneTextureLayer = 0u;
-constexpr uint32_t kStoneMaterialId = 1u;
+constexpr uint32_t kFirstMaterialId = 1u;
+
+struct LoadedMaterialTexture {
+    std::string name;
+    std::string textureRelativePath;
+    std::vector<uint8_t> pixels;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    uint16_t materialId = 0u;
+    uint32_t textureLayer = 0u;
+};
 }  // namespace
 
 bool MaterialManager::initialize(BufferManager& bufferManager, TextureManager& textureManager) {
@@ -57,15 +70,54 @@ uint32_t MaterialManager::textureIndexForMaterial(uint16_t materialId) const {
 }
 
 bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, TextureManager& textureManager) {
-    std::vector<uint8_t> stonePixels;
-    uint32_t stoneWidth = 0u;
-    uint32_t stoneHeight = 0u;
+    const std::filesystem::path materialConfigPath = std::filesystem::path(RESOURCE_DIR) / "materials.json";
 
-    const std::filesystem::path stonePath = std::filesystem::path(RESOURCE_DIR) / "stone.png";
-    std::filesystem::path resolvedPath = stonePath;
+    std::vector<std::pair<std::string, std::string>> configMaterials;
+    if (!loadMaterialConfig(materialConfigPath, configMaterials)) {
+        return false;
+    }
+    if (configMaterials.empty()) {
+        std::cerr << "MaterialManager: '" << materialConfigPath.string() << "' contains no materials." << std::endl;
+        return false;
+    }
+    if (configMaterials.size() > static_cast<size_t>(kMaxMaterialId)) {
+        std::cerr << "MaterialManager: material count exceeds max supported IDs (65535)." << std::endl;
+        return false;
+    }
 
-    if (!loadPngRgba8(resolvedPath, stonePixels, stoneWidth, stoneHeight)) {
-        std::cerr << "MaterialManager: failed to load stone texture '" << resolvedPath.string() << "'." << std::endl;
+    std::vector<LoadedMaterialTexture> loadedMaterials;
+    loadedMaterials.reserve(configMaterials.size());
+
+    const std::filesystem::path texturesRoot = std::filesystem::path(RESOURCE_DIR) / "textures";
+    for (size_t i = 0; i < configMaterials.size(); ++i) {
+        const std::string& name = configMaterials[i].first;
+        const std::string& textureRelativePath = configMaterials[i].second;
+        const std::filesystem::path texturePath = texturesRoot / textureRelativePath;
+
+        LoadedMaterialTexture loaded{};
+        loaded.name = name;
+        loaded.textureRelativePath = textureRelativePath;
+        loaded.materialId = static_cast<uint16_t>(kFirstMaterialId + static_cast<uint32_t>(i));
+        loaded.textureLayer = static_cast<uint32_t>(i);
+
+        if (!loadPngRgba8(texturePath, loaded.pixels, loaded.width, loaded.height)) {
+            std::cerr << "MaterialManager: failed to load material texture '" << texturePath.string()
+                      << "' for material '" << name << "'." << std::endl;
+            return false;
+        }
+
+        loadedMaterials.push_back(std::move(loaded));
+    }
+
+    const uint32_t baseWidth = loadedMaterials.front().width;
+    const uint32_t baseHeight = loadedMaterials.front().height;
+    for (const LoadedMaterialTexture& material : loadedMaterials) {
+        if (material.width != baseWidth || material.height != baseHeight) {
+            std::cerr << "MaterialManager: texture size mismatch for material '" << material.name
+                      << "'. Expected " << baseWidth << "x" << baseHeight
+                      << ", got " << material.width << "x" << material.height << "." << std::endl;
+            return false;
+        }
     }
 
     TextureDescriptor textureDesc = Default;
@@ -73,8 +125,8 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
     textureDesc.dimension = TextureDimension::_2D;
     textureDesc.format = TextureFormat::RGBA8Unorm;
     textureDesc.sampleCount = 1;
-    textureDesc.size = {stoneWidth, stoneHeight, 1u};
-    textureDesc.mipLevelCount = mipLevelCount(stoneWidth, stoneHeight);
+    textureDesc.size = {baseWidth, baseHeight, static_cast<uint32_t>(loadedMaterials.size())};
+    textureDesc.mipLevelCount = mipLevelCount(baseWidth, baseHeight);
     textureDesc.usage = TextureUsage::TextureBinding | TextureUsage::CopyDst;
 
     Texture texture = textureManager.createTexture(kMaterialTextureArrayName, textureDesc);
@@ -82,14 +134,16 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         return false;
     }
 
-    writeMipMapsArrayLayer(
-        textureManager,
-        texture,
-        textureDesc.size,
-        textureDesc.mipLevelCount,
-        kStoneTextureLayer,
-        stonePixels
-    );
+    for (const LoadedMaterialTexture& material : loadedMaterials) {
+        writeMipMapsArrayLayer(
+            textureManager,
+            texture,
+            textureDesc.size,
+            textureDesc.mipLevelCount,
+            material.textureLayer,
+            material.pixels
+        );
+    }
 
     TextureViewDescriptor viewDesc = Default;
     viewDesc.label = StringView("material texture array view");
@@ -99,7 +153,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
     viewDesc.baseMipLevel = 0;
     viewDesc.mipLevelCount = textureDesc.mipLevelCount;
     viewDesc.baseArrayLayer = 0;
-    viewDesc.arrayLayerCount = 1;
+    viewDesc.arrayLayerCount = static_cast<uint32_t>(loadedMaterials.size());
 
     TextureView textureView = textureManager.createTextureView(
         kMaterialTextureArrayName,
@@ -124,17 +178,19 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         return false;
     }
 
-    materialLookup_[kStoneMaterialId] = kStoneTextureLayer;
-    materials_.emplace(
-        static_cast<uint16_t>(kStoneMaterialId),
-        MaterialDefinition{
-            static_cast<uint16_t>(kStoneMaterialId),
-            "stone",
-            kStoneTextureLayer,
-            1.0f,
-            0.0f
-        }
-    );
+    for (const LoadedMaterialTexture& material : loadedMaterials) {
+        materialLookup_[material.materialId] = material.textureLayer;
+        materials_.emplace(
+            material.materialId,
+            MaterialDefinition{
+                material.materialId,
+                material.name,
+                material.textureLayer,
+                1.0f,
+                0.0f
+            }
+        );
+    }
 
     BufferDescriptor lookupBufferDesc = Default;
     lookupBufferDesc.label = StringView("material lookup buffer");
@@ -153,6 +209,57 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         materialLookup_.data(),
         materialLookup_.size() * sizeof(uint32_t)
     );
+
+    return true;
+}
+
+bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
+                                         std::vector<std::pair<std::string, std::string>>& outMaterials) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        std::cerr << "MaterialManager: unable to open material config '" << path.string() << "'." << std::endl;
+        return false;
+    }
+
+    json root;
+    try {
+        file >> root;
+    } catch (const std::exception& e) {
+        std::cerr << "MaterialManager: failed to parse '" << path.string() << "': " << e.what() << std::endl;
+        return false;
+    }
+
+    const json* materialsJson = nullptr;
+    if (root.is_array()) {
+        materialsJson = &root;
+    } else if (root.is_object() && root.contains("materials") && root["materials"].is_array()) {
+        materialsJson = &root["materials"];
+    } else {
+        std::cerr << "MaterialManager: '" << path.string()
+                  << "' must be an array or an object with a 'materials' array." << std::endl;
+        return false;
+    }
+
+    outMaterials.clear();
+    outMaterials.reserve(materialsJson->size());
+
+    for (size_t i = 0; i < materialsJson->size(); ++i) {
+        const json& entry = (*materialsJson)[i];
+        if (!entry.is_object()) {
+            std::cerr << "MaterialManager: materials[" << i << "] must be an object." << std::endl;
+            return false;
+        }
+        if (!entry.contains("name") || !entry["name"].is_string()) {
+            std::cerr << "MaterialManager: materials[" << i << "] is missing string field 'name'." << std::endl;
+            return false;
+        }
+        if (!entry.contains("texture") || !entry["texture"].is_string()) {
+            std::cerr << "MaterialManager: materials[" << i << "] is missing string field 'texture'." << std::endl;
+            return false;
+        }
+
+        outMaterials.emplace_back(entry["name"].get<std::string>(), entry["texture"].get<std::string>());
+    }
 
     return true;
 }
