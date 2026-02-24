@@ -107,6 +107,7 @@ private:
     bool streamingStopRequested_ = false;
     bool hasLatestStreamingCamera_ = false;
     glm::vec3 latestStreamingCamera_{0.0f, 0.0f, 0.0f};
+    float latestStreamingSseProjectionScale_ = 390.0f;
     std::optional<PendingMeshUpload> pendingMeshUpload_;
     uint64_t streamerLastPreparedRevision_ = 0;
     ColumnCoord streamerLastPreparedCenter_{0, 0};

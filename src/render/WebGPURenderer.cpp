@@ -510,6 +510,7 @@ void WebGPURenderer::startStreamingThread(const glm::vec3& initialCameraPosition
 		streamingStopRequested_ = false;
 		hasLatestStreamingCamera_ = true;
 		latestStreamingCamera_ = initialCameraPosition;
+		latestStreamingSseProjectionScale_ = 390.0f;
 		pendingMeshUpload_.reset();
 		streamerLastPreparedRevision_ = uploadedMeshRevision_;
 		streamerLastPreparedCenter_ = initialCenterColumn;
@@ -544,6 +545,7 @@ void WebGPURenderer::stopStreamingThread() {
 
 void WebGPURenderer::streamingThreadMain() {
 	glm::vec3 cameraPosition{0.0f, 0.0f, 0.0f};
+	float cameraSseProjectionScale = 390.0f;
 	bool hasCameraPosition = false;
 
 	while (true) {
@@ -562,6 +564,7 @@ void WebGPURenderer::streamingThreadMain() {
 			}
 			if (hasLatestStreamingCamera_) {
 				cameraPosition = latestStreamingCamera_;
+				cameraSseProjectionScale = latestStreamingSseProjectionScale_;
 				hasLatestStreamingCamera_ = false;
 				hasCameraPosition = true;
 			}
@@ -582,7 +585,7 @@ void WebGPURenderer::streamingThreadMain() {
 		);
 
 		const auto meshUpdateStart = std::chrono::steady_clock::now();
-		voxelMeshManager_->updatePlayerPosition(cameraPosition);
+		voxelMeshManager_->updatePlayerPosition(cameraPosition, cameraSseProjectionScale);
 		recordTimingNs(
 			TimingStage::StreamMeshUpdate,
 			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -674,11 +677,18 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 	}
 
 	const glm::vec3 cameraPosition = extractCameraPosition(frameUniforms);
+	const float projectionYScale = std::abs(frameUniforms.projectionMatrix[1][1]);
+	const int32_t framebufferHeight = std::max(1, context ? context->height : 1);
+	float sseProjectionScale = 0.5f * static_cast<float>(framebufferHeight) * projectionYScale;
+	if (!std::isfinite(sseProjectionScale) || sseProjectionScale <= 0.0f) {
+		sseProjectionScale = 390.0f;
+	}
 
 	{
 		std::lock_guard<std::mutex> lock(streamingMutex_);
 		hasLatestStreamingCamera_ = true;
 		latestStreamingCamera_ = cameraPosition;
+		latestStreamingSseProjectionScale_ = sseProjectionScale;
 	}
 	streamingCv_.notify_one();
 

@@ -120,6 +120,10 @@ class MeshManager {
 public:
     struct Config {
         std::vector<int32_t> lodChunkRadii{4, 8, 16};
+        float lodSseTargetPixels = 2.0f;
+        float lodSseHysteresisPixels = 0.5f;
+        float lodSseMinDepthBlocks = 4.0f;
+        float lodSseFallbackProjectionScale = 390.0f;
         jobsystem::JobSystem::Config jobConfig{};
     };
 
@@ -132,7 +136,7 @@ public:
     MeshManager(MeshManager&&) = delete;
     MeshManager& operator=(MeshManager&&) = delete;
 
-    void updatePlayerPosition(const glm::vec3& playerWorldPosition);
+    void updatePlayerPosition(const glm::vec3& playerWorldPosition, float sseProjectionScale);
     void waitForIdle();
 
     std::vector<Meshlet> copyMeshlets() const;
@@ -155,6 +159,8 @@ private:
     struct MeshGenerationResult;
 
     void scheduleTilesAround(const ChunkCoord& centerChunk,
+                             const glm::vec3& playerWorldPosition,
+                             float sseProjectionScale,
                              const ChunkCoord* previousCenterChunk,
                              int32_t centerShiftChunks);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);
@@ -171,7 +177,18 @@ private:
 
     int8_t desiredLodForTile(const MeshTileCoord& tileCoord,
                              const ChunkCoord& centerChunk,
+                             const glm::vec3& playerWorldPosition,
+                             float sseProjectionScale,
                              int32_t extraChunks) const;
+    float tileDepthEstimateBlocks(const MeshTileCoord& tileCoord,
+                                  const glm::vec3& playerWorldPosition,
+                                  int32_t extraChunks) const;
+    float projectedSsePixels(uint8_t lodLevel, float depthBlocks, float sseProjectionScale) const;
+    int8_t applyLodHysteresis(const MeshTileCoord& tileCoord,
+                              int8_t candidateLod,
+                              int8_t previousLod,
+                              const glm::vec3& playerWorldPosition,
+                              float sseProjectionScale) const;
     bool isTileWithinActiveWindowLocked(const MeshTileCoord& tileCoord, int32_t extraChunks) const;
     bool isTileFootprintGenerated(const MeshTileCoord& tileCoord) const;
     bool isLodCellAllAir(const ChunkCoord& cellCoord,
@@ -220,4 +237,7 @@ private:
     ChunkCoord lodRefreshScanCenterChunk_{0, 0, 0};
     bool hasLodRefreshScanCenter_ = false;
     int32_t lodRefreshScanNextIndex_ = 0;
+    glm::vec3 lastPlayerWorldPosition_{0.0f, 0.0f, 0.0f};
+    float lastSseProjectionScale_ = 390.0f;
+    bool hasLastSseProjectionScale_ = false;
 };
