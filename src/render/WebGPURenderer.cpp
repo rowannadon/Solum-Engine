@@ -128,11 +128,11 @@ bool WebGPURenderer::initialize() {
 	}
 
 	World::Config worldConfig;
-	worldConfig.columnLoadRadius = 128;
-	worldConfig.jobConfig.worker_threads = 4;
+	worldConfig.columnLoadRadius = 256;
+	worldConfig.jobConfig.worker_threads = 2;
 
 	MeshManager::Config meshConfig;
-	meshConfig.lodChunkRadii = {8, 16, 32, 128};
+	meshConfig.lodChunkRadii = {16, 48, 96, 144};
 	meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
 	const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
 	for (int32_t& lodRadius : meshConfig.lodChunkRadii) {
@@ -413,18 +413,45 @@ void WebGPURenderer::streamingThreadMain() {
 		}
 
 		const bool pendingJobs = world_->hasPendingJobs() || voxelMeshManager_->hasPendingJobs();
-		const double minSnapshotIntervalSeconds =
-			(uploadColumnRadius_ >= 8) ? 0.35 :
-			(uploadColumnRadius_ >= 4) ? 0.25 :
-			0.15;
+		const double minSnapshotIntervalSeconds = pendingJobs
+			? ((uploadColumnRadius_ >= 64) ? 1.5 :
+			   (uploadColumnRadius_ >= 32) ? 1.0 :
+			   (uploadColumnRadius_ >= 16) ? 0.75 :
+			   0.5)
+			: ((uploadColumnRadius_ >= 8) ? 0.35 :
+			   (uploadColumnRadius_ >= 4) ? 0.25 :
+			   0.15);
 		const auto now = std::chrono::steady_clock::now();
 		const bool intervalElapsed =
 			!streamerLastSnapshotTime_.has_value() ||
 			std::chrono::duration<double>(now - *streamerLastSnapshotTime_).count() >= minSnapshotIntervalSeconds;
 		const bool forceForCenterChange = centerChanged && centerShift >= centerUploadStrideChunks;
+		const uint64_t revisionDelta = (currentRevision >= streamerLastPreparedRevision_)
+			? (currentRevision - streamerLastPreparedRevision_)
+			: 0;
+		const uint64_t minRevisionDelta = pendingJobs
+			? ((uploadColumnRadius_ >= 64) ? 4096u :
+			   (uploadColumnRadius_ >= 32) ? 2048u :
+			   (uploadColumnRadius_ >= 16) ? 1024u :
+			   512u)
+			: 1u;
 
 		if (pendingJobs && !intervalElapsed && !forceForCenterChange) {
 			continue;
+		}
+		if (pendingJobs && !forceForCenterChange && revisionDelta < minRevisionDelta) {
+			continue;
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(streamingMutex_);
+			if (streamingStopRequested_) {
+				return;
+			}
+			// Backpressure: don't build a new full snapshot while one is still waiting for upload.
+			if (pendingMeshUpload_.has_value()) {
+				continue;
+			}
 		}
 
 		std::vector<Meshlet> meshlets = voxelMeshManager_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
