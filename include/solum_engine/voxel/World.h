@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <queue>
 #include <shared_mutex>
 #include <unordered_map>
@@ -76,6 +77,9 @@ public:
     bool isChunkEmpty(const ChunkCoord& coord) const;
     bool tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const;
     uint64_t generationRevision() const;
+    uint64_t copyGeneratedColumnsSince(uint64_t afterRevision,
+                                       std::vector<ColumnCoord>& outColumns,
+                                       std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     void copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const;
     void copyGeneratedColumnsAround(const ColumnCoord& centerColumn, int32_t radius, std::vector<ColumnCoord>& outColumns) const;
 
@@ -132,6 +136,7 @@ private:
     mutable std::shared_mutex worldMutex_;
     std::unordered_map<RegionCoord, std::unique_ptr<Region>> regions_;
     std::unordered_set<ColumnCoord> generatedColumns_;
+    std::vector<ColumnCoord> generatedColumnHistory_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
     std::unordered_set<ColumnCoord> queuedColumnJobs_;
     std::priority_queue<

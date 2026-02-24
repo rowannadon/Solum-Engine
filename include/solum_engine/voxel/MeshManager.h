@@ -211,13 +211,11 @@ private:
     std::unordered_map<MeshTileCoord, MeshTileState> meshTiles_;
 
     std::atomic<uint64_t> meshRevision_{0};
+    std::atomic<uint64_t> processedWorldGenerationRevision_{0};
     std::atomic<bool> shuttingDown_{false};
 
     ChunkCoord lastScheduledCenterChunk_{0, 0, 0};
     bool hasLastScheduledCenter_ = false;
-    ColumnCoord remeshScanCenter_{0, 0};
-    bool hasRemeshScanCenter_ = false;
-    int32_t remeshScanNextIndex_ = 0;
 
     ChunkCoord lodRefreshScanCenterChunk_{0, 0, 0};
     bool hasLodRefreshScanCenter_ = false;

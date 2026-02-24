@@ -198,6 +198,25 @@ uint64_t World::generationRevision() const {
     return generationRevision_.load(std::memory_order_acquire);
 }
 
+uint64_t World::copyGeneratedColumnsSince(uint64_t afterRevision,
+                                          std::vector<ColumnCoord>& outColumns,
+                                          std::size_t maxCount) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    const uint64_t currentRevision = static_cast<uint64_t>(generatedColumnHistory_.size());
+    const uint64_t clampedRevision = std::min(afterRevision, currentRevision);
+    const size_t startIndex = static_cast<size_t>(clampedRevision);
+    const size_t available = generatedColumnHistory_.size() - startIndex;
+    const size_t count = std::min(maxCount, available);
+
+    outColumns.clear();
+    outColumns.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        outColumns.push_back(generatedColumnHistory_[startIndex + i]);
+    }
+
+    return clampedRevision + static_cast<uint64_t>(count);
+}
+
 void World::copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
     outColumns.clear();
@@ -628,6 +647,7 @@ void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
 
     const auto insertedResult = generatedColumns_.insert(coord);
     if (insertedResult.second) {
+        generatedColumnHistory_.push_back(coord);
         generationRevision_.fetch_add(1, std::memory_order_release);
     }
 }

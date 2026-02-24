@@ -112,6 +112,7 @@ MeshManager::MeshManager(const World& world, Config config)
     sanitizeConfig(config_);
     const uint8_t maxConfiguredLod = static_cast<uint8_t>(config_.lodChunkRadii.size() - 1);
     meshTileSizeChunks_ = std::max(1, static_cast<int32_t>(chunkSpanForLod(maxConfiguredLod)));
+    processedWorldGenerationRevision_.store(world_.generationRevision(), std::memory_order_release);
 }
 
 MeshManager::~MeshManager() {
@@ -164,7 +165,11 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
         );
     }
 
-    scheduleRemeshForNewColumns(centerColumn);
+    const uint64_t worldRevision = world_.generationRevision();
+    const uint64_t processedRevision = processedWorldGenerationRevision_.load(std::memory_order_acquire);
+    if (worldRevision != processedRevision) {
+        scheduleRemeshForNewColumns(centerColumn);
+    }
 }
 
 void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
@@ -411,69 +416,35 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
 }
 
 void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
-    const int32_t radius = std::max(0, maxConfiguredRadius() + meshTileSizeChunks_);
+    constexpr std::size_t kRemeshColumnsPerUpdate = 512;
+    const uint64_t processedRevision = processedWorldGenerationRevision_.load(std::memory_order_acquire);
     std::vector<ColumnCoord> generatedColumns;
-    generatedColumns.reserve(512);
-
-    auto tryCollectGenerated = [this, &generatedColumns](const ColumnCoord& coord) {
-        if (world_.isColumnGenerated(coord)) {
-            generatedColumns.push_back(coord);
-        }
-    };
-
-    // Keep near-player remesh responsive.
-    const int32_t nearRadius = std::min(radius, meshTileSizeChunks_);
-    for (int32_t dy = -nearRadius; dy <= nearRadius; ++dy) {
-        for (int32_t dx = -nearRadius; dx <= nearRadius; ++dx) {
-            tryCollectGenerated(ColumnCoord{
-                centerColumn.v.x + dx,
-                centerColumn.v.y + dy
-            });
-        }
+    const uint64_t nextRevision = world_.copyGeneratedColumnsSince(
+        processedRevision,
+        generatedColumns,
+        kRemeshColumnsPerUpdate
+    );
+    if (nextRevision == processedRevision) {
+        return;
     }
-
-    // Incremental background scan over the full active window to avoid large per-frame spikes.
-    int32_t scanStartIndex = 0;
-    int32_t scanCount = 0;
-    int32_t diameter = (radius * 2) + 1;
-    ColumnCoord scanCenter = centerColumn;
-    {
-        std::unique_lock<std::shared_mutex> lock(meshMutex_);
-        if (!hasRemeshScanCenter_ || !(centerColumn == remeshScanCenter_)) {
-            remeshScanCenter_ = centerColumn;
-            hasRemeshScanCenter_ = true;
-            remeshScanNextIndex_ = 0;
-        }
-
-        scanCenter = remeshScanCenter_;
-        const int32_t totalCells = diameter * diameter;
-        scanStartIndex = std::clamp(remeshScanNextIndex_, 0, std::max(0, totalCells - 1));
-        const int32_t scanBudget = 512;
-        scanCount = std::min(scanBudget, totalCells);
-        remeshScanNextIndex_ = (remeshScanNextIndex_ + scanCount) % std::max(1, totalCells);
-    }
-
-    for (int32_t i = 0; i < scanCount; ++i) {
-        const int32_t wrappedIndex = (scanStartIndex + i) % (diameter * diameter);
-        const int32_t localY = wrappedIndex / diameter;
-        const int32_t localX = wrappedIndex % diameter;
-        const int32_t dx = localX - radius;
-        const int32_t dy = localY - radius;
-        tryCollectGenerated(ColumnCoord{
-            scanCenter.v.x + dx,
-            scanCenter.v.y + dy
-        });
-    }
+    processedWorldGenerationRevision_.store(nextRevision, std::memory_order_release);
 
     if (generatedColumns.empty()) {
         return;
     }
 
+    const int32_t remeshRadius = std::max(0, maxConfiguredRadius() + meshTileSizeChunks_ + kMinPrefetchChunks);
     std::unordered_set<MeshTileCoord> tilesToRemesh;
 
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
         for (const ColumnCoord& coord : generatedColumns) {
+            const int32_t dx = std::abs(coord.v.x - centerColumn.v.x);
+            const int32_t dy = std::abs(coord.v.y - centerColumn.v.y);
+            if (dx > remeshRadius || dy > remeshRadius) {
+                continue;
+            }
+
             if (!knownGeneratedColumns_.insert(coord).second) {
                 continue;
             }

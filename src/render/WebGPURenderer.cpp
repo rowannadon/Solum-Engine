@@ -413,45 +413,18 @@ void WebGPURenderer::streamingThreadMain() {
 		}
 
 		const bool pendingJobs = world_->hasPendingJobs() || voxelMeshManager_->hasPendingJobs();
-		const double minSnapshotIntervalSeconds = pendingJobs
-			? ((uploadColumnRadius_ >= 64) ? 1.5 :
-			   (uploadColumnRadius_ >= 32) ? 1.0 :
-			   (uploadColumnRadius_ >= 16) ? 0.75 :
-			   0.5)
-			: ((uploadColumnRadius_ >= 8) ? 0.35 :
-			   (uploadColumnRadius_ >= 4) ? 0.25 :
-			   0.15);
+		const double minSnapshotIntervalSeconds =
+			(uploadColumnRadius_ >= 8) ? 0.35 :
+			(uploadColumnRadius_ >= 4) ? 0.25 :
+			0.15;
 		const auto now = std::chrono::steady_clock::now();
 		const bool intervalElapsed =
 			!streamerLastSnapshotTime_.has_value() ||
 			std::chrono::duration<double>(now - *streamerLastSnapshotTime_).count() >= minSnapshotIntervalSeconds;
 		const bool forceForCenterChange = centerChanged && centerShift >= centerUploadStrideChunks;
-		const uint64_t revisionDelta = (currentRevision >= streamerLastPreparedRevision_)
-			? (currentRevision - streamerLastPreparedRevision_)
-			: 0;
-		const uint64_t minRevisionDelta = pendingJobs
-			? ((uploadColumnRadius_ >= 64) ? 4096u :
-			   (uploadColumnRadius_ >= 32) ? 2048u :
-			   (uploadColumnRadius_ >= 16) ? 1024u :
-			   512u)
-			: 1u;
 
 		if (pendingJobs && !intervalElapsed && !forceForCenterChange) {
 			continue;
-		}
-		if (pendingJobs && !forceForCenterChange && revisionDelta < minRevisionDelta) {
-			continue;
-		}
-
-		{
-			std::lock_guard<std::mutex> lock(streamingMutex_);
-			if (streamingStopRequested_) {
-				return;
-			}
-			// Backpressure: don't build a new full snapshot while one is still waiting for upload.
-			if (pendingMeshUpload_.has_value()) {
-				continue;
-			}
 		}
 
 		std::vector<Meshlet> meshlets = voxelMeshManager_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
