@@ -7,6 +7,7 @@
 #include <webgpu/webgpu.hpp>
 
 #include "solum_engine/core/Camera.h"
+#include "solum_engine/render/RuntimeTiming.h"
 #include "solum_engine/render/Uniforms.h"
 
 using namespace wgpu;
@@ -45,7 +46,11 @@ public:
     }
 
     bool initImGUI(GLFWwindow* window, Device device, TextureFormat format);
-    void renderImGUI(FrameUniforms& uniforms, const std::vector<float>& frameTimes, FirstPersonCamera& camera, float frameTime);
+    void renderImGUI(FrameUniforms& uniforms,
+                     const std::vector<float>& frameTimes,
+                     FirstPersonCamera& camera,
+                     float frameTime,
+                     const RuntimeTimingSnapshot& runtimeTiming);
     void terminateImGUI();
     void updateImGUIFrame();
 };

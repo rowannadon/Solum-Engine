@@ -43,7 +43,11 @@ bool GuiManager:: initImGUI(GLFWwindow* window, Device device, TextureFormat for
     return true;    
 }
 
-void GuiManager::renderImGUI(FrameUniforms& uniforms, const std::vector<float>& frameTimes, FirstPersonCamera& camera, float frameTime) {
+void GuiManager::renderImGUI(FrameUniforms& uniforms,
+                             const std::vector<float>& frameTimes,
+                             FirstPersonCamera& camera,
+                             float frameTime,
+                             const RuntimeTimingSnapshot& runtimeTiming) {
     // Main control window
     if (imguiState.showMainWindow) {
         ImGui::Begin("Engine Controls", &imguiState.showMainWindow);
@@ -106,6 +110,34 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms, const std::vector<float>& 
                 }
                 ImGui::PlotLines("Frame Time (ms)", frameTimeMs.data(), frameTimeMs.size(), 0, nullptr, 0.0f, 50.0f, ImVec2(0, 80));
             }
+
+            ImGui::Separator();
+            ImGui::Text("Runtime Timing Window: %.2f s", runtimeTiming.sampleWindowSeconds);
+            ImGui::Text("Main Render CPU: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainRenderFrameCpu.averageMs, runtimeTiming.mainRenderFrameCpu.totalMsPerSecond);
+            ImGui::Text("Main World Streaming: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainUpdateWorldStreaming.averageMs, runtimeTiming.mainUpdateWorldStreaming.totalMsPerSecond);
+            ImGui::Text("Main Mesh Upload: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainUploadMeshlets.averageMs, runtimeTiming.mainUploadMeshlets.totalMsPerSecond);
+            ImGui::Text("Main Debug Bounds: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainUpdateDebugBounds.averageMs, runtimeTiming.mainUpdateDebugBounds.totalMsPerSecond);
+
+            ImGui::Separator();
+            ImGui::Text("Stream Wait: avg %.3f ms, load %.2f ms/s", runtimeTiming.streamWait.averageMs, runtimeTiming.streamWait.totalMsPerSecond);
+            ImGui::Text("Stream World Update: avg %.3f ms, load %.2f ms/s", runtimeTiming.streamWorldUpdate.averageMs, runtimeTiming.streamWorldUpdate.totalMsPerSecond);
+            ImGui::Text("Stream Mesh Update: avg %.3f ms, load %.2f ms/s", runtimeTiming.streamMeshUpdate.averageMs, runtimeTiming.streamMeshUpdate.totalMsPerSecond);
+            ImGui::Text("Stream Copy Meshlets: avg %.3f ms, load %.2f ms/s", runtimeTiming.streamCopyMeshlets.averageMs, runtimeTiming.streamCopyMeshlets.totalMsPerSecond);
+            ImGui::Text("Stream Prepare Upload: avg %.3f ms, load %.2f ms/s", runtimeTiming.streamPrepareUpload.averageMs, runtimeTiming.streamPrepareUpload.totalMsPerSecond);
+
+            ImGui::Separator();
+            ImGui::Text("Stream skips (window): no camera %llu, unchanged %llu, throttle %llu",
+                        static_cast<unsigned long long>(runtimeTiming.streamSkipNoCamera),
+                        static_cast<unsigned long long>(runtimeTiming.streamSkipUnchanged),
+                        static_cast<unsigned long long>(runtimeTiming.streamSkipThrottle));
+            ImGui::Text("Stream snapshots (window): %llu",
+                        static_cast<unsigned long long>(runtimeTiming.streamSnapshotsPrepared));
+            ImGui::Text("Main uploads (window): %llu",
+                        static_cast<unsigned long long>(runtimeTiming.mainUploadsApplied));
+            ImGui::Text("Pending jobs: world %s, mesh %s, upload queued %s",
+                        runtimeTiming.worldHasPendingJobs ? "yes" : "no",
+                        runtimeTiming.meshHasPendingJobs ? "yes" : "no",
+                        runtimeTiming.pendingUploadQueued ? "yes" : "no");
         }
 
         if (imguiState.showDebugControls && ImGui::CollapsingHeader("Debug", ImGuiTreeNodeFlags_DefaultOpen)) {

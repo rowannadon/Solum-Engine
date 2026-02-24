@@ -92,6 +92,7 @@ private:
     int refreshRate = 60;
 
     FrameUniforms uniforms;
+    RuntimeTimingSnapshot runtimeTimingSnapshot_;
 
     std::vector<float> frameTimes;
 };

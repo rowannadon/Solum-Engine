@@ -93,7 +93,8 @@ void Application::MainLoop() {
     uniforms.viewMatrix = viewGPU;
     uniforms.inverseViewMatrix = glm::inverse(viewGPU);
 
-    gui.renderImGUI(uniforms, frameTimes, camera, frameTime);
+    runtimeTimingSnapshot_ = gpu.getRuntimeTimingSnapshot();
+    gui.renderImGUI(uniforms, frameTimes, camera, frameTime, runtimeTimingSnapshot_);
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
     
     gpu.renderFrame(uniforms);

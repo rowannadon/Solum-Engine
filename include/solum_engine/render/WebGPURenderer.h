@@ -3,8 +3,11 @@
 #include <webgpu/webgpu.hpp>
 #include <GLFW/glfw3.h>
 
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <memory>
@@ -20,6 +23,7 @@
 #include "solum_engine/render/TextureManager.h"
 #include "solum_engine/platform/WebGPUContext.h"
 #include "solum_engine/render/Uniforms.h"
+#include "solum_engine/render/RuntimeTiming.h"
 #include "solum_engine/render/pipelines/BoundsDebugPipeline.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 #include "solum_engine/render/MeshletManager.h"
@@ -28,6 +32,36 @@
 
 class WebGPURenderer {
 private:
+    enum class TimingStage : std::size_t {
+        MainUpdateWorldStreaming = 0,
+        MainUploadMeshlets,
+        MainUpdateDebugBounds,
+        MainRenderFrameCpu,
+        StreamWait,
+        StreamWorldUpdate,
+        StreamMeshUpdate,
+        StreamCopyMeshlets,
+        StreamPrepareUpload,
+        Count
+    };
+
+    struct TimingAccumulator {
+        std::atomic<uint64_t> totalNs{0};
+        std::atomic<uint64_t> callCount{0};
+        std::atomic<uint64_t> maxNs{0};
+    };
+
+    struct TimingRawTotals {
+        std::array<uint64_t, static_cast<std::size_t>(TimingStage::Count)> totalNs{};
+        std::array<uint64_t, static_cast<std::size_t>(TimingStage::Count)> callCount{};
+        std::array<uint64_t, static_cast<std::size_t>(TimingStage::Count)> maxNs{};
+        uint64_t streamSkipNoCamera = 0;
+        uint64_t streamSkipUnchanged = 0;
+        uint64_t streamSkipThrottle = 0;
+        uint64_t streamSnapshotsPrepared = 0;
+        uint64_t mainUploadsApplied = 0;
+    };
+
     struct PendingMeshUpload {
         std::vector<MeshletMetadataGPU> metadata;
         std::vector<uint16_t> quadData;
@@ -74,6 +108,16 @@ private:
     bool streamerHasLastPreparedCenter_ = false;
     std::optional<std::chrono::steady_clock::time_point> streamerLastSnapshotTime_;
 
+    std::array<TimingAccumulator, static_cast<std::size_t>(TimingStage::Count)> timingAccumulators_{};
+    std::atomic<uint64_t> streamSkipNoCamera_{0};
+    std::atomic<uint64_t> streamSkipUnchanged_{0};
+    std::atomic<uint64_t> streamSkipThrottle_{0};
+    std::atomic<uint64_t> streamSnapshotsPrepared_{0};
+    std::atomic<uint64_t> mainUploadsApplied_{0};
+    std::mutex timingSnapshotMutex_;
+    TimingRawTotals lastTimingRawTotals_{};
+    std::optional<std::chrono::steady_clock::time_point> lastTimingSampleTime_;
+
     bool resizePending = false;
 
     bool uploadMeshlets(PendingMeshUpload&& upload);
@@ -86,6 +130,12 @@ private:
     glm::vec3 extractCameraPosition(const FrameUniforms& frameUniforms) const;
     ColumnCoord extractCameraColumn(const FrameUniforms& frameUniforms) const;
     int32_t cameraColumnChebyshevDistance(const ColumnCoord& a, const ColumnCoord& b) const;
+    void recordTimingNs(TimingStage stage, uint64_t ns) noexcept;
+    TimingRawTotals captureTimingRawTotals() const;
+    static TimingStageSnapshot makeStageSnapshot(const TimingRawTotals& current,
+                                                 const TimingRawTotals& previous,
+                                                 TimingStage stage,
+                                                 double sampleWindowSeconds);
 
 public:
     WebGPURenderer() = default;
@@ -105,6 +155,7 @@ public:
     void requestResize();
 
     std::pair<SurfaceTexture, TextureView> GetNextSurfaceViewData();
+    RuntimeTimingSnapshot getRuntimeTimingSnapshot();
 
     void renderFrame(FrameUniforms& uniforms);
 

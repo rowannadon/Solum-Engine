@@ -327,6 +327,151 @@ int32_t WebGPURenderer::cameraColumnChebyshevDistance(const ColumnCoord& a, cons
 	return std::max(dx, dy);
 }
 
+void WebGPURenderer::recordTimingNs(TimingStage stage, uint64_t ns) noexcept {
+	const std::size_t stageIndex = static_cast<std::size_t>(stage);
+	TimingAccumulator& accumulator = timingAccumulators_[stageIndex];
+	accumulator.totalNs.fetch_add(ns, std::memory_order_relaxed);
+	accumulator.callCount.fetch_add(1, std::memory_order_relaxed);
+
+	uint64_t observedMax = accumulator.maxNs.load(std::memory_order_relaxed);
+	while (ns > observedMax &&
+	       !accumulator.maxNs.compare_exchange_weak(
+	           observedMax,
+	           ns,
+	           std::memory_order_relaxed,
+	           std::memory_order_relaxed)) {
+	}
+}
+
+WebGPURenderer::TimingRawTotals WebGPURenderer::captureTimingRawTotals() const {
+	TimingRawTotals totals;
+	for (std::size_t i = 0; i < static_cast<std::size_t>(TimingStage::Count); ++i) {
+		const TimingAccumulator& accumulator = timingAccumulators_[i];
+		totals.totalNs[i] = accumulator.totalNs.load(std::memory_order_relaxed);
+		totals.callCount[i] = accumulator.callCount.load(std::memory_order_relaxed);
+		totals.maxNs[i] = accumulator.maxNs.load(std::memory_order_relaxed);
+	}
+
+	totals.streamSkipNoCamera = streamSkipNoCamera_.load(std::memory_order_relaxed);
+	totals.streamSkipUnchanged = streamSkipUnchanged_.load(std::memory_order_relaxed);
+	totals.streamSkipThrottle = streamSkipThrottle_.load(std::memory_order_relaxed);
+	totals.streamSnapshotsPrepared = streamSnapshotsPrepared_.load(std::memory_order_relaxed);
+	totals.mainUploadsApplied = mainUploadsApplied_.load(std::memory_order_relaxed);
+	return totals;
+}
+
+TimingStageSnapshot WebGPURenderer::makeStageSnapshot(const TimingRawTotals& current,
+                                                      const TimingRawTotals& previous,
+                                                      TimingStage stage,
+                                                      double sampleWindowSeconds) {
+	const std::size_t i = static_cast<std::size_t>(stage);
+	const uint64_t deltaNs = current.totalNs[i] - previous.totalNs[i];
+	const uint64_t deltaCalls = current.callCount[i] - previous.callCount[i];
+	const double deltaMs = static_cast<double>(deltaNs) / 1'000'000.0;
+	const double window = std::max(sampleWindowSeconds, 1e-6);
+
+	TimingStageSnapshot snapshot;
+	snapshot.averageMs = (deltaCalls > 0) ? (deltaMs / static_cast<double>(deltaCalls)) : 0.0;
+	snapshot.peakMs = static_cast<double>(current.maxNs[i]) / 1'000'000.0;
+	snapshot.totalMsPerSecond = deltaMs / window;
+	snapshot.callsPerSecond = static_cast<double>(deltaCalls) / window;
+	snapshot.totalCalls = current.callCount[i];
+	return snapshot;
+}
+
+RuntimeTimingSnapshot WebGPURenderer::getRuntimeTimingSnapshot() {
+	RuntimeTimingSnapshot snapshot;
+	const TimingRawTotals currentTotals = captureTimingRawTotals();
+	const auto now = std::chrono::steady_clock::now();
+
+	{
+		std::lock_guard<std::mutex> lock(timingSnapshotMutex_);
+		if (!lastTimingSampleTime_.has_value()) {
+			lastTimingSampleTime_ = now;
+			lastTimingRawTotals_ = currentTotals;
+		} else {
+			const double sampleWindowSeconds = std::chrono::duration<double>(now - *lastTimingSampleTime_).count();
+			snapshot.sampleWindowSeconds = sampleWindowSeconds;
+			snapshot.mainUpdateWorldStreaming = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainUpdateWorldStreaming,
+				sampleWindowSeconds
+			);
+			snapshot.mainUploadMeshlets = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainUploadMeshlets,
+				sampleWindowSeconds
+			);
+			snapshot.mainUpdateDebugBounds = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainUpdateDebugBounds,
+				sampleWindowSeconds
+			);
+			snapshot.mainRenderFrameCpu = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainRenderFrameCpu,
+				sampleWindowSeconds
+			);
+			snapshot.streamWait = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::StreamWait,
+				sampleWindowSeconds
+			);
+			snapshot.streamWorldUpdate = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::StreamWorldUpdate,
+				sampleWindowSeconds
+			);
+			snapshot.streamMeshUpdate = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::StreamMeshUpdate,
+				sampleWindowSeconds
+			);
+			snapshot.streamCopyMeshlets = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::StreamCopyMeshlets,
+				sampleWindowSeconds
+			);
+			snapshot.streamPrepareUpload = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::StreamPrepareUpload,
+				sampleWindowSeconds
+			);
+
+			snapshot.streamSkipNoCamera =
+				currentTotals.streamSkipNoCamera - lastTimingRawTotals_.streamSkipNoCamera;
+			snapshot.streamSkipUnchanged =
+				currentTotals.streamSkipUnchanged - lastTimingRawTotals_.streamSkipUnchanged;
+			snapshot.streamSkipThrottle =
+				currentTotals.streamSkipThrottle - lastTimingRawTotals_.streamSkipThrottle;
+			snapshot.streamSnapshotsPrepared =
+				currentTotals.streamSnapshotsPrepared - lastTimingRawTotals_.streamSnapshotsPrepared;
+			snapshot.mainUploadsApplied =
+				currentTotals.mainUploadsApplied - lastTimingRawTotals_.mainUploadsApplied;
+
+			lastTimingSampleTime_ = now;
+			lastTimingRawTotals_ = currentTotals;
+		}
+	}
+
+	snapshot.worldHasPendingJobs = world_ && world_->hasPendingJobs();
+	snapshot.meshHasPendingJobs = voxelMeshManager_ && voxelMeshManager_->hasPendingJobs();
+	{
+		std::lock_guard<std::mutex> lock(streamingMutex_);
+		snapshot.pendingUploadQueued = pendingMeshUpload_.has_value();
+	}
+	return snapshot;
+}
+
 void WebGPURenderer::startStreamingThread(const glm::vec3& initialCameraPosition, const ColumnCoord& initialCenterColumn) {
 	stopStreamingThread();
 
@@ -373,10 +518,15 @@ void WebGPURenderer::streamingThreadMain() {
 
 	while (true) {
 		{
+			const auto waitStart = std::chrono::steady_clock::now();
 			std::unique_lock<std::mutex> lock(streamingMutex_);
 			streamingCv_.wait_for(lock, std::chrono::milliseconds(16), [this] {
 				return streamingStopRequested_ || hasLatestStreamingCamera_;
 			});
+			const uint64_t waitNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - waitStart
+			).count());
+			recordTimingNs(TimingStage::StreamWait, waitNs);
 			if (streamingStopRequested_) {
 				return;
 			}
@@ -388,11 +538,27 @@ void WebGPURenderer::streamingThreadMain() {
 		}
 
 		if (!hasCameraPosition || !world_ || !voxelMeshManager_) {
+			streamSkipNoCamera_.fetch_add(1, std::memory_order_relaxed);
 			continue;
 		}
 
+		const auto worldUpdateStart = std::chrono::steady_clock::now();
 		world_->updatePlayerPosition(cameraPosition);
+		recordTimingNs(
+			TimingStage::StreamWorldUpdate,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - worldUpdateStart
+			).count())
+		);
+
+		const auto meshUpdateStart = std::chrono::steady_clock::now();
 		voxelMeshManager_->updatePlayerPosition(cameraPosition);
+		recordTimingNs(
+			TimingStage::StreamMeshUpdate,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - meshUpdateStart
+			).count())
+		);
 
 		const BlockCoord cameraBlock{
 			static_cast<int32_t>(std::floor(cameraPosition.x)),
@@ -409,6 +575,7 @@ void WebGPURenderer::streamingThreadMain() {
 		const uint64_t currentRevision = voxelMeshManager_->meshRevision();
 		if (currentRevision == streamerLastPreparedRevision_ &&
 			(!centerChanged || centerShift < centerUploadStrideChunks)) {
+			streamSkipUnchanged_.fetch_add(1, std::memory_order_relaxed);
 			continue;
 		}
 
@@ -424,11 +591,27 @@ void WebGPURenderer::streamingThreadMain() {
 		const bool forceForCenterChange = centerChanged && centerShift >= centerUploadStrideChunks;
 
 		if (pendingJobs && !intervalElapsed && !forceForCenterChange) {
+			streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
 			continue;
 		}
 
+		const auto copyStart = std::chrono::steady_clock::now();
 		std::vector<Meshlet> meshlets = voxelMeshManager_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
+		recordTimingNs(
+			TimingStage::StreamCopyMeshlets,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - copyStart
+			).count())
+		);
+
+		const auto prepareStart = std::chrono::steady_clock::now();
 		PreparedMeshUploadData prepared = prepareMeshUploadData(meshlets);
+		recordTimingNs(
+			TimingStage::StreamPrepareUpload,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - prepareStart
+			).count())
+		);
 
 		{
 			std::lock_guard<std::mutex> lock(streamingMutex_);
@@ -451,6 +634,7 @@ void WebGPURenderer::streamingThreadMain() {
 		streamerLastPreparedCenter_ = centerColumn;
 		streamerHasLastPreparedCenter_ = true;
 		streamerLastSnapshotTime_ = now;
+		streamSnapshotsPrepared_.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
@@ -481,11 +665,26 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 		return;
 	}
 
+	const auto uploadStart = std::chrono::steady_clock::now();
 	if (uploadMeshlets(std::move(*pendingUpload))) {
+		recordTimingNs(
+			TimingStage::MainUploadMeshlets,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - uploadStart
+			).count())
+		);
 		uploadedMeshRevision_ = pendingUpload->meshRevision;
 		uploadedCenterColumn_ = pendingUpload->centerColumn;
 		hasUploadedCenterColumn_ = true;
 		lastMeshUploadTimeSeconds_ = glfwGetTime();
+		mainUploadsApplied_.fetch_add(1, std::memory_order_relaxed);
+	} else {
+		recordTimingNs(
+			TimingStage::MainUploadMeshlets,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - uploadStart
+			).count())
+		);
 	}
 }
 
@@ -601,6 +800,16 @@ void WebGPURenderer::updateDebugBounds(const FrameUniforms& frameUniforms) {
 }
 
 void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
+	const auto frameCpuStart = std::chrono::steady_clock::now();
+	auto finalizeFrameTiming = [this, &frameCpuStart]() {
+		recordTimingNs(
+			TimingStage::MainRenderFrameCpu,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - frameCpuStart
+			).count())
+		);
+	};
+
 	int fbWidth = 0;
 	int fbHeight = 0;
 	glfwGetFramebufferSize(context->getWindow(), &fbWidth, &fbHeight);
@@ -611,16 +820,35 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 
 	if (resizePending) {
 		if (!resizeSurfaceAndAttachments()) {
+			finalizeFrameTiming();
 			return;
 		}
 	}
 
+	const auto streamUpdateStart = std::chrono::steady_clock::now();
 	updateWorldStreaming(uniforms);
+	recordTimingNs(
+		TimingStage::MainUpdateWorldStreaming,
+		static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - streamUpdateStart
+		).count())
+	);
+
+	const auto debugUpdateStart = std::chrono::steady_clock::now();
 	updateDebugBounds(uniforms);
+	recordTimingNs(
+		TimingStage::MainUpdateDebugBounds,
+		static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - debugUpdateStart
+		).count())
+	);
 
 	auto [surfaceTexture, targetView] = GetNextSurfaceViewData();
 	(void)surfaceTexture;
-	if (!targetView) return;
+	if (!targetView) {
+		finalizeFrameTiming();
+		return;
+	}
 
 	CommandEncoderDescriptor encoderDesc = Default;
 	encoderDesc.label = StringView("Frame command encoder");
@@ -668,6 +896,8 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 #ifdef WEBGPU_BACKEND_DAWN
 	context->getDevice().tick();
 #endif
+
+	finalizeFrameTiming();
 }
 
 GLFWwindow* WebGPURenderer::getWindow() {
