@@ -156,8 +156,17 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
     ChunkCoord previousCenterChunk{};
     bool hadPreviousCenter = false;
     bool centerChanged = false;
+    bool sseScaleChanged = false;
+    constexpr float kSseScaleChangeAbsoluteThreshold = 0.01f;
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
+        if (hasLastSseProjectionScale_) {
+            const float scaleDelta = std::abs(safeSseProjectionScale - lastSseProjectionScale_);
+            sseScaleChanged = scaleDelta > kSseScaleChangeAbsoluteThreshold;
+        } else {
+            sseScaleChanged = true;
+        }
+
         lastPlayerWorldPosition_ = playerWorldPosition;
         lastSseProjectionScale_ = safeSseProjectionScale;
         hasLastSseProjectionScale_ = true;
@@ -183,6 +192,16 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
             safeSseProjectionScale,
             hadPreviousCenter ? &previousCenterChunk : nullptr,
             centerShiftChunks
+        );
+    } else if (sseScaleChanged) {
+        // A projection-scale change (e.g. framebuffer resize/FOV change) invalidates
+        // SSE-based LOD selection across the active window, so force a full refresh.
+        scheduleTilesAround(
+            centerChunk,
+            playerWorldPosition,
+            safeSseProjectionScale,
+            nullptr,
+            meshTileSizeChunks_ * 4
         );
     }
 
