@@ -1,7 +1,66 @@
 #include "solum_engine/platform/WebGPUContext.h"
 #include "solum_engine/render/VertexAttributes.h"
+#include <cstddef>
 #include <chrono>
 #include <thread>
+
+namespace {
+const char* presentModeName(PresentMode mode) {
+    switch (mode) {
+    case PresentMode::Immediate:
+        return "Immediate";
+    case PresentMode::Mailbox:
+        return "Mailbox";
+    case PresentMode::Fifo:
+        return "Fifo";
+    case PresentMode::FifoRelaxed:
+        return "FifoRelaxed";
+    default:
+        return "Unknown";
+    }
+}
+
+PresentMode choosePreferredPresentMode(const SurfaceCapabilities& capabilities) {
+    auto supports = [&capabilities](PresentMode mode) {
+        for (size_t i = 0; i < capabilities.presentModeCount; ++i) {
+            if (capabilities.presentModes[i] == mode) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+#ifdef _WIN32
+    if (supports(PresentMode::Immediate)) {
+        return PresentMode::Immediate;
+    }
+    if (supports(PresentMode::Mailbox)) {
+        return PresentMode::Mailbox;
+    }
+    if (supports(PresentMode::FifoRelaxed)) {
+        return PresentMode::FifoRelaxed;
+    }
+    if (supports(PresentMode::Fifo)) {
+        return PresentMode::Fifo;
+    }
+#else
+    if (supports(PresentMode::Mailbox)) {
+        return PresentMode::Mailbox;
+    }
+    if (supports(PresentMode::Immediate)) {
+        return PresentMode::Immediate;
+    }
+    if (supports(PresentMode::FifoRelaxed)) {
+        return PresentMode::FifoRelaxed;
+    }
+    if (supports(PresentMode::Fifo)) {
+        return PresentMode::Fifo;
+    }
+#endif
+
+    return (capabilities.presentModeCount > 0) ? capabilities.presentModes[0] : PresentMode::Fifo;
+}
+}  // namespace
 
 bool WebGPUContext::initialize(const RenderConfig& config) {
     // Create instance descriptor
@@ -68,7 +127,9 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     adapterOpts.powerPreference = WGPUPowerPreference_HighPerformance;
 
     #ifdef _WIN32
-        adapterOpts.backendType = WGPUBackendType_Vulkan;
+        // Let Dawn pick the native best backend on Windows (typically D3D12).
+        // Forcing Vulkan can increase swapchain acquire stalls on some drivers.
+        adapterOpts.backendType = WGPUBackendType_Undefined;
     #elif __linux__
         adapterOpts.backendType = WGPUBackendType_Vulkan;
     #elif __APPLE__
@@ -206,10 +267,12 @@ bool WebGPUContext::configureSurface() {
     config.viewFormats = nullptr;
     config.usage = TextureUsage::RenderAttachment;
     config.device = device;
-    config.presentMode = PresentMode::Fifo;
+    config.presentMode = choosePreferredPresentMode(capabilities);
     config.alphaMode = CompositeAlphaMode::Auto;
 
     surface.configure(config);
+    std::cout << "Configured surface " << this->width << "x" << this->height
+              << " present mode: " << presentModeName(config.presentMode) << std::endl;
 
     return true;
 }
