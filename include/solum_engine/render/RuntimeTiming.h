@@ -17,6 +17,11 @@ struct RuntimeTimingSnapshot {
     TimingStageSnapshot mainUploadMeshlets;
     TimingStageSnapshot mainUpdateDebugBounds;
     TimingStageSnapshot mainRenderFrameCpu;
+    TimingStageSnapshot mainAcquireSurface;
+    TimingStageSnapshot mainEncodeCommands;
+    TimingStageSnapshot mainQueueSubmit;
+    TimingStageSnapshot mainPresent;
+    TimingStageSnapshot mainDeviceTick;
 
     TimingStageSnapshot streamWait;
     TimingStageSnapshot streamWorldUpdate;

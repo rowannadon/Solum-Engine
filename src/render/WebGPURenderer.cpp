@@ -416,6 +416,36 @@ RuntimeTimingSnapshot WebGPURenderer::getRuntimeTimingSnapshot() {
 				TimingStage::MainRenderFrameCpu,
 				sampleWindowSeconds
 			);
+			snapshot.mainAcquireSurface = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainAcquireSurface,
+				sampleWindowSeconds
+			);
+			snapshot.mainEncodeCommands = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainEncodeCommands,
+				sampleWindowSeconds
+			);
+			snapshot.mainQueueSubmit = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainQueueSubmit,
+				sampleWindowSeconds
+			);
+			snapshot.mainPresent = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainPresent,
+				sampleWindowSeconds
+			);
+			snapshot.mainDeviceTick = makeStageSnapshot(
+				currentTotals,
+				lastTimingRawTotals_,
+				TimingStage::MainDeviceTick,
+				sampleWindowSeconds
+			);
 			snapshot.streamWait = makeStageSnapshot(
 				currentTotals,
 				lastTimingRawTotals_,
@@ -843,13 +873,21 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 		).count())
 	);
 
+	const auto acquireStart = std::chrono::steady_clock::now();
 	auto [surfaceTexture, targetView] = GetNextSurfaceViewData();
+	recordTimingNs(
+		TimingStage::MainAcquireSurface,
+		static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - acquireStart
+		).count())
+	);
 	(void)surfaceTexture;
 	if (!targetView) {
 		finalizeFrameTiming();
 		return;
 	}
 
+	const auto encodeStart = std::chrono::steady_clock::now();
 	CommandEncoderDescriptor encoderDesc = Default;
 	encoderDesc.label = StringView("Frame command encoder");
 	CommandEncoder encoder = context->getDevice().createCommandEncoder(encoderDesc);
@@ -872,8 +910,21 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 	cmdBufferDescriptor.label = StringView("Frame command buffer");
 	CommandBuffer command = encoder.finish(cmdBufferDescriptor);
 	encoder.release();
+	recordTimingNs(
+		TimingStage::MainEncodeCommands,
+		static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - encodeStart
+		).count())
+	);
 
+	const auto submitStart = std::chrono::steady_clock::now();
 	context->getQueue().submit(1, &command);
+	recordTimingNs(
+		TimingStage::MainQueueSubmit,
+		static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - submitStart
+		).count())
+	);
 	/*context->getQueue().onSubmittedWorkDone(wgpu::CallbackMode::AllowProcessEvents,
 		[&](wgpu::QueueWorkDoneStatus status) {
 			if (status == wgpu::QueueWorkDoneStatus::Success) {
@@ -884,17 +935,42 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 	command.release();
 
 #ifdef WEBGPU_BACKEND_DAWN
+	{
+		const auto tickStart = std::chrono::steady_clock::now();
 	context->getDevice().tick();
+		recordTimingNs(
+			TimingStage::MainDeviceTick,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - tickStart
+			).count())
+		);
+	}
 #endif
 
 	// Now process timing (this will print frame time by default)
 	//benchmarkManager->processFrameTime("frame_timer");
 
 	targetView.release();
+	const auto presentStart = std::chrono::steady_clock::now();
 	context->getSurface().present();
+	recordTimingNs(
+		TimingStage::MainPresent,
+		static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - presentStart
+		).count())
+	);
 
 #ifdef WEBGPU_BACKEND_DAWN
+	{
+		const auto tickStart = std::chrono::steady_clock::now();
 	context->getDevice().tick();
+		recordTimingNs(
+			TimingStage::MainDeviceTick,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - tickStart
+			).count())
+		);
+	}
 #endif
 
 	finalizeFrameTiming();

@@ -117,6 +117,11 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
             ImGui::Text("Main World Streaming: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainUpdateWorldStreaming.averageMs, runtimeTiming.mainUpdateWorldStreaming.totalMsPerSecond);
             ImGui::Text("Main Mesh Upload: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainUploadMeshlets.averageMs, runtimeTiming.mainUploadMeshlets.totalMsPerSecond);
             ImGui::Text("Main Debug Bounds: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainUpdateDebugBounds.averageMs, runtimeTiming.mainUpdateDebugBounds.totalMsPerSecond);
+            ImGui::Text("Main Acquire Surface: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainAcquireSurface.averageMs, runtimeTiming.mainAcquireSurface.totalMsPerSecond);
+            ImGui::Text("Main Encode Commands: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainEncodeCommands.averageMs, runtimeTiming.mainEncodeCommands.totalMsPerSecond);
+            ImGui::Text("Main Queue Submit: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainQueueSubmit.averageMs, runtimeTiming.mainQueueSubmit.totalMsPerSecond);
+            ImGui::Text("Main Present: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainPresent.averageMs, runtimeTiming.mainPresent.totalMsPerSecond);
+            ImGui::Text("Main Device Tick: avg %.3f ms, load %.2f ms/s", runtimeTiming.mainDeviceTick.averageMs, runtimeTiming.mainDeviceTick.totalMsPerSecond);
 
             ImGui::Separator();
             ImGui::Text("Stream Wait: avg %.3f ms, load %.2f ms/s", runtimeTiming.streamWait.averageMs, runtimeTiming.streamWait.totalMsPerSecond);
