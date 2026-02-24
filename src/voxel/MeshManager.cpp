@@ -947,6 +947,125 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
         }
     }
 
+    std::unordered_map<MeshTileCoord, uint8_t> selectedLodByTile;
+    selectedLodByTile.reserve(selected.size());
+    for (const SelectedTileLodState& entry : selected) {
+        selectedLodByTile[entry.tile] = entry.lod;
+    }
+
+    std::vector<Meshlet> skirtMeshlets;
+    auto appendSkirtStrip = [&skirtMeshlets](uint32_t faceDirection,
+                                             const glm::ivec3& origin,
+                                             uint32_t length,
+                                             bool advanceAlongY) {
+        uint32_t emitted = 0;
+        while (emitted < length) {
+            const uint32_t batch = std::min<uint32_t>(
+                32u,
+                std::min<uint32_t>(MESHLET_QUAD_CAPACITY, length - emitted)
+            );
+            const glm::ivec3 batchOrigin = advanceAlongY
+                ? glm::ivec3(origin.x, origin.y + static_cast<int32_t>(emitted), origin.z)
+                : glm::ivec3(origin.x + static_cast<int32_t>(emitted), origin.y, origin.z);
+
+            Meshlet skirt{};
+            skirt.origin = batchOrigin;
+            skirt.faceDirection = faceDirection;
+            skirt.voxelScale = 1u;
+
+            for (uint32_t i = 0; i < batch; ++i) {
+                const uint32_t localX = advanceAlongY ? 0u : i;
+                const uint32_t localY = advanceAlongY ? i : 0u;
+                skirt.packedQuadLocalOffsets[skirt.quadCount] =
+                    packMeshletLocalOffset(localX, localY, 0u);
+                skirt.quadCount += 1u;
+            }
+
+            skirtMeshlets.push_back(skirt);
+            emitted += batch;
+        }
+    };
+
+    for (const SelectedTileLodState& entry : selected) {
+        if (entry.lod == 0u) {
+            continue;
+        }
+
+        const auto isFinerNeighbor = [&selectedLodByTile, &entry](int32_t dx, int32_t dy) {
+            const auto neighborIt = selectedLodByTile.find(MeshTileCoord{entry.tile.x + dx, entry.tile.y + dy});
+            return neighborIt != selectedLodByTile.end() && neighborIt->second < entry.lod;
+        };
+
+        const bool skirtPlusX = isFinerNeighbor(+1, 0);
+        const bool skirtMinusX = isFinerNeighbor(-1, 0);
+        const bool skirtPlusY = isFinerNeighbor(0, +1);
+        const bool skirtMinusY = isFinerNeighbor(0, -1);
+        if (!skirtPlusX && !skirtMinusX && !skirtPlusY && !skirtMinusY) {
+            continue;
+        }
+
+        const int32_t tileMinX = entry.tile.x * meshTileSizeChunks_ * cfg::CHUNK_SIZE;
+        const int32_t tileMinY = entry.tile.y * meshTileSizeChunks_ * cfg::CHUNK_SIZE;
+        const int32_t tileMaxX = tileMinX + meshTileSizeChunks_ * cfg::CHUNK_SIZE;
+        const int32_t tileMaxY = tileMinY + meshTileSizeChunks_ * cfg::CHUNK_SIZE;
+
+        for (const auto& [_, cellMeshlets] : entry.lodState->cellMeshes) {
+            for (const Meshlet& meshlet : cellMeshlets) {
+                if (meshlet.faceDirection != Direction::PlusZ || meshlet.quadCount == 0u) {
+                    continue;
+                }
+
+                const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
+                for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
+                    const uint16_t packed = meshlet.packedQuadLocalOffsets[quadIndex];
+                    const uint32_t localX = static_cast<uint32_t>(packed & 0x1Fu);
+                    const uint32_t localY = static_cast<uint32_t>((packed >> 5u) & 0x1Fu);
+                    const uint32_t localZ = static_cast<uint32_t>((packed >> 10u) & 0x1Fu);
+
+                    const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(localX * voxelScale);
+                    const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(localY * voxelScale);
+                    const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(localZ * voxelScale);
+                    const int32_t skirtZ = worldZ + static_cast<int32_t>(voxelScale) - 1;
+
+                    if (skirtMinusX && worldX == tileMinX) {
+                        appendSkirtStrip(
+                            Direction::MinusX,
+                            glm::ivec3(worldX, worldY, skirtZ),
+                            voxelScale,
+                            true
+                        );
+                    }
+                    if (skirtPlusX && (worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
+                        appendSkirtStrip(
+                            Direction::PlusX,
+                            glm::ivec3(worldX + static_cast<int32_t>(voxelScale) - 1, worldY, skirtZ),
+                            voxelScale,
+                            true
+                        );
+                    }
+                    if (skirtMinusY && worldY == tileMinY) {
+                        appendSkirtStrip(
+                            Direction::MinusY,
+                            glm::ivec3(worldX, worldY, skirtZ),
+                            voxelScale,
+                            false
+                        );
+                    }
+                    if (skirtPlusY && (worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
+                        appendSkirtStrip(
+                            Direction::PlusY,
+                            glm::ivec3(worldX, worldY + static_cast<int32_t>(voxelScale) - 1, skirtZ),
+                            voxelScale,
+                            false
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    totalMeshletCount += skirtMeshlets.size();
+
     std::vector<Meshlet> meshlets;
     meshlets.reserve(totalMeshletCount);
 
@@ -955,6 +1074,7 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
             meshlets.insert(meshlets.end(), cellMeshlets.begin(), cellMeshlets.end());
         }
     }
+    meshlets.insert(meshlets.end(), skirtMeshlets.begin(), skirtMeshlets.end());
 
     return meshlets;
 }
@@ -1022,6 +1142,125 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
         }
     }
 
+    std::unordered_map<MeshTileCoord, uint8_t> selectedLodByTile;
+    selectedLodByTile.reserve(selected.size());
+    for (const SelectedTileLodState& entry : selected) {
+        selectedLodByTile[entry.tile] = entry.lod;
+    }
+
+    std::vector<Meshlet> skirtMeshlets;
+    auto appendSkirtStrip = [&skirtMeshlets](uint32_t faceDirection,
+                                             const glm::ivec3& origin,
+                                             uint32_t length,
+                                             bool advanceAlongY) {
+        uint32_t emitted = 0;
+        while (emitted < length) {
+            const uint32_t batch = std::min<uint32_t>(
+                32u,
+                std::min<uint32_t>(MESHLET_QUAD_CAPACITY, length - emitted)
+            );
+            const glm::ivec3 batchOrigin = advanceAlongY
+                ? glm::ivec3(origin.x, origin.y + static_cast<int32_t>(emitted), origin.z)
+                : glm::ivec3(origin.x + static_cast<int32_t>(emitted), origin.y, origin.z);
+
+            Meshlet skirt{};
+            skirt.origin = batchOrigin;
+            skirt.faceDirection = faceDirection;
+            skirt.voxelScale = 1u;
+
+            for (uint32_t i = 0; i < batch; ++i) {
+                const uint32_t localX = advanceAlongY ? 0u : i;
+                const uint32_t localY = advanceAlongY ? i : 0u;
+                skirt.packedQuadLocalOffsets[skirt.quadCount] =
+                    packMeshletLocalOffset(localX, localY, 0u);
+                skirt.quadCount += 1u;
+            }
+
+            skirtMeshlets.push_back(skirt);
+            emitted += batch;
+        }
+    };
+
+    for (const SelectedTileLodState& entry : selected) {
+        if (entry.lod == 0u) {
+            continue;
+        }
+
+        const auto isFinerNeighbor = [&selectedLodByTile, &entry](int32_t dx, int32_t dy) {
+            const auto neighborIt = selectedLodByTile.find(MeshTileCoord{entry.tile.x + dx, entry.tile.y + dy});
+            return neighborIt != selectedLodByTile.end() && neighborIt->second < entry.lod;
+        };
+
+        const bool skirtPlusX = isFinerNeighbor(+1, 0);
+        const bool skirtMinusX = isFinerNeighbor(-1, 0);
+        const bool skirtPlusY = isFinerNeighbor(0, +1);
+        const bool skirtMinusY = isFinerNeighbor(0, -1);
+        if (!skirtPlusX && !skirtMinusX && !skirtPlusY && !skirtMinusY) {
+            continue;
+        }
+
+        const int32_t tileMinX = entry.tile.x * meshTileSizeChunks_ * cfg::CHUNK_SIZE;
+        const int32_t tileMinY = entry.tile.y * meshTileSizeChunks_ * cfg::CHUNK_SIZE;
+        const int32_t tileMaxX = tileMinX + meshTileSizeChunks_ * cfg::CHUNK_SIZE;
+        const int32_t tileMaxY = tileMinY + meshTileSizeChunks_ * cfg::CHUNK_SIZE;
+
+        for (const auto& [_, cellMeshlets] : entry.lodState->cellMeshes) {
+            for (const Meshlet& meshlet : cellMeshlets) {
+                if (meshlet.faceDirection != Direction::PlusZ || meshlet.quadCount == 0u) {
+                    continue;
+                }
+
+                const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
+                for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
+                    const uint16_t packed = meshlet.packedQuadLocalOffsets[quadIndex];
+                    const uint32_t localX = static_cast<uint32_t>(packed & 0x1Fu);
+                    const uint32_t localY = static_cast<uint32_t>((packed >> 5u) & 0x1Fu);
+                    const uint32_t localZ = static_cast<uint32_t>((packed >> 10u) & 0x1Fu);
+
+                    const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(localX * voxelScale);
+                    const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(localY * voxelScale);
+                    const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(localZ * voxelScale);
+                    const int32_t skirtZ = worldZ + static_cast<int32_t>(voxelScale) - 1;
+
+                    if (skirtMinusX && worldX == tileMinX) {
+                        appendSkirtStrip(
+                            Direction::MinusX,
+                            glm::ivec3(worldX, worldY, skirtZ),
+                            voxelScale,
+                            true
+                        );
+                    }
+                    if (skirtPlusX && (worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
+                        appendSkirtStrip(
+                            Direction::PlusX,
+                            glm::ivec3(worldX + static_cast<int32_t>(voxelScale) - 1, worldY, skirtZ),
+                            voxelScale,
+                            true
+                        );
+                    }
+                    if (skirtMinusY && worldY == tileMinY) {
+                        appendSkirtStrip(
+                            Direction::MinusY,
+                            glm::ivec3(worldX, worldY, skirtZ),
+                            voxelScale,
+                            false
+                        );
+                    }
+                    if (skirtPlusY && (worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
+                        appendSkirtStrip(
+                            Direction::PlusY,
+                            glm::ivec3(worldX, worldY + static_cast<int32_t>(voxelScale) - 1, skirtZ),
+                            voxelScale,
+                            false
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    totalMeshletCount += skirtMeshlets.size();
+
     std::vector<Meshlet> meshlets;
     meshlets.reserve(totalMeshletCount);
 
@@ -1030,6 +1269,7 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
             meshlets.insert(meshlets.end(), cellMeshlets.begin(), cellMeshlets.end());
         }
     }
+    meshlets.insert(meshlets.end(), skirtMeshlets.begin(), skirtMeshlets.end());
 
     return meshlets;
 }
