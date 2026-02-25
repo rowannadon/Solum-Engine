@@ -3,6 +3,7 @@
 #include "solum_engine/render/pipelines/AbstractRenderPipeline.h"
 
 #include <cstdint>
+#include <string>
 
 class VoxelPipeline : public AbstractRenderPipeline {
 public:
@@ -17,6 +18,8 @@ public:
     bool createPipeline() override;
 
     bool createBindGroup() override;
+    bool createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
+                                       const std::string& metadataBufferName);
     
     bool build() override;
 

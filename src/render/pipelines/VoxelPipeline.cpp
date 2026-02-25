@@ -137,9 +137,17 @@ bool VoxelPipeline::createPipeline() {
 }
 
 bool VoxelPipeline::createBindGroup() {
+    return createBindGroupForMeshBuffers(
+        MeshletManager::meshDataBufferName(0),
+        MeshletManager::meshMetadataBufferName(0)
+    );
+}
+
+bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
+                                                  const std::string& metadataBufferName) {
     Buffer uniformBuffer = r_.buf.getBuffer("uniform_buffer");
-    Buffer meshDataBuffer = r_.buf.getBuffer(MeshletManager::kMeshDataBufferName);
-    Buffer metadataBuffer = r_.buf.getBuffer(MeshletManager::kMeshMetadataBufferName);
+    Buffer meshDataBuffer = r_.buf.getBuffer(meshDataBufferName);
+    Buffer metadataBuffer = r_.buf.getBuffer(metadataBufferName);
     Buffer materialLookupBuffer = r_.buf.getBuffer(MaterialManager::kMaterialLookupBufferName);
     TextureView materialTextureArrayView = r_.tex.getTextureView(MaterialManager::kMaterialTextureArrayViewName);
     Sampler materialSampler = r_.tex.getSampler(MaterialManager::kMaterialSamplerName);
@@ -182,6 +190,7 @@ bool VoxelPipeline::createBindGroup() {
     bindings[i].binding = i;
     bindings[i].sampler = materialSampler;
 
+    r_.pip.deleteBindGroup("global_uniforms_bg");
     BindGroup bindGroup = r_.pip.createBindGroup("global_uniforms_bg", "global_uniforms", bindings);
 
     return bindGroup != nullptr;

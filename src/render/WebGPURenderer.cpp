@@ -280,9 +280,6 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 		quadCapacity_ < requiredQuadCapacity;
 
 	if (requiresRecreate) {
-		bufferManager->deleteBuffer(MeshletManager::kMeshMetadataBufferName);
-		bufferManager->deleteBuffer(MeshletManager::kMeshDataBufferName);
-
 		auto replacement = std::make_unique<MeshletManager>();
 		if (!replacement->initialize(bufferManager.get(), requiredMeshletCapacity, requiredQuadCapacity)) {
 			std::cerr << "Failed to create meshlet buffers." << std::endl;
@@ -293,7 +290,10 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 		meshletCapacity_ = requiredMeshletCapacity;
 		quadCapacity_ = requiredQuadCapacity;
 
-		if (voxelPipeline_.has_value() && !voxelPipeline_->createBindGroup()) {
+		if (voxelPipeline_.has_value() &&
+			!voxelPipeline_->createBindGroupForMeshBuffers(
+				meshletManager->getActiveMeshDataBufferName(),
+				meshletManager->getActiveMeshMetadataBufferName())) {
 			std::cerr << "Failed to recreate voxel bind group after meshlet buffer resize." << std::endl;
 			return false;
 		}
@@ -306,6 +306,12 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 	}
 
 	if (voxelPipeline_.has_value()) {
+		if (!voxelPipeline_->createBindGroupForMeshBuffers(
+				meshletManager->getActiveMeshDataBufferName(),
+				meshletManager->getActiveMeshMetadataBufferName())) {
+			std::cerr << "Failed to bind active meshlet buffers." << std::endl;
+			return false;
+		}
 		voxelPipeline_->setDrawConfig(
 			meshletManager->getVerticesPerMeshlet(),
 			meshletManager->getMeshletCount()
@@ -505,7 +511,9 @@ RuntimeTimingSnapshot WebGPURenderer::getRuntimeTimingSnapshot() {
 	snapshot.meshHasPendingJobs = voxelMeshManager_ && voxelMeshManager_->hasPendingJobs();
 	{
 		std::lock_guard<std::mutex> lock(streamingMutex_);
-		snapshot.pendingUploadQueued = pendingMeshUpload_.has_value();
+		snapshot.pendingUploadQueued =
+			pendingMeshUpload_.has_value() ||
+			mainMeshUploadInProgress_.load(std::memory_order_relaxed);
 	}
 	return snapshot;
 }
@@ -520,6 +528,8 @@ void WebGPURenderer::startStreamingThread(const glm::vec3& initialCameraPosition
 		latestStreamingCamera_ = initialCameraPosition;
 		latestStreamingSseProjectionScale_ = 390.0f;
 		pendingMeshUpload_.reset();
+		chunkedMeshUpload_.reset();
+		mainMeshUploadInProgress_.store(false, std::memory_order_relaxed);
 		streamerLastPreparedRevision_ = uploadedMeshRevision_;
 		streamerLastPreparedCenter_ = initialCenterColumn;
 		streamerHasLastPreparedCenter_ = true;
@@ -547,6 +557,8 @@ void WebGPURenderer::stopStreamingThread() {
 		std::lock_guard<std::mutex> lock(streamingMutex_);
 		streamingStopRequested_ = false;
 		pendingMeshUpload_.reset();
+		chunkedMeshUpload_.reset();
+		mainMeshUploadInProgress_.store(false, std::memory_order_relaxed);
 		streamerLastSnapshotTime_.reset();
 	}
 }
@@ -581,14 +593,6 @@ void WebGPURenderer::streamingThreadMain() {
 		if (!hasCameraPosition || !world_ || !voxelMeshManager_) {
 			streamSkipNoCamera_.fetch_add(1, std::memory_order_relaxed);
 			continue;
-		}
-
-		{
-			std::lock_guard<std::mutex> lock(streamingMutex_);
-			if (pendingMeshUpload_.has_value()) {
-				streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
-				continue;
-			}
 		}
 
 		const auto worldUpdateStart = std::chrono::steady_clock::now();
@@ -626,6 +630,18 @@ void WebGPURenderer::streamingThreadMain() {
 			(!centerChanged || centerShift < centerUploadStrideChunks)) {
 			streamSkipUnchanged_.fetch_add(1, std::memory_order_relaxed);
 			continue;
+		}
+
+		if (mainMeshUploadInProgress_.load(std::memory_order_relaxed)) {
+			streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
+			continue;
+		}
+		{
+			std::lock_guard<std::mutex> lock(streamingMutex_);
+			if (pendingMeshUpload_.has_value()) {
+				streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
+				continue;
+			}
 		}
 
 		const bool pendingJobs = world_->hasPendingJobs() || voxelMeshManager_->hasPendingJobs();
@@ -717,32 +733,164 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 			pendingMeshUpload_.reset();
 		}
 	}
+	if (chunkedMeshUpload_.has_value() && pendingUpload.has_value()) {
+		std::lock_guard<std::mutex> lock(streamingMutex_);
+		pendingMeshUpload_ = std::move(*pendingUpload);
+		pendingUpload.reset();
+	}
 
-	if (!pendingUpload.has_value()) {
+	if (!chunkedMeshUpload_.has_value() && !pendingUpload.has_value()) {
+		mainMeshUploadInProgress_.store(false, std::memory_order_relaxed);
 		return;
 	}
 
 	const auto uploadStart = std::chrono::steady_clock::now();
-	if (uploadMeshlets(std::move(*pendingUpload))) {
-		recordTimingNs(
-			TimingStage::MainUploadMeshlets,
-			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::steady_clock::now() - uploadStart
-			).count())
+	if (!chunkedMeshUpload_.has_value() && pendingUpload.has_value()) {
+		mainMeshUploadInProgress_.store(true, std::memory_order_relaxed);
+
+		const uint32_t requiredMeshletCapacity = std::max(
+			pendingUpload->requiredMeshletCapacity,
+			std::max(pendingUpload->totalMeshletCount + 16u, 64u)
 		);
-		uploadedMeshRevision_ = pendingUpload->meshRevision;
-		uploadedCenterColumn_ = pendingUpload->centerColumn;
-		hasUploadedCenterColumn_ = true;
-		lastMeshUploadTimeSeconds_ = glfwGetTime();
-		mainUploadsApplied_.fetch_add(1, std::memory_order_relaxed);
-	} else {
-		recordTimingNs(
-			TimingStage::MainUploadMeshlets,
-			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::steady_clock::now() - uploadStart
-			).count())
+		const uint32_t requiredQuadCapacity = std::max(
+			pendingUpload->requiredQuadCapacity,
+			std::max(
+				pendingUpload->totalQuadCount + (1024u * MESHLET_QUAD_DATA_WORD_STRIDE),
+				requiredMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE
+			)
 		);
+
+		const bool requiresRecreate =
+			!meshletManager ||
+			meshletCapacity_ < requiredMeshletCapacity ||
+			quadCapacity_ < requiredQuadCapacity;
+
+		if (requiresRecreate) {
+			auto replacement = std::make_unique<MeshletManager>();
+			if (!replacement->initialize(bufferManager.get(), requiredMeshletCapacity, requiredQuadCapacity)) {
+				std::cerr << "Failed to create meshlet buffers." << std::endl;
+				mainMeshUploadInProgress_.store(false, std::memory_order_relaxed);
+				recordTimingNs(
+					TimingStage::MainUploadMeshlets,
+					static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+						std::chrono::steady_clock::now() - uploadStart
+					).count())
+				);
+				return;
+			}
+
+			meshletManager = std::move(replacement);
+			meshletCapacity_ = requiredMeshletCapacity;
+			quadCapacity_ = requiredQuadCapacity;
+		}
+
+		chunkedMeshUpload_ = ChunkedMeshUploadState{
+			std::move(*pendingUpload),
+			meshletManager->getInactiveBufferIndex(),
+			0,
+			0
+		};
 	}
+
+	if (chunkedMeshUpload_.has_value()) {
+		ChunkedMeshUploadState& uploadState = *chunkedMeshUpload_;
+		size_t remainingBudgetBytes = kMeshUploadBudgetBytesPerFrame;
+
+		const size_t metadataTotalBytes =
+			uploadState.upload.metadata.size() * sizeof(MeshletMetadataGPU);
+		if (uploadState.metadataUploadedBytes < metadataTotalBytes && remainingBudgetBytes > 0) {
+			const size_t remainingMetadata = metadataTotalBytes - uploadState.metadataUploadedBytes;
+			const size_t metadataChunkBytes = std::min(remainingBudgetBytes, remainingMetadata);
+			const auto* metadataBytes = reinterpret_cast<const uint8_t*>(uploadState.upload.metadata.data());
+			if (!meshletManager->writeMetadataChunk(
+					uploadState.targetBufferIndex,
+					static_cast<uint64_t>(uploadState.metadataUploadedBytes),
+					metadataBytes + uploadState.metadataUploadedBytes,
+					metadataChunkBytes)) {
+				std::cerr << "Failed to stream meshlet metadata chunk." << std::endl;
+				recordTimingNs(
+					TimingStage::MainUploadMeshlets,
+					static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+						std::chrono::steady_clock::now() - uploadStart
+					).count())
+				);
+				return;
+			}
+			uploadState.metadataUploadedBytes += metadataChunkBytes;
+			remainingBudgetBytes -= metadataChunkBytes;
+		}
+
+		const size_t quadTotalBytes = uploadState.upload.quadData.size() * sizeof(uint32_t);
+		if (uploadState.quadUploadedBytes < quadTotalBytes && remainingBudgetBytes > 0) {
+			const size_t remainingQuad = quadTotalBytes - uploadState.quadUploadedBytes;
+			const size_t quadChunkBytes = std::min(remainingBudgetBytes, remainingQuad);
+			const auto* quadBytes = reinterpret_cast<const uint8_t*>(uploadState.upload.quadData.data());
+			if (!meshletManager->writeQuadChunk(
+					uploadState.targetBufferIndex,
+					static_cast<uint64_t>(uploadState.quadUploadedBytes),
+					quadBytes + uploadState.quadUploadedBytes,
+					quadChunkBytes)) {
+				std::cerr << "Failed to stream meshlet quad-data chunk." << std::endl;
+				recordTimingNs(
+					TimingStage::MainUploadMeshlets,
+					static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+						std::chrono::steady_clock::now() - uploadStart
+					).count())
+				);
+				return;
+			}
+			uploadState.quadUploadedBytes += quadChunkBytes;
+			remainingBudgetBytes -= quadChunkBytes;
+		}
+
+		const bool uploadComplete =
+			uploadState.metadataUploadedBytes >= metadataTotalBytes &&
+			uploadState.quadUploadedBytes >= quadTotalBytes;
+
+		if (uploadComplete) {
+			if (voxelPipeline_.has_value() &&
+				!voxelPipeline_->createBindGroupForMeshBuffers(
+					MeshletManager::meshDataBufferName(uploadState.targetBufferIndex),
+					MeshletManager::meshMetadataBufferName(uploadState.targetBufferIndex))) {
+				std::cerr << "Failed to bind staged meshlet buffers." << std::endl;
+				recordTimingNs(
+					TimingStage::MainUploadMeshlets,
+					static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+						std::chrono::steady_clock::now() - uploadStart
+					).count())
+				);
+				return;
+			}
+
+			meshletManager->activateBuffer(
+				uploadState.targetBufferIndex,
+				uploadState.upload.totalMeshletCount,
+				static_cast<uint32_t>(uploadState.upload.quadData.size())
+			);
+
+			if (voxelPipeline_.has_value()) {
+				voxelPipeline_->setDrawConfig(
+					meshletManager->getVerticesPerMeshlet(),
+					meshletManager->getMeshletCount()
+				);
+			}
+
+			uploadedMeshRevision_ = uploadState.upload.meshRevision;
+			uploadedCenterColumn_ = uploadState.upload.centerColumn;
+			hasUploadedCenterColumn_ = true;
+			lastMeshUploadTimeSeconds_ = glfwGetTime();
+			mainUploadsApplied_.fetch_add(1, std::memory_order_relaxed);
+			chunkedMeshUpload_.reset();
+			mainMeshUploadInProgress_.store(false, std::memory_order_relaxed);
+		}
+	}
+
+	recordTimingNs(
+		TimingStage::MainUploadMeshlets,
+		static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - uploadStart
+		).count())
+	);
 }
 
 void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {

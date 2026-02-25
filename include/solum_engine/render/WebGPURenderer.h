@@ -79,6 +79,13 @@ private:
         ColumnCoord centerColumn{0, 0};
     };
 
+    struct ChunkedMeshUploadState {
+        PendingMeshUpload upload;
+        uint32_t targetBufferIndex = 0;
+        size_t metadataUploadedBytes = 0;
+        size_t quadUploadedBytes = 0;
+    };
+
     std::unique_ptr<WebGPUContext> context;
     std::unique_ptr<PipelineManager> pipelineManager;
     std::unique_ptr<BufferManager> bufferManager;
@@ -111,6 +118,8 @@ private:
     glm::vec3 latestStreamingCamera_{0.0f, 0.0f, 0.0f};
     float latestStreamingSseProjectionScale_ = 390.0f;
     std::optional<PendingMeshUpload> pendingMeshUpload_;
+    std::optional<ChunkedMeshUploadState> chunkedMeshUpload_;
+    std::atomic<bool> mainMeshUploadInProgress_{false};
     uint64_t streamerLastPreparedRevision_ = 0;
     ColumnCoord streamerLastPreparedCenter_{0, 0};
     bool streamerHasLastPreparedCenter_ = false;
@@ -127,6 +136,7 @@ private:
     std::optional<std::chrono::steady_clock::time_point> lastTimingSampleTime_;
 
     bool resizePending = false;
+    static constexpr size_t kMeshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
 
     bool uploadMeshlets(PendingMeshUpload&& upload);
     void updateWorldStreaming(const FrameUniforms& frameUniforms);

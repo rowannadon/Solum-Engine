@@ -19,6 +19,12 @@ void BufferManager::writeBuffer(const std::string bufferName, uint64_t bufferOff
 }
 
 Buffer BufferManager::createBuffer(std::string bufferName, BufferDescriptor config) {
+    auto existing = buffers.find(bufferName);
+    if (existing != buffers.end() && existing->second) {
+        existing->second.release();
+        buffers.erase(existing);
+    }
+
     Buffer buffer = device.createBuffer(config);
     buffers[bufferName] = buffer;
     return buffer;

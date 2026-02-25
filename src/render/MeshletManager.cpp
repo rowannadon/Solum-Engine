@@ -2,8 +2,15 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstring>
 #include <iostream>
+
+const char* MeshletManager::meshDataBufferName(uint32_t bufferIndex) noexcept {
+    return (bufferIndex % kBufferSetCount == 0u) ? kMeshDataBufferName0 : kMeshDataBufferName1;
+}
+
+const char* MeshletManager::meshMetadataBufferName(uint32_t bufferIndex) noexcept {
+    return (bufferIndex % kBufferSetCount == 0u) ? kMeshMetadataBufferName0 : kMeshMetadataBufferName1;
+}
 
 bool MeshletManager::initialize(BufferManager* manager, uint32_t maxMeshlets, uint32_t maxQuads) {
     if (manager == nullptr || maxMeshlets == 0 || maxQuads == 0) {
@@ -16,30 +23,35 @@ bool MeshletManager::initialize(BufferManager* manager, uint32_t maxMeshlets, ui
 
     metadataCpu.clear();
     quadDataCpu.clear();
+    activeBufferIndex_ = 0;
+    activeMeshletCount_ = 0;
+    activeQuadWordCount_ = 0;
 
     metadataCpu.reserve(meshletCapacity);
     quadDataCpu.reserve(quadCapacity);
 
     BufferDescriptor metadataDesc = Default;
-    metadataDesc.label = StringView("meshlet metadata buffer");
     metadataDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(MeshletMetadataGPU);
     metadataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     metadataDesc.mappedAtCreation = false;
 
-    Buffer metadataBuffer = bufferManager->createBuffer(kMeshMetadataBufferName, metadataDesc);
-    if (!metadataBuffer) {
-        return false;
-    }
-
     BufferDescriptor meshDataDesc = Default;
-    meshDataDesc.label = StringView("meshlet data buffer");
     meshDataDesc.size = static_cast<uint64_t>(quadCapacity) * sizeof(uint32_t);
     meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     meshDataDesc.mappedAtCreation = false;
 
-    Buffer meshDataBuffer = bufferManager->createBuffer(kMeshDataBufferName, meshDataDesc);
-    if (!meshDataBuffer) {
-        return false;
+    for (uint32_t i = 0; i < kBufferSetCount; ++i) {
+        metadataDesc.label = StringView("meshlet metadata buffer");
+        Buffer metadataBuffer = bufferManager->createBuffer(meshMetadataBufferName(i), metadataDesc);
+        if (!metadataBuffer) {
+            return false;
+        }
+
+        meshDataDesc.label = StringView("meshlet data buffer");
+        Buffer meshDataBuffer = bufferManager->createBuffer(meshDataBufferName(i), meshDataDesc);
+        if (!meshDataBuffer) {
+            return false;
+        }
     }
 
     return true;
@@ -48,6 +60,8 @@ bool MeshletManager::initialize(BufferManager* manager, uint32_t maxMeshlets, ui
 void MeshletManager::clear() {
     metadataCpu.clear();
     quadDataCpu.clear();
+    activeMeshletCount_ = 0;
+    activeQuadWordCount_ = 0;
 }
 
 MeshletGroupHandle MeshletManager::registerMeshletGroup(const std::vector<Meshlet>& meshlets) {
@@ -103,34 +117,94 @@ bool MeshletManager::upload() {
         return false;
     }
 
+    const uint32_t targetBufferIndex = getInactiveBufferIndex();
+    bool wroteAny = false;
+
     if (!metadataCpu.empty()) {
-        bufferManager->writeBuffer(
-            kMeshMetadataBufferName,
-            0,
-            metadataCpu.data(),
-            metadataCpu.size() * sizeof(MeshletMetadataGPU)
-        );
+        wroteAny = true;
+        if (!writeMetadataChunk(
+                targetBufferIndex,
+                0,
+                metadataCpu.data(),
+                metadataCpu.size() * sizeof(MeshletMetadataGPU))) {
+            return false;
+        }
     }
 
     if (!quadDataCpu.empty()) {
-        const size_t dataBytes = quadDataCpu.size() * sizeof(uint32_t);
-        bufferManager->writeBuffer(
-            kMeshDataBufferName,
-            0,
-            quadDataCpu.data(),
-            dataBytes
+        wroteAny = true;
+        if (!writeQuadChunk(
+                targetBufferIndex,
+                0,
+                quadDataCpu.data(),
+                quadDataCpu.size() * sizeof(uint32_t))) {
+            return false;
+        }
+    }
+
+    if (wroteAny) {
+        activateBuffer(
+            targetBufferIndex,
+            static_cast<uint32_t>(metadataCpu.size()),
+            static_cast<uint32_t>(quadDataCpu.size())
         );
     }
 
     return true;
 }
 
+bool MeshletManager::writeMetadataChunk(uint32_t bufferIndex,
+                                        uint64_t byteOffset,
+                                        const void* data,
+                                        size_t sizeBytes) {
+    if (bufferManager == nullptr || data == nullptr || sizeBytes == 0) {
+        return false;
+    }
+
+    bufferManager->writeBuffer(meshMetadataBufferName(bufferIndex), byteOffset, data, sizeBytes);
+    return true;
+}
+
+bool MeshletManager::writeQuadChunk(uint32_t bufferIndex,
+                                    uint64_t byteOffset,
+                                    const void* data,
+                                    size_t sizeBytes) {
+    if (bufferManager == nullptr || data == nullptr || sizeBytes == 0) {
+        return false;
+    }
+
+    bufferManager->writeBuffer(meshDataBufferName(bufferIndex), byteOffset, data, sizeBytes);
+    return true;
+}
+
+void MeshletManager::activateBuffer(uint32_t bufferIndex, uint32_t meshletCount, uint32_t quadWordCount) {
+    activeBufferIndex_ = bufferIndex % kBufferSetCount;
+    activeMeshletCount_ = meshletCount;
+    activeQuadWordCount_ = quadWordCount;
+}
+
+uint32_t MeshletManager::getActiveBufferIndex() const noexcept {
+    return activeBufferIndex_;
+}
+
+uint32_t MeshletManager::getInactiveBufferIndex() const noexcept {
+    return (activeBufferIndex_ + 1u) % kBufferSetCount;
+}
+
+const char* MeshletManager::getActiveMeshDataBufferName() const noexcept {
+    return meshDataBufferName(activeBufferIndex_);
+}
+
+const char* MeshletManager::getActiveMeshMetadataBufferName() const noexcept {
+    return meshMetadataBufferName(activeBufferIndex_);
+}
+
 uint32_t MeshletManager::getMeshletCount() const {
-    return static_cast<uint32_t>(metadataCpu.size());
+    return activeMeshletCount_;
 }
 
 uint32_t MeshletManager::getQuadCount() const {
-    return static_cast<uint32_t>(quadDataCpu.size() / MESHLET_QUAD_DATA_WORD_STRIDE);
+    return activeQuadWordCount_ / MESHLET_QUAD_DATA_WORD_STRIDE;
 }
 
 uint32_t MeshletManager::getVerticesPerMeshlet() const {
