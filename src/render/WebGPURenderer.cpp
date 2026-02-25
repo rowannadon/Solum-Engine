@@ -136,7 +136,7 @@ bool WebGPURenderer::initialize() {
 	}
 
 	World::Config worldConfig;
-	worldConfig.columnLoadRadius = 128;
+	worldConfig.columnLoadRadius = 512;
 	worldConfig.jobConfig.worker_threads = 4;
 
 	MeshManager::Config meshConfig;

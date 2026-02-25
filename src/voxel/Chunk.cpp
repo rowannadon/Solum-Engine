@@ -284,7 +284,7 @@ BlockMaterial Chunk::downsampleBlockFromChildren(const MipStorage& childLevel,
         }
     }
 
-    if (solidChildCount < 4 || candidateCount == 0) {
+    if (solidChildCount < 2 || candidateCount == 0) {
         return airBlock();
     }
 
