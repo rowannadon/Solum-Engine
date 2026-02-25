@@ -144,10 +144,32 @@ std::vector<StructureManager::StructureDefinition> makeStructureDefinitions() {
     tree.generationOrigin = glm::ivec3{5, 5, 3};
     tree.selectionWeight = 1;
     tree.colorMappings = {
-        {102, 51, 26, 255, UnpackedBlockMaterial{3, 0, Direction::PlusZ, 0}.pack()},
-        {34, 139, 34, 255, UnpackedBlockMaterial{4, 0, Direction::PlusZ, 0}.pack()},
+        {102, 51, 0, 255, UnpackedBlockMaterial{3, 0, Direction::PlusZ, 0}.pack()},
+        {0, 68, 0, 255, UnpackedBlockMaterial{4, 0, Direction::PlusZ, 0}.pack()},
     };
     definitions.push_back(tree);
+
+    StructureManager::StructureDefinition tree2;
+    tree2.name = "aspen2";
+    tree2.voxFilePath = std::string(RESOURCE_DIR) + "/structures/aspen_2.vox";
+    tree2.generationOrigin = glm::ivec3{4, 5, 3};
+    tree2.selectionWeight = 1;
+    tree2.colorMappings = {
+        {102, 51, 0, 255, UnpackedBlockMaterial{3, 0, Direction::PlusZ, 0}.pack()},
+        {0, 68, 0, 255, UnpackedBlockMaterial{4, 0, Direction::PlusZ, 0}.pack()},
+    };
+    definitions.push_back(tree2);
+
+    StructureManager::StructureDefinition tree3;
+    tree3.name = "aspen3";
+    tree3.voxFilePath = std::string(RESOURCE_DIR) + "/structures/aspen_3.vox";
+    tree3.generationOrigin = glm::ivec3{4, 3, 3};
+    tree3.selectionWeight = 1;
+    tree3.colorMappings = {
+        {102, 51, 0, 255, UnpackedBlockMaterial{3, 0, Direction::PlusZ, 0}.pack()},
+        {0, 68, 0, 255, UnpackedBlockMaterial{4, 0, Direction::PlusZ, 0}.pack()},
+    };
+    definitions.push_back(tree3);
 
     return definitions;
 }

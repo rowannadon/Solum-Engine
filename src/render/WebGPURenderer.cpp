@@ -136,11 +136,11 @@ bool WebGPURenderer::initialize() {
 	}
 
 	World::Config worldConfig;
-	worldConfig.columnLoadRadius = 32;
-	worldConfig.jobConfig.worker_threads = 2;
+	worldConfig.columnLoadRadius = 1024;
+	worldConfig.jobConfig.worker_threads = 3;
 
 	MeshManager::Config meshConfig;
-	meshConfig.lodChunkRadii = {16, 48, 96, 144};
+	meshConfig.lodChunkRadii = {16, 48, 96, 255};
 	meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
 	const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
 	for (int32_t& lodRadius : meshConfig.lodChunkRadii) {
