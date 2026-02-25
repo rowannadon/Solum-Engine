@@ -67,21 +67,18 @@ public:
     World& operator=(World&&) = delete;
 
     void updatePlayerPosition(const glm::vec3& playerWorldPosition);
-    void waitForIdle();
 
     BlockMaterial getBlock(const BlockCoord& coord) const override;
     BlockMaterial getBlock(const BlockCoord& coord, uint8_t mipLevel) const;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
     bool isColumnGenerated(const ColumnCoord& coord) const;
-    bool isChunkEmpty(const ChunkCoord& coord) const;
     bool tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const;
     uint64_t generationRevision() const;
     uint64_t copyGeneratedColumnsSince(uint64_t afterRevision,
                                        std::vector<ColumnCoord>& outColumns,
                                        std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     void copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const;
-    void copyGeneratedColumnsAround(const ColumnCoord& centerColumn, int32_t radius, std::vector<ColumnCoord>& outColumns) const;
 
     WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent) const;
     WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent, uint8_t mipLevel) const;

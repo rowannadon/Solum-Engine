@@ -138,7 +138,6 @@ public:
     MeshManager& operator=(MeshManager&&) = delete;
 
     void updatePlayerPosition(const glm::vec3& playerWorldPosition, float sseProjectionScale);
-    void waitForIdle();
 
     std::vector<Meshlet> copyMeshlets() const;
     std::vector<Meshlet> copyMeshletsAround(const ColumnCoord& centerColumn, int32_t columnRadius) const;

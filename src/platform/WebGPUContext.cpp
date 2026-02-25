@@ -1,11 +1,7 @@
 #include "solum_engine/platform/WebGPUContext.h"
-#include "solum_engine/render/VertexAttributes.h"
-#include <cstddef>
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
-#include <thread>
 
 namespace {
 const char* presentModeName(PresentMode mode) {
@@ -317,20 +313,9 @@ Limits WebGPUContext::GetRequiredLimits(Adapter adapter) const {
     Limits deviceLimits;
     adapter.getLimits(&deviceLimits);
 
-    // Subtlety
-    const_cast<WebGPUContext*>(this)->uniformStride = ceilToNextMultiple(
-        (uint32_t)sizeof(FrameUniforms),
-        (uint32_t)deviceLimits.minUniformBufferOffsetAlignment
-    );
-
     // Request full adapter-supported limits to avoid accidentally constraining
     // secondary pipelines (e.g. ImGui) below what they require.
     Limits requiredLimits = deviceLimits;
 
     return requiredLimits;
-}
-
-uint32_t WebGPUContext::ceilToNextMultiple(uint32_t value, uint32_t step) const {
-    uint32_t divide_and_ceil = value / step + (value % step == 0 ? 0 : 1);
-    return step * divide_and_ceil;
 }

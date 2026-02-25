@@ -18,9 +18,6 @@ struct FirstPersonCamera {
     float mouseSensitivity = 0.1f;
     float zoom = 85.f;
 
-    glm::vec3 velocity = glm::vec3(0.0f);  // Current velocity vector
-    glm::vec3 acceleration = glm::vec3(0.0f);  // Current acceleration vector
-
     void updateCameraVectors() {
         // Calculate the new front vector for Z+ up coordinate system
         glm::vec3 newFront;

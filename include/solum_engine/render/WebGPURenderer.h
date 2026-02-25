@@ -146,7 +146,6 @@ private:
     void stopStreamingThread();
     void streamingThreadMain();
     glm::vec3 extractCameraPosition(const FrameUniforms& frameUniforms) const;
-    ColumnCoord extractCameraColumn(const FrameUniforms& frameUniforms) const;
     int32_t cameraColumnChebyshevDistance(const ColumnCoord& a, const ColumnCoord& b) const;
     void recordTimingNs(TimingStage stage, uint64_t ns) noexcept;
     TimingRawTotals captureTimingRawTotals() const;

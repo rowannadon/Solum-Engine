@@ -131,10 +131,6 @@ MeshManager::~MeshManager() {
     jobs_.stop();
 }
 
-void MeshManager::waitForIdle() {
-    jobs_.wait_for_idle();
-}
-
 void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, float sseProjectionScale) {
     if (shuttingDown_.load(std::memory_order_acquire)) {
         return;

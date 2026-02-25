@@ -64,48 +64,6 @@ void MeshletManager::clear() {
     activeQuadWordCount_ = 0;
 }
 
-MeshletGroupHandle MeshletManager::registerMeshletGroup(const std::vector<Meshlet>& meshlets) {
-    MeshletGroupHandle handle;
-    handle.firstMeshlet = static_cast<uint32_t>(metadataCpu.size());
-    handle.firstQuad = static_cast<uint32_t>(quadDataCpu.size() / MESHLET_QUAD_DATA_WORD_STRIDE);
-
-    for (const Meshlet& meshlet : meshlets) {
-        if (meshlet.quadCount == 0) {
-            continue;
-        }
-
-        const uint32_t quadWordCount = meshlet.quadCount * MESHLET_QUAD_DATA_WORD_STRIDE;
-        if (metadataCpu.size() >= meshletCapacity || quadDataCpu.size() + quadWordCount > quadCapacity) {
-            std::cerr << "MeshletManager capacity exceeded while registering meshlet group." << std::endl;
-            break;
-        }
-
-        MeshletMetadataGPU metadata{};
-        metadata.originX = meshlet.origin.x;
-        metadata.originY = meshlet.origin.y;
-        metadata.originZ = meshlet.origin.z;
-        metadata.quadCount = meshlet.quadCount;
-        metadata.faceDirection = meshlet.faceDirection;
-        metadata.dataOffset = static_cast<uint32_t>(quadDataCpu.size());
-        metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
-
-        metadataCpu.push_back(metadata);
-
-        for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
-            quadDataCpu.push_back(packMeshletQuadData(
-                meshlet.packedQuadLocalOffsets[i],
-                meshlet.quadMaterialIds[i]
-            ));
-            quadDataCpu.push_back(static_cast<uint32_t>(meshlet.quadAoData[i]));
-        }
-
-        handle.meshletCount += 1;
-        handle.quadCount += meshlet.quadCount;
-    }
-
-    return handle;
-}
-
 void MeshletManager::adoptPreparedData(std::vector<MeshletMetadataGPU>&& metadata,
                                        std::vector<uint32_t>&& quadData) {
     metadataCpu = std::move(metadata);

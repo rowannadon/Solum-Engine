@@ -6,9 +6,7 @@
 
 bool Application::Initialize() {
     if (!gpu.initialize()) return false;
-    pip = gpu.getPipelineManager();
     buf = gpu.getBufferManager();
-    tex = gpu.getTextureManager();
 
     window = gpu.getWindow();
 
@@ -301,7 +299,7 @@ void Application::onScroll(double /* xoffset */, double yoffset) {
     updateProjectionMatrix(camera.zoom);
 }
 
-void Application::onKey(int key, int scancode, int action, int mods) {
+void Application::onKey(int key, int /* scancode */, int action, int /* mods */) {
     //ImGuiIO& io = ImGui::GetIO();
     //if (io.WantCaptureKeyboard) {
     //    return; // ImGUI is handling this input

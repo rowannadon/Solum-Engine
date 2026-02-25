@@ -122,18 +122,6 @@ World::~World() {
     jobs_.stop();
 }
 
-void World::waitForIdle() {
-    for (;;) {
-        pumpColumnGenerationQueue();
-        jobs_.wait_for_idle();
-
-        std::shared_lock<std::shared_mutex> lock(worldMutex_);
-        if (pendingColumnJobs_.empty() && queuedColumnJobs_.empty()) {
-            return;
-        }
-    }
-}
-
 BlockMaterial World::getBlock(const BlockCoord& coord) const {
     return getBlock(coord, 0);
 }
@@ -156,19 +144,6 @@ bool World::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_
 bool World::isColumnGenerated(const ColumnCoord& coord) const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
     return isColumnGeneratedLocked(coord);
-}
-
-bool World::isChunkEmpty(const ChunkCoord& coord) const {
-    if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT) {
-        return true;
-    }
-
-    uint32_t emptyMask = 0u;
-    if (!tryGetColumnEmptyChunkMask(chunk_to_column(coord), emptyMask)) {
-        return false;
-    }
-
-    return (emptyMask & (1u << static_cast<uint32_t>(coord.v.z))) != 0u;
 }
 
 bool World::tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const {
@@ -224,28 +199,6 @@ void World::copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const {
     for (const ColumnCoord& coord : generatedColumns_) {
         outColumns.push_back(coord);
     }
-    std::sort(outColumns.begin(), outColumns.end());
-}
-
-void World::copyGeneratedColumnsAround(const ColumnCoord& centerColumn,
-                                       int32_t radius,
-                                       std::vector<ColumnCoord>& outColumns) const {
-    const int32_t clampedRadius = std::max(0, radius);
-    const int32_t diameter = (clampedRadius * 2) + 1;
-    const size_t maxInWindow = static_cast<size_t>(diameter) * static_cast<size_t>(diameter);
-
-    std::shared_lock<std::shared_mutex> lock(worldMutex_);
-    outColumns.clear();
-    outColumns.reserve(std::min(maxInWindow, generatedColumns_.size()));
-
-    for (const ColumnCoord& coord : generatedColumns_) {
-        const int32_t dx = std::abs(coord.v.x - centerColumn.v.x);
-        const int32_t dy = std::abs(coord.v.y - centerColumn.v.y);
-        if (dx <= clampedRadius && dy <= clampedRadius) {
-            outColumns.push_back(coord);
-        }
-    }
-
     std::sort(outColumns.begin(), outColumns.end());
 }
 

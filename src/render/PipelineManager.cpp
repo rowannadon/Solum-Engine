@@ -119,37 +119,6 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineN
     return pipeline;
 }
 
-ComputePipeline PipelineManager::createComputePipeline(const std::string pipelineName, ComputePipelineConfig& config) {
-    std::cout << "Creating shader module..." << std::endl;
-    ShaderModule shaderModule = loadShaderModule(config.shaderPath, device);
-    std::cout << "Shader module: " << shaderModule << std::endl;
-
-    ComputePipelineDescriptor pipelineDesc = Default;
-    pipelineDesc.nextInChain = nullptr;
-    pipelineDesc.label = StringView(pipelineName);
-	pipelineDesc.compute.entryPoint = StringView(config.computeShaderName);
-	pipelineDesc.compute.module = shaderModule;
-
-    // Pipeline layout
-    PipelineLayoutDescriptor layoutDesc = Default;
-    layoutDesc.bindGroupLayoutCount = (uint32_t)config.bindGroupLayouts.size();
-    layoutDesc.bindGroupLayouts = reinterpret_cast<WGPUBindGroupLayout*>(config.bindGroupLayouts.data());
-    PipelineLayout layout = device.createPipelineLayout(layoutDesc);
-
-    pipelineDesc.layout = layout;
-
-    ComputePipeline pipeline = device.createComputePipeline(pipelineDesc);
-    std::cout << "Compute pipeline: " << pipeline << std::endl;
-
-    computePipelines[pipelineName] = pipeline;
-
-    // Clean up
-    shaderModule.release();
-    layout.release();
-
-    return pipeline;
-}
-
 BindGroupLayout PipelineManager::createBindGroupLayout(const std::string bindGroupLayoutName, const std::vector<BindGroupLayoutEntry>& entries) {
     BindGroupLayoutDescriptor chunkDataBindGroupLayoutDesc = Default;
     chunkDataBindGroupLayoutDesc.entryCount = (uint32_t)entries.size();
@@ -188,14 +157,6 @@ BindGroup PipelineManager::createBindGroup(const std::string bindGroupName, cons
 RenderPipeline PipelineManager::getPipeline(std::string pipelineName) {
     auto pipeline = pipelines.find(pipelineName);
     if (pipeline != pipelines.end()) {
-        return pipeline->second;
-    }
-    return nullptr;
-}
-
-ComputePipeline PipelineManager::getComputePipeline(std::string pipelineName) {
-    auto pipeline = computePipelines.find(pipelineName);
-    if (pipeline != computePipelines.end()) {
         return pipeline->second;
     }
     return nullptr;

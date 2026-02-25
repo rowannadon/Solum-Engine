@@ -101,6 +101,3 @@ private:
     uint64_t totalSelectionWeight_ = 0;
     int32_t maxHorizontalReach_ = 0;
 };
-
-// Backward-compatible alias for the misspelled name used in early design notes.
-using StructureManger = StructureManager;

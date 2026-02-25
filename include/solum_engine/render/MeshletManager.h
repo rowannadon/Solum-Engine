@@ -8,13 +8,6 @@
 #include <string>
 #include <vector>
 
-struct MeshletGroupHandle {
-    uint32_t firstMeshlet = 0;
-    uint32_t meshletCount = 0;
-    uint32_t firstQuad = 0;
-    uint32_t quadCount = 0;
-};
-
 class MeshletManager {
 public:
     static constexpr uint32_t kBufferSetCount = 2;
@@ -30,7 +23,6 @@ public:
 
     void clear();
 
-    MeshletGroupHandle registerMeshletGroup(const std::vector<Meshlet>& meshlets);
     void adoptPreparedData(std::vector<MeshletMetadataGPU>&& metadata, std::vector<uint32_t>&& quadData);
 
     bool upload();

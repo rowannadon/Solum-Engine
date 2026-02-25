@@ -2,6 +2,7 @@
 
 #include "solum_engine/render/MaterialManager.h"
 #include "solum_engine/render/MeshletManager.h"
+#include "solum_engine/render/Uniforms.h"
 
 bool VoxelPipeline::build() {
     return createResources() && createPipeline() && createBindGroup();
@@ -29,7 +30,9 @@ bool VoxelPipeline::createResources() {
     depthTextureDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
     depthTextureDesc.viewFormatCount = 0;
     depthTextureDesc.viewFormats = nullptr;
-    Texture depthTexture = r_.tex.createTexture("depth_texture", depthTextureDesc);
+    if (!r_.tex.createTexture("depth_texture", depthTextureDesc)) {
+        return false;
+    }
 
     TextureViewDescriptor depthTextureViewDesc = Default;
     depthTextureViewDesc.aspect = TextureAspect::DepthOnly;
@@ -52,7 +55,9 @@ bool VoxelPipeline::createResources() {
     multiSampleTextureDesc.usage = TextureUsage::RenderAttachment;
     multiSampleTextureDesc.viewFormatCount = 0;
     multiSampleTextureDesc.viewFormats = nullptr;
-    Texture multiSampleTexture = r_.tex.createTexture("multisample_texture", multiSampleTextureDesc);
+    if (!r_.tex.createTexture("multisample_texture", multiSampleTextureDesc)) {
+        return false;
+    }
 
     TextureViewDescriptor multiSampleTextureViewDesc = Default;
     multiSampleTextureViewDesc.aspect = TextureAspect::All;

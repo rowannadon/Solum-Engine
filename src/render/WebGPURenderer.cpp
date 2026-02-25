@@ -137,7 +137,7 @@ bool WebGPURenderer::initialize() {
 
 	World::Config worldConfig;
 	worldConfig.columnLoadRadius = 128;
-	worldConfig.jobConfig.worker_threads = 2;
+	worldConfig.jobConfig.worker_threads = 4;
 
 	MeshManager::Config meshConfig;
 	meshConfig.lodChunkRadii = {16, 48, 96, 128};
@@ -323,16 +323,6 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 
 glm::vec3 WebGPURenderer::extractCameraPosition(const FrameUniforms& frameUniforms) const {
 	return glm::vec3(frameUniforms.inverseViewMatrix[3]);
-}
-
-ColumnCoord WebGPURenderer::extractCameraColumn(const FrameUniforms& frameUniforms) const {
-	const glm::vec3 cameraPosition = extractCameraPosition(frameUniforms);
-	const BlockCoord cameraBlock{
-		static_cast<int32_t>(std::floor(cameraPosition.x)),
-		static_cast<int32_t>(std::floor(cameraPosition.y)),
-		static_cast<int32_t>(std::floor(cameraPosition.z))
-	};
-	return chunk_to_column(block_to_chunk(cameraBlock));
 }
 
 int32_t WebGPURenderer::cameraColumnChebyshevDistance(const ColumnCoord& a, const ColumnCoord& b) const {

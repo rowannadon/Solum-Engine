@@ -74,9 +74,7 @@ private:
     GuiManager gui;
 
     WebGPURenderer gpu;
-    PipelineManager *pip;
     BufferManager *buf;
-    TextureManager *tex;
 
     FirstPersonCamera camera;
     std::mutex cameraMutex;

@@ -55,12 +55,6 @@ public:
     Chunk& getChunk(uint8_t chunk_z) { return chunks_[chunk_z]; }
     const Chunk& getChunk(uint8_t chunk_z) const { return chunks_[chunk_z]; }
     uint32_t getEmptyChunkMask() const noexcept { return emptyChunkMask_; }
-    bool isChunkEmpty(uint8_t chunk_z) const noexcept {
-        if (chunk_z >= HEIGHT) {
-            return true;
-        }
-        return (emptyChunkMask_ & (1u << chunk_z)) != 0u;
-    }
 
     void rebuildEmptyChunkMask() noexcept {
         emptyChunkMask_ = 0u;

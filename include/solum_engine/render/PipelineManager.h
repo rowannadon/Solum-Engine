@@ -36,15 +36,8 @@ struct PipelineConfig {
     bool useDepthStencil = true;  // Add this flag
 };
 
-struct ComputePipelineConfig {
-    std::string shaderPath;
-    std::string computeShaderName = "compute_main";
-    std::vector<BindGroupLayout> bindGroupLayouts;
-};
-
 class PipelineManager {
     std::unordered_map<std::string, RenderPipeline> pipelines;
-    std::unordered_map<std::string, ComputePipeline> computePipelines;
     std::unordered_map<std::string, BindGroupLayout> bindGroupLayouts;
     std::unordered_map<std::string, BindGroup> bindGroups;
     Device device;
@@ -54,12 +47,10 @@ public:
     PipelineManager(Device d, TextureFormat sf) : device(d), surfaceFormat(sf) {}
 
     RenderPipeline createRenderPipeline(const std::string pipelineName, PipelineConfig & config);
-    ComputePipeline createComputePipeline(const std::string pipelineName, ComputePipelineConfig& config);
 
     BindGroupLayout createBindGroupLayout(const std::string bindGroupLayoutName, const std::vector<BindGroupLayoutEntry>& entries);
     BindGroup createBindGroup(const std::string bindGroupName, const std::string bindGroupLayoutName, const std::vector<BindGroupEntry>& bindings);
     RenderPipeline getPipeline(std::string pipelineName);
-    ComputePipeline getComputePipeline(std::string pipelineName);
     BindGroupLayout getBindGroupLayout(std::string bindGroupLayoutName);
     BindGroup getBindGroup(std::string bindGroupName);
     void deleteBindGroup(std::string bindGroupName);

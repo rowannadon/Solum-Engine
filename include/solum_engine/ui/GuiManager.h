@@ -16,7 +16,6 @@ class GuiManager {
         // ImGUI state
     struct ImGUIState {
         bool showMainWindow = true;
-        bool showDemo = true;
         float timeMultiplier = 0.5f;  // Multiplier for time (originally hardcoded as 0.5)
         bool pauseTime = false;       // Allow pausing time
         float manualTime = 0.0f;      // Manual time override
@@ -41,10 +40,6 @@ class GuiManager {
     ImGUIState imguiState;  // Add ImGUI state
 
 public:
-    ImGUIState& getState() {
-        return imguiState;
-    }
-
     bool initImGUI(GLFWwindow* window, Device device, TextureFormat format);
     void renderImGUI(FrameUniforms& uniforms,
                      const std::vector<float>& frameTimes,
