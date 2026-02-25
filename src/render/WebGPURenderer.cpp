@@ -22,7 +22,7 @@ struct PreparedMeshUploadData {
 	uint32_t totalMeshletCount = 0;
 	uint32_t totalQuadCount = 0;
 	uint32_t requiredMeshletCapacity = 64u;
-	uint32_t requiredQuadCapacity = 64u * MESHLET_QUAD_CAPACITY;
+	uint32_t requiredQuadCapacity = 64u * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
 };
 
 PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlets) {
@@ -33,7 +33,7 @@ PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlet
 			continue;
 		}
 		++prepared.totalMeshletCount;
-		prepared.totalQuadCount += meshlet.quadCount;
+		prepared.totalQuadCount += meshlet.quadCount * MESHLET_QUAD_DATA_WORD_STRIDE;
 	}
 
 	prepared.metadata.reserve(prepared.totalMeshletCount);
@@ -54,23 +54,19 @@ PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlet
 		metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
 		prepared.metadata.push_back(metadata);
 
-		prepared.quadData.insert(
-			prepared.quadData.end(),
-			meshlet.packedQuadLocalOffsets.begin(),
-			meshlet.packedQuadLocalOffsets.begin() + static_cast<std::ptrdiff_t>(meshlet.quadCount)
-		);
-		const size_t start = prepared.quadData.size() - static_cast<size_t>(meshlet.quadCount);
 		for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
-			const size_t idx = start + static_cast<size_t>(i);
-			const uint16_t packedLocalOffset = static_cast<uint16_t>(prepared.quadData[idx]);
-			prepared.quadData[idx] = packMeshletQuadData(packedLocalOffset, meshlet.quadMaterialIds[i]);
+			prepared.quadData.push_back(packMeshletQuadData(
+				meshlet.packedQuadLocalOffsets[i],
+				meshlet.quadMaterialIds[i]
+			));
+			prepared.quadData.push_back(static_cast<uint32_t>(meshlet.quadAoData[i]));
 		}
 	}
 
 	prepared.requiredMeshletCapacity = std::max(prepared.totalMeshletCount + 16u, 64u);
 	prepared.requiredQuadCapacity = std::max(
-		prepared.totalQuadCount + 1024u,
-		prepared.requiredMeshletCapacity * MESHLET_QUAD_CAPACITY
+		prepared.totalQuadCount + (1024u * MESHLET_QUAD_DATA_WORD_STRIDE),
+		prepared.requiredMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE
 	);
 
 	return prepared;
@@ -273,8 +269,8 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 	const uint32_t requiredQuadCapacity = std::max(
 		upload.requiredQuadCapacity,
 		std::max(
-			upload.totalQuadCount + 1024u,
-			requiredMeshletCapacity * MESHLET_QUAD_CAPACITY
+			upload.totalQuadCount + (1024u * MESHLET_QUAD_DATA_WORD_STRIDE),
+			requiredMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE
 		)
 	);
 

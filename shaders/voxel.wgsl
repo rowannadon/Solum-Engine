@@ -30,6 +30,7 @@ struct VertexOutput {
     @location(1) texCoord: vec2f,
     @location(2) @interpolate(flat) materialId: u32,
     @location(3) debugColor: vec3f,
+    @location(4) ao: f32,
 };
 
 fn hash_u32(x: u32) -> u32 {
@@ -71,15 +72,36 @@ fn decode_material_id(packed: u32) -> u32 {
     return (packed >> 16u) & 0xffffu;
 }
 
-fn corner_from_triangle_vertex(triangleVertex: u32) -> u32 {
-    // Shared CCW quad index order for all faces: [0,1,2] and [2,1,3].
+fn decode_flip(packedAoData: u32) -> bool {
+    return ((packedAoData >> 8u) & 0x1u) != 0u;
+}
+
+fn decode_vertex_ao(packedAoData: u32, corner: u32) -> u32 {
+    let shift = corner * 2u;
+    return (packedAoData >> shift) & 0x3u;
+}
+
+fn corner_from_triangle_vertex(triangleVertex: u32, flipped: bool) -> u32 {
+    if (!flipped) {
+        // Unflipped: [0,1,2] and [2,1,3].
+        switch triangleVertex {
+            case 0u: { return 0u; }
+            case 1u: { return 1u; }
+            case 2u: { return 2u; }
+            case 3u: { return 2u; }
+            case 4u: { return 1u; }
+            default: { return 3u; }
+        }
+    }
+
+    // Flipped: [0,1,3] and [0,3,2].
     switch triangleVertex {
         case 0u: { return 0u; }
         case 1u: { return 1u; }
-        case 2u: { return 2u; }
-        case 3u: { return 2u; }
-        case 4u: { return 1u; }
-        default: { return 3u; }
+        case 2u: { return 3u; }
+        case 3u: { return 0u; }
+        case 4u: { return 3u; }
+        default: { return 2u; }
     }
 }
 
@@ -160,12 +182,15 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         out.texCoord = vec2f(0.0, 0.0);
         out.materialId = 0u;
         out.debugColor = vec3f(0.0, 0.0, 0.0);
+        out.ao = 1.0;
         return out;
     }
 
-    let quadData = fetch_quad_data(meshlet.dataOffset + quadIdx);
+    let quadDataOffset = meshlet.dataOffset + (quadIdx * 2u);
+    let quadData = fetch_quad_data(quadDataOffset);
+    let quadAoData = fetch_quad_data(quadDataOffset + 1u);
     let blockLocal = decode_local_offset(quadData);
-    let corner = corner_from_triangle_vertex(triangleVertex);
+    let corner = corner_from_triangle_vertex(triangleVertex, decode_flip(quadAoData));
     let cornerOffset = face_corner_offset(meshlet.faceDirection, corner);
     let voxelScale = f32(max(meshlet.voxelScale, 1u));
 
@@ -181,6 +206,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.worldPosition = worldSpacePosition.xyz;
     out.texCoord = face_uv(meshlet.faceDirection, cornerOffset);
     out.materialId = decode_material_id(quadData);
+    out.ao = f32(decode_vertex_ao(quadAoData, corner)) / 3.0;
 
     let meshletColorSeed = (bitcast<u32>(meshlet.originX) * 73856093u) ^
         (bitcast<u32>(meshlet.originY) * 19349663u) ^
@@ -197,10 +223,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let dy = dpdy(in.worldPosition);
     let normal = normalize(cross(dx, dy));
 
-    let lightDir = normalize(vec3f(0.45, 0.6, 0.35));
+    let lightDir = normalize(vec3f(1.0, 0.5, 1.0));
     let ndotl = abs(dot(normal, lightDir));
     let ambient = 0.3;
-    let shade = ambient + (1.0 - ambient) * ndotl;
+    let aoShade = mix(0.25, 1.0, clamp(in.ao, 0.0, 1.0));
+    let shade = (ambient * aoShade) + (1.0 - ambient) * ndotl;
 
     let meshletDebugEnabled = (frameUniforms.renderFlags.x & 0x1u) != 0u;
     var baseColor = vec3f(0.5, 0.5, 0.5);

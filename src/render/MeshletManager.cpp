@@ -53,14 +53,15 @@ void MeshletManager::clear() {
 MeshletGroupHandle MeshletManager::registerMeshletGroup(const std::vector<Meshlet>& meshlets) {
     MeshletGroupHandle handle;
     handle.firstMeshlet = static_cast<uint32_t>(metadataCpu.size());
-    handle.firstQuad = static_cast<uint32_t>(quadDataCpu.size());
+    handle.firstQuad = static_cast<uint32_t>(quadDataCpu.size() / MESHLET_QUAD_DATA_WORD_STRIDE);
 
     for (const Meshlet& meshlet : meshlets) {
         if (meshlet.quadCount == 0) {
             continue;
         }
 
-        if (metadataCpu.size() >= meshletCapacity || quadDataCpu.size() + meshlet.quadCount > quadCapacity) {
+        const uint32_t quadWordCount = meshlet.quadCount * MESHLET_QUAD_DATA_WORD_STRIDE;
+        if (metadataCpu.size() >= meshletCapacity || quadDataCpu.size() + quadWordCount > quadCapacity) {
             std::cerr << "MeshletManager capacity exceeded while registering meshlet group." << std::endl;
             break;
         }
@@ -76,16 +77,12 @@ MeshletGroupHandle MeshletManager::registerMeshletGroup(const std::vector<Meshle
 
         metadataCpu.push_back(metadata);
 
-        quadDataCpu.insert(
-            quadDataCpu.end(),
-            meshlet.packedQuadLocalOffsets.begin(),
-            meshlet.packedQuadLocalOffsets.begin() + static_cast<std::ptrdiff_t>(meshlet.quadCount)
-        );
-        const size_t start = quadDataCpu.size() - static_cast<size_t>(meshlet.quadCount);
         for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
-            const size_t idx = start + static_cast<size_t>(i);
-            const uint16_t packedLocalOffset = static_cast<uint16_t>(quadDataCpu[idx]);
-            quadDataCpu[idx] = packMeshletQuadData(packedLocalOffset, meshlet.quadMaterialIds[i]);
+            quadDataCpu.push_back(packMeshletQuadData(
+                meshlet.packedQuadLocalOffsets[i],
+                meshlet.quadMaterialIds[i]
+            ));
+            quadDataCpu.push_back(static_cast<uint32_t>(meshlet.quadAoData[i]));
         }
 
         handle.meshletCount += 1;
@@ -133,7 +130,7 @@ uint32_t MeshletManager::getMeshletCount() const {
 }
 
 uint32_t MeshletManager::getQuadCount() const {
-    return static_cast<uint32_t>(quadDataCpu.size());
+    return static_cast<uint32_t>(quadDataCpu.size() / MESHLET_QUAD_DATA_WORD_STRIDE);
 }
 
 uint32_t MeshletManager::getVerticesPerMeshlet() const {

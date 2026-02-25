@@ -1026,6 +1026,7 @@ std::vector<Meshlet> MeshManager::copyMeshlets() const {
         skirt.voxelScale = std::max(voxelScale, 1u);
         skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
         skirt.quadMaterialIds[0] = materialId;
+        skirt.quadAoData[0] = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
         skirt.quadCount = 1u;
         skirtMeshlets.push_back(skirt);
     };
@@ -1203,6 +1204,7 @@ std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerCo
         skirt.voxelScale = std::max(voxelScale, 1u);
         skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
         skirt.quadMaterialIds[0] = materialId;
+        skirt.quadAoData[0] = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
         skirt.quadCount = 1u;
         skirtMeshlets.push_back(skirt);
     };

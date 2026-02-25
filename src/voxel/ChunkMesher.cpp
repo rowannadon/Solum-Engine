@@ -16,6 +16,79 @@ namespace {
         return blockID.unpack().id != kAirBlockId;
     }
 
+    constexpr std::array<std::array<std::array<glm::ivec3, 3>, 4>, 6> kAoStates = {{
+        // PlusX
+        {{
+            {glm::ivec3(1, -1, 0), glm::ivec3(1, 0, -1), glm::ivec3(1, -1, -1)},
+            {glm::ivec3(1, 1, 0), glm::ivec3(1, 0, -1), glm::ivec3(1, 1, -1)},
+            {glm::ivec3(1, -1, 0), glm::ivec3(1, 0, 1), glm::ivec3(1, -1, 1)},
+            {glm::ivec3(1, 1, 0), glm::ivec3(1, 0, 1), glm::ivec3(1, 1, 1)},
+        }},
+        // MinusX
+        {{
+            {glm::ivec3(-1, -1, 0), glm::ivec3(-1, 0, -1), glm::ivec3(-1, -1, -1)},
+            {glm::ivec3(-1, -1, 0), glm::ivec3(-1, 0, 1), glm::ivec3(-1, -1, 1)},
+            {glm::ivec3(-1, 1, 0), glm::ivec3(-1, 0, -1), glm::ivec3(-1, 1, -1)},
+            {glm::ivec3(-1, 1, 0), glm::ivec3(-1, 0, 1), glm::ivec3(-1, 1, 1)},
+        }},
+        // PlusY
+        {{
+            {glm::ivec3(-1, 1, 0), glm::ivec3(0, 1, -1), glm::ivec3(-1, 1, -1)},
+            {glm::ivec3(-1, 1, 0), glm::ivec3(0, 1, 1), glm::ivec3(-1, 1, 1)},
+            {glm::ivec3(1, 1, 0), glm::ivec3(0, 1, -1), glm::ivec3(1, 1, -1)},
+            {glm::ivec3(1, 1, 0), glm::ivec3(0, 1, 1), glm::ivec3(1, 1, 1)},
+        }},
+        // MinusY
+        {{
+            {glm::ivec3(-1, -1, 0), glm::ivec3(0, -1, -1), glm::ivec3(-1, -1, -1)},
+            {glm::ivec3(1, -1, 0), glm::ivec3(0, -1, -1), glm::ivec3(1, -1, -1)},
+            {glm::ivec3(-1, -1, 0), glm::ivec3(0, -1, 1), glm::ivec3(-1, -1, 1)},
+            {glm::ivec3(1, -1, 0), glm::ivec3(0, -1, 1), glm::ivec3(1, -1, 1)},
+        }},
+        // PlusZ
+        {{
+            {glm::ivec3(-1, 0, 1), glm::ivec3(0, -1, 1), glm::ivec3(-1, -1, 1)},
+            {glm::ivec3(1, 0, 1), glm::ivec3(0, -1, 1), glm::ivec3(1, -1, 1)},
+            {glm::ivec3(-1, 0, 1), glm::ivec3(0, 1, 1), glm::ivec3(-1, 1, 1)},
+            {glm::ivec3(1, 0, 1), glm::ivec3(0, 1, 1), glm::ivec3(1, 1, 1)},
+        }},
+        // MinusZ
+        {{
+            {glm::ivec3(-1, 0, -1), glm::ivec3(0, -1, -1), glm::ivec3(-1, -1, -1)},
+            {glm::ivec3(-1, 0, -1), glm::ivec3(0, 1, -1), glm::ivec3(-1, 1, -1)},
+            {glm::ivec3(1, 0, -1), glm::ivec3(0, -1, -1), glm::ivec3(1, -1, -1)},
+            {glm::ivec3(1, 0, -1), glm::ivec3(0, 1, -1), glm::ivec3(1, 1, -1)},
+        }},
+    }};
+
+    uint8_t vertexAO(bool side1, bool side2, bool corner) {
+        if (side1 && side2) {
+            return 0u;
+        }
+        return static_cast<uint8_t>(3u - static_cast<uint8_t>(side1) - static_cast<uint8_t>(side2) - static_cast<uint8_t>(corner));
+    }
+
+    template <typename SolidSampler>
+    uint16_t computePackedQuadAoData(uint32_t dir, const glm::ivec3& blockCoord, const SolidSampler& isSolid) {
+        std::array<uint8_t, 4> ao{};
+        for (uint32_t corner = 0; corner < 4; ++corner) {
+            const glm::ivec3 side1Coord = blockCoord + kAoStates[dir][corner][0];
+            const glm::ivec3 side2Coord = blockCoord + kAoStates[dir][corner][1];
+            const glm::ivec3 cornerCoord = blockCoord + kAoStates[dir][corner][2];
+
+            ao[corner] = vertexAO(
+                isSolid(side1Coord),
+                isSolid(side2Coord),
+                isSolid(cornerCoord)
+            );
+        }
+
+        // Mesh uses diagonal 1-2 when unflipped and 0-3 when flipped.
+        const bool flipped = (static_cast<uint32_t>(ao[1]) + static_cast<uint32_t>(ao[2])) >
+                             (static_cast<uint32_t>(ao[0]) + static_cast<uint32_t>(ao[3]));
+        return packMeshletQuadAoData(ao[0], ao[1], ao[2], ao[3], flipped);
+    }
+
     std::vector<Meshlet> flattenMeshlets(const std::array<std::vector<Meshlet>, 6>& meshletsByDirection) {
         size_t totalMeshletCount = 0;
         for (const auto& dirMeshlets : meshletsByDirection) {
@@ -91,7 +164,12 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
     BlockCoord chunkOrigin = chunk_to_block_origin(coord);
     std::array<std::vector<Meshlet>, 6> meshletsByDirection;
 
-    auto appendQuad = [&](uint32_t dir, uint32_t x, uint32_t y, uint32_t z, uint16_t materialId) {
+    auto appendQuad = [&](uint32_t dir,
+                          uint32_t x,
+                          uint32_t y,
+                          uint32_t z,
+                          uint16_t materialId,
+                          uint16_t packedAoData) {
         auto& dirMeshlets = meshletsByDirection[dir];
         if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
             Meshlet meshlet{};
@@ -103,7 +181,12 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
         Meshlet& activeMeshlet = dirMeshlets.back();
         activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
         activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
+        activeMeshlet.quadAoData[activeMeshlet.quadCount] = packedAoData;
         activeMeshlet.quadCount += 1;
+    };
+
+    auto isSolidAtPadded = [&paddedBlockData, &paddedIndex](const glm::ivec3& coord) {
+        return IsSolidForCulling(paddedBlockData[paddedIndex(coord.x, coord.y, coord.z)]);
     };
 
     // Iterate through the actual chunk boundaries inside the padded array
@@ -133,12 +216,19 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
                         continue; // Face is occluded
                     }
 
+                    const uint16_t packedAoData = computePackedQuadAoData(
+                        dir,
+                        glm::ivec3{paddedX, paddedY, paddedZ},
+                        isSolidAtPadded
+                    );
+
                     appendQuad(
                         dir,
                         static_cast<uint32_t>(x),
                         static_cast<uint32_t>(y),
                         static_cast<uint32_t>(z),
-                        materialId
+                        materialId,
+                        packedAoData
                     );
                 }
             }
@@ -163,7 +253,12 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
 
     std::array<std::vector<Meshlet>, 6> meshletsByDirection;
 
-    auto appendQuad = [&](uint32_t dir, uint32_t x, uint32_t y, uint32_t z, uint16_t materialId) {
+    auto appendQuad = [&](uint32_t dir,
+                          uint32_t x,
+                          uint32_t y,
+                          uint32_t z,
+                          uint16_t materialId,
+                          uint16_t packedAoData) {
         auto& dirMeshlets = meshletsByDirection[dir];
         if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
             Meshlet meshlet{};
@@ -176,7 +271,12 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
         Meshlet& activeMeshlet = dirMeshlets.back();
         activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
         activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
+        activeMeshlet.quadAoData[activeMeshlet.quadCount] = packedAoData;
         activeMeshlet.quadCount += 1;
+    };
+
+    auto isSolidAtCoord = [&source](const glm::ivec3& coord) {
+        return IsSolidForCulling(source.getBlock(BlockCoord{coord.x, coord.y, coord.z}));
     };
 
     for (int x = 0; x < sectionExtent.x; ++x) {
@@ -207,12 +307,19 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                         continue;
                     }
 
+                    const uint16_t packedAoData = computePackedQuadAoData(
+                        dir,
+                        blockCoord.v,
+                        isSolidAtCoord
+                    );
+
                     appendQuad(
                         dir,
                         static_cast<uint32_t>(x),
                         static_cast<uint32_t>(y),
                         static_cast<uint32_t>(z),
-                        materialId
+                        materialId,
+                        packedAoData
                     );
                 }
             }

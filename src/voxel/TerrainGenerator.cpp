@@ -1,5 +1,6 @@
 #include "solum_engine/voxel/TerrainGenerator.h"
 #include "solum_engine/resources/Constants.h"
+#include "solum_engine/voxel/StructureManager.h"
 
 #include <algorithm>
 #include <array>
@@ -127,6 +128,49 @@ const HeightmapData& getHeightmapData() {
     return kHeightmapData;
 }
 
+std::vector<StructureManager::StructureDefinition> makeStructureDefinitions() {
+    std::vector<StructureManager::StructureDefinition> definitions;
+
+    // Fill this list with your structures.
+    // Each structure needs:
+    //  - path to the .vox file
+    //  - generationOrigin at the "base" voxel of that model
+    //  - colorMappings from .vox palette RGBA to engine BlockMaterial
+    //
+    // Example:
+    StructureManager::StructureDefinition tree;
+    tree.name = "aspen1";
+    tree.voxFilePath = std::string(RESOURCE_DIR) + "/structures/aspen_1.vox";
+    tree.generationOrigin = glm::ivec3{5, 5, 3};
+    tree.selectionWeight = 1;
+    tree.colorMappings = {
+        {102, 51, 26, 255, UnpackedBlockMaterial{3, 0, Direction::PlusZ, 0}.pack()},
+        {34, 139, 34, 255, UnpackedBlockMaterial{4, 0, Direction::PlusZ, 0}.pack()},
+    };
+    definitions.push_back(tree);
+
+    return definitions;
+}
+
+const StructureManager& getStructureManager() {
+    static const StructureManager kManager = [] {
+        StructureManager::SamplerConfig sampler;
+        sampler.cellSize = 14;
+        sampler.minDistance = 8;
+        sampler.cellOccupancy = 0.45f;
+        sampler.seed = 0x51F15EEDu;
+
+        StructureManager manager(sampler);
+        const std::vector<StructureManager::StructureDefinition> definitions = makeStructureDefinitions();
+        for (const StructureManager::StructureDefinition& definition : definitions) {
+            manager.addStructure(definition);
+        }
+        return manager;
+    }();
+
+    return kManager;
+}
+
 int sampleTerrainHeight(const HeightmapData& heightmap, int worldX, int worldY) {
     if (!heightmap.valid || heightmap.width <= 0 || heightmap.height <= 0 || heightmap.heights.empty()) {
         return std::clamp(kFallbackTerrainHeight, 0, cfg::COLUMN_HEIGHT_BLOCKS - 1);
@@ -184,6 +228,34 @@ inline bool localInBounds(int x, int y, int z) {
            x < cfg::CHUNK_SIZE &&
            y < cfg::CHUNK_SIZE &&
            z < cfg::COLUMN_HEIGHT_BLOCKS;
+}
+
+template <typename DensityFn, typename HeightFn>
+int findSurfaceForStructure(int worldX, int worldY, const DensityFn& densityAtWorld, const HeightFn& heightAtWorld) {
+    constexpr int kColumnHeight = cfg::COLUMN_HEIGHT_BLOCKS;
+    constexpr int kSearchPadding = static_cast<int>(kNoiseMaxStrengthBlocks) + 4;
+
+    const int estimated = std::clamp(heightAtWorld(worldX, worldY), 0, kColumnHeight - 1);
+    const int searchTop = std::clamp(estimated + kSearchPadding, 0, kColumnHeight - 2);
+    const int searchBottom = std::clamp(estimated - kSearchPadding, 0, kColumnHeight - 2);
+
+    for (int z = searchTop; z >= searchBottom; --z) {
+        const bool solid = densityAtWorld(worldX, worldY, z) >= 0.0f;
+        const bool airAbove = densityAtWorld(worldX, worldY, z + 1) < 0.0f;
+        if (solid && airAbove) {
+            return z;
+        }
+    }
+
+    for (int z = kColumnHeight - 2; z >= 0; --z) {
+        const bool solid = densityAtWorld(worldX, worldY, z) >= 0.0f;
+        const bool airAbove = densityAtWorld(worldX, worldY, z + 1) < 0.0f;
+        if (solid && airAbove) {
+            return z;
+        }
+    }
+
+    return -1;
 }
 
 } // namespace
@@ -325,5 +397,45 @@ void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
                 col.setBlock(x, y, z, (flatness >= kGrassFlatnessThreshold) ? grassPacked : stonePacked);
             }
         }
+    }
+
+    const StructureManager& structureManager = getStructureManager();
+    if (!structureManager.hasStructures()) {
+        return;
+    }
+
+    const int32_t placementPadding = std::max(0, structureManager.maxHorizontalReach());
+    const glm::ivec2 placementMin{
+        origin.x - placementPadding,
+        origin.y - placementPadding
+    };
+    const glm::ivec2 placementMax{
+        origin.x + kChunkSize + placementPadding,
+        origin.y + kChunkSize + placementPadding
+    };
+
+    std::vector<StructureManager::PlacementPoint> placementPoints;
+    structureManager.collectPointsForBounds(placementMin, placementMax, placementPoints);
+
+    const glm::ivec3 clipMin{origin.x, origin.y, 0};
+    const glm::ivec3 clipMax{origin.x + kChunkSize, origin.y + kChunkSize, kColumnHeight};
+
+    for (const StructureManager::PlacementPoint& point : placementPoints) {
+        const int32_t surfaceZ = findSurfaceForStructure(
+            point.worldXY.x,
+            point.worldXY.y,
+            densityAtWorld,
+            cachedHeightAtWorld
+        );
+        if (surfaceZ < 0 || (surfaceZ + 1) >= kColumnHeight) {
+            continue;
+        }
+
+        const glm::ivec3 anchorWorld{
+            point.worldXY.x,
+            point.worldXY.y,
+            surfaceZ + 1
+        };
+        structureManager.placeStructureForPoint(point, anchorWorld, clipMin, clipMax, col);
     }
 }
