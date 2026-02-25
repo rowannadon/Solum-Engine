@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -15,6 +16,12 @@ namespace {
 
 constexpr int kHeightmapUpscaleFactor = 2;
 constexpr int kFallbackTerrainHeight = 100;
+constexpr int kNoiseSeed = 1337;
+constexpr float kNoiseHorizontalFrequency = 0.045f;
+constexpr float kNoiseVerticalFrequency = 0.08f;
+constexpr float kNoiseMaxStrengthBlocks = 12.0f;
+constexpr float kNoiseFalloffBlocks = 20.0f;
+constexpr float kGrassFlatnessThreshold = 0.75f;
 
 struct HeightmapData {
     int width = 0;
@@ -137,6 +144,48 @@ int sampleTerrainHeight(const HeightmapData& heightmap, int worldX, int worldY) 
     return std::clamp(sampledHeight, 0, maxTerrainHeight);
 }
 
+float smoothstep01(float t) {
+    const float clamped = std::clamp(t, 0.0f, 1.0f);
+    return clamped * clamped * (3.0f - 2.0f * clamped);
+}
+
+float sampleDensity(const FastNoise::SmartNode<>& fnGenerator,
+                    int worldX,
+                    int worldY,
+                    int worldZ,
+                    int terrainHeight) {
+    const float baseDensity = static_cast<float>(terrainHeight - worldZ);
+    if (!fnGenerator) {
+        return baseDensity;
+    }
+
+    const float distanceFromSurface = std::abs(baseDensity);
+    if (distanceFromSurface >= kNoiseFalloffBlocks) {
+        // Outside the influence band: noise strength is zero, so skip sampling.
+        return baseDensity;
+    }
+
+    const float strengthT = 1.0f - (distanceFromSurface / kNoiseFalloffBlocks);
+    const float noiseStrength = kNoiseMaxStrengthBlocks * smoothstep01(strengthT);
+    if (noiseStrength <= 0.0f) {
+        return baseDensity;
+    }
+
+    const float nx = static_cast<float>(worldX) * kNoiseHorizontalFrequency;
+    const float ny = static_cast<float>(worldY) * kNoiseHorizontalFrequency;
+    const float nz = static_cast<float>(worldZ) * kNoiseVerticalFrequency;
+    const float noise = fnGenerator->GenSingle3D(nx, ny, nz, kNoiseSeed);
+
+    return baseDensity + (noise * noiseStrength);
+}
+
+inline bool localInBounds(int x, int y, int z) {
+    return x >= 0 && y >= 0 && z >= 0 &&
+           x < cfg::CHUNK_SIZE &&
+           y < cfg::CHUNK_SIZE &&
+           z < cfg::COLUMN_HEIGHT_BLOCKS;
+}
+
 } // namespace
 
 void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
@@ -150,32 +199,130 @@ void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
     const BlockMaterial grassPacked = grass.pack();
     const BlockMaterial airPacked = air.pack();
 
-    std::array<int, static_cast<size_t>(cfg::CHUNK_SIZE) * static_cast<size_t>(cfg::CHUNK_SIZE)> columnHeights{};
+    constexpr int kChunkSize = cfg::CHUNK_SIZE;
+    constexpr int kColumnHeight = cfg::COLUMN_HEIGHT_BLOCKS;
+    constexpr size_t kColumnVoxelCount = static_cast<size_t>(kChunkSize) *
+                                         static_cast<size_t>(kChunkSize) *
+                                         static_cast<size_t>(kColumnHeight);
+    constexpr int kHeightCacheExtent = kChunkSize + 2; // local x/y in [-1, chunkSize]
 
-    for (int y = 0; y < cfg::CHUNK_SIZE; ++y) {
-        for (int x = 0; x < cfg::CHUNK_SIZE; ++x) {
-            const int worldX = origin.x + x;
-            const int worldY = origin.y + y;
-            columnHeights[static_cast<size_t>(y) * static_cast<size_t>(cfg::CHUNK_SIZE) + static_cast<size_t>(x)] =
-                sampleTerrainHeight(heightmap, worldX, worldY);
+    std::array<int, static_cast<size_t>(kHeightCacheExtent) * static_cast<size_t>(kHeightCacheExtent)> heightCache{};
+    for (int localY = -1; localY <= kChunkSize; ++localY) {
+        for (int localX = -1; localX <= kChunkSize; ++localX) {
+            const int worldX = origin.x + localX;
+            const int worldY = origin.y + localY;
+            const size_t cacheIndex =
+                static_cast<size_t>(localY + 1) * static_cast<size_t>(kHeightCacheExtent) +
+                static_cast<size_t>(localX + 1);
+            heightCache[cacheIndex] = sampleTerrainHeight(heightmap, worldX, worldY);
         }
     }
 
-    for (int z = 0; z < cfg::COLUMN_HEIGHT_BLOCKS; z++)
-    {
-        for (int y = 0; y < cfg::CHUNK_SIZE; y++)
-        {
-            for (int x = 0; x < cfg::CHUNK_SIZE; x++)
-            {
-                const int terrainHeight = columnHeights[static_cast<size_t>(y) *
-                                                        static_cast<size_t>(cfg::CHUNK_SIZE) +
-                                                        static_cast<size_t>(x)];
-                if (z <= terrainHeight) {
-                    const BlockMaterial block = (z == terrainHeight) ? grassPacked : stonePacked;
-                    col.setBlock(x, y, z, block);
-                } else {
-                    col.setBlock(x, y, z, airPacked);
+    auto columnVoxelIndex = [](int x, int y, int z) -> size_t {
+        return (static_cast<size_t>(z) * static_cast<size_t>(kChunkSize) + static_cast<size_t>(y)) *
+                   static_cast<size_t>(kChunkSize) +
+               static_cast<size_t>(x);
+    };
+
+    auto cachedHeightAtWorld = [&](int worldX, int worldY) -> int {
+        const int localX = worldX - origin.x;
+        const int localY = worldY - origin.y;
+        if (localX >= -1 && localX <= kChunkSize && localY >= -1 && localY <= kChunkSize) {
+            const size_t cacheIndex =
+                static_cast<size_t>(localY + 1) * static_cast<size_t>(kHeightCacheExtent) +
+                static_cast<size_t>(localX + 1);
+            return heightCache[cacheIndex];
+        }
+        return sampleTerrainHeight(heightmap, worldX, worldY);
+    };
+
+    auto densityAtWorld = [&](int worldX, int worldY, int worldZ) -> float {
+        if (worldZ < 0 || worldZ >= kColumnHeight) {
+            return -1.0f;
+        }
+        const int terrainHeight = cachedHeightAtWorld(worldX, worldY);
+        return sampleDensity(fnGenerator, worldX, worldY, worldZ, terrainHeight);
+    };
+
+    std::vector<float> densityField(kColumnVoxelCount, 0.0f);
+    std::vector<uint8_t> solidField(kColumnVoxelCount, 0u);
+
+    for (int z = 0; z < kColumnHeight; ++z) {
+        for (int y = 0; y < kChunkSize; ++y) {
+            for (int x = 0; x < kChunkSize; ++x) {
+                const int worldX = origin.x + x;
+                const int worldY = origin.y + y;
+                const int worldZ = origin.z + z;
+                const float density = densityAtWorld(worldX, worldY, worldZ);
+                const bool solidVoxel = density >= 0.0f;
+
+                const size_t idx = columnVoxelIndex(x, y, z);
+                densityField[idx] = density;
+                solidField[idx] = solidVoxel ? 1u : 0u;
+
+                col.setBlock(x, y, z, solidVoxel ? stonePacked : airPacked);
+            }
+        }
+    }
+
+    const std::array<glm::ivec3, 6> neighborOffsets = {
+        glm::ivec3{+1, 0, 0},
+        glm::ivec3{-1, 0, 0},
+        glm::ivec3{0, +1, 0},
+        glm::ivec3{0, -1, 0},
+        glm::ivec3{0, 0, +1},
+        glm::ivec3{0, 0, -1},
+    };
+
+    auto densityAtLocalOrWorld = [&](int localX, int localY, int localZ) -> float {
+        if (localInBounds(localX, localY, localZ)) {
+            return densityField[columnVoxelIndex(localX, localY, localZ)];
+        }
+
+        const int worldX = origin.x + localX;
+        const int worldY = origin.y + localY;
+        const int worldZ = origin.z + localZ;
+        return densityAtWorld(worldX, worldY, worldZ);
+    };
+
+    for (int z = 0; z < kColumnHeight; ++z) {
+        for (int y = 0; y < kChunkSize; ++y) {
+            for (int x = 0; x < kChunkSize; ++x) {
+                const size_t idx = columnVoxelIndex(x, y, z);
+                if (solidField[idx] == 0u) {
+                    continue;
                 }
+
+                bool hasExposedFace = false;
+                for (const glm::ivec3& offset : neighborOffsets) {
+                    const int nx = x + offset.x;
+                    const int ny = y + offset.y;
+                    const int nz = z + offset.z;
+
+                    bool neighborSolid = false;
+                    if (localInBounds(nx, ny, nz)) {
+                        neighborSolid = solidField[columnVoxelIndex(nx, ny, nz)] != 0u;
+                    } else {
+                        neighborSolid = densityAtLocalOrWorld(nx, ny, nz) >= 0.0f;
+                    }
+
+                    if (!neighborSolid) {
+                        hasExposedFace = true;
+                        break;
+                    }
+                }
+
+                if (!hasExposedFace) {
+                    continue;
+                }
+
+                const float dx = densityAtLocalOrWorld(x + 1, y, z) - densityAtLocalOrWorld(x - 1, y, z);
+                const float dy = densityAtLocalOrWorld(x, y + 1, z) - densityAtLocalOrWorld(x, y - 1, z);
+                const float dz = densityAtLocalOrWorld(x, y, z + 1) - densityAtLocalOrWorld(x, y, z - 1);
+                const float gradLenSq = (dx * dx) + (dy * dy) + (dz * dz);
+                const float flatness = (gradLenSq > 1e-6f) ? (std::abs(dz) / std::sqrt(gradLenSq)) : 1.0f;
+
+                col.setBlock(x, y, z, (flatness >= kGrassFlatnessThreshold) ? grassPacked : stonePacked);
             }
         }
     }

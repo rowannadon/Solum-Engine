@@ -192,28 +192,54 @@ BlockMaterial Chunk::downsampleBlockFromChildren(const MipStorage& childLevel,
 
     std::array<BlockMaterial, 8> candidates{};
     std::array<uint8_t, 8> candidateCounts{};
+    std::array<uint8_t, 8> candidateExposedCounts{};
     size_t candidateCount = 0;
     uint8_t solidChildCount = 0;
+    bool hasExposedCandidate = false;
+
+    auto sampleChildBlock = [&childLevel](uint8_t x, uint8_t y, uint8_t z) -> BlockMaterial {
+        if (childLevel.bitsPerBlock == 0) {
+            return childLevel.palette.empty() ? airBlock() : childLevel.palette[0];
+        }
+
+        const uint32_t childIndex = getPaletteIndex(
+            childLevel,
+            getVoxelIndex(x, y, z, childLevel.size));
+        if (childIndex >= childLevel.palette.size()) {
+            return airBlock();
+        }
+        return childLevel.palette[childIndex];
+    };
+
+    auto isAirNeighbor = [&sampleChildBlock, &childLevel](int32_t x, int32_t y, int32_t z) -> bool {
+        const int32_t size = static_cast<int32_t>(childLevel.size);
+        if (x < 0 || y < 0 || z < 0 || x >= size || y >= size || z >= size) {
+            // Neighbor chunks are unavailable here, so out-of-bounds is treated as unknown-solid.
+            return false;
+        }
+
+        return !isSolid(sampleChildBlock(
+            static_cast<uint8_t>(x),
+            static_cast<uint8_t>(y),
+            static_cast<uint8_t>(z)));
+    };
+
+    static constexpr std::array<std::array<int8_t, 3>, 6> kNeighborOffsets{{
+        {{1, 0, 0}},
+        {{-1, 0, 0}},
+        {{0, 1, 0}},
+        {{0, -1, 0}},
+        {{0, 0, 1}},
+        {{0, 0, -1}},
+    }};
 
     for (uint8_t dz = 0; dz < 2; ++dz) {
         for (uint8_t dy = 0; dy < 2; ++dy) {
             for (uint8_t dx = 0; dx < 2; ++dx) {
-                const BlockMaterial child =
-                    (childLevel.bitsPerBlock == 0)
-                        ? childLevel.palette[0]
-                        : [&childLevel, cx, cy, cz, dx, dy, dz]() {
-                              const uint32_t childIndex = getPaletteIndex(
-                                  childLevel,
-                                  getVoxelIndex(
-                                      static_cast<uint8_t>(cx + dx),
-                                      static_cast<uint8_t>(cy + dy),
-                                      static_cast<uint8_t>(cz + dz),
-                                      childLevel.size));
-                              if (childIndex >= childLevel.palette.size()) {
-                                  return airBlock();
-                              }
-                              return childLevel.palette[childIndex];
-                          }();
+                const uint8_t childX = static_cast<uint8_t>(cx + dx);
+                const uint8_t childY = static_cast<uint8_t>(cy + dy);
+                const uint8_t childZ = static_cast<uint8_t>(cz + dz);
+                const BlockMaterial child = sampleChildBlock(childX, childY, childZ);
 
                 if (!isSolid(child)) {
                     continue;
@@ -221,10 +247,25 @@ BlockMaterial Chunk::downsampleBlockFromChildren(const MipStorage& childLevel,
 
                 ++solidChildCount;
 
+                bool exposedToAir = false;
+                for (const auto& offset : kNeighborOffsets) {
+                    if (isAirNeighbor(
+                            static_cast<int32_t>(childX) + offset[0],
+                            static_cast<int32_t>(childY) + offset[1],
+                            static_cast<int32_t>(childZ) + offset[2])) {
+                        exposedToAir = true;
+                        break;
+                    }
+                }
+
                 bool merged = false;
                 for (size_t i = 0; i < candidateCount; ++i) {
                     if (candidates[i] == child) {
                         ++candidateCounts[i];
+                        if (exposedToAir) {
+                            ++candidateExposedCounts[i];
+                            hasExposedCandidate = true;
+                        }
                         merged = true;
                         break;
                     }
@@ -233,6 +274,10 @@ BlockMaterial Chunk::downsampleBlockFromChildren(const MipStorage& childLevel,
                 if (!merged && candidateCount < candidates.size()) {
                     candidates[candidateCount] = child;
                     candidateCounts[candidateCount] = 1;
+                    if (exposedToAir) {
+                        candidateExposedCounts[candidateCount] = 1;
+                        hasExposedCandidate = true;
+                    }
                     ++candidateCount;
                 }
             }
@@ -245,6 +290,15 @@ BlockMaterial Chunk::downsampleBlockFromChildren(const MipStorage& childLevel,
 
     size_t bestIndex = 0;
     for (size_t i = 1; i < candidateCount; ++i) {
+        if (hasExposedCandidate) {
+            if (candidateExposedCounts[i] > candidateExposedCounts[bestIndex] ||
+                (candidateExposedCounts[i] == candidateExposedCounts[bestIndex] &&
+                 candidateCounts[i] > candidateCounts[bestIndex])) {
+                bestIndex = i;
+            }
+            continue;
+        }
+
         if (candidateCounts[i] > candidateCounts[bestIndex]) {
             bestIndex = i;
         }
