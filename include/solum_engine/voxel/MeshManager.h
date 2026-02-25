@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -145,6 +146,11 @@ public:
     bool hasPendingJobs() const;
 
 private:
+    struct CompletedTileCellResult {
+        TileLodCellCoord coord;
+        std::vector<Meshlet> meshlets;
+    };
+
     struct MeshTileLodState {
         std::unordered_map<uint32_t, std::vector<Meshlet>> cellMeshes;
         int32_t expectedCellCount = 0;
@@ -172,6 +178,7 @@ private:
                                     jobsystem::Priority priority,
                                     bool forceRemesh,
                                     int32_t activeWindowExtraChunks);
+    void applyCompletedTileResultsBudgeted();
 
     void onTileLodCellMeshed(const TileLodCellCoord& coord, std::vector<Meshlet>&& meshlets);
 
@@ -225,6 +232,9 @@ private:
     std::unordered_set<ColumnCoord> knownGeneratedColumns_;
     std::unordered_set<TileLodCellCoord> pendingTileJobs_;
     std::unordered_set<TileLodCellCoord> deferredRemeshTileLods_;
+    std::unordered_map<MeshTileCoord, std::vector<CompletedTileCellResult>> completedTileResultsByTile_;
+    std::deque<MeshTileCoord> completedTileResultOrder_;
+    std::unordered_set<MeshTileCoord> completedTileResultQueued_;
     std::unordered_map<MeshTileCoord, MeshTileState> meshTiles_;
 
     std::atomic<uint64_t> meshRevision_{0};

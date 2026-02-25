@@ -587,6 +587,14 @@ void WebGPURenderer::streamingThreadMain() {
 			continue;
 		}
 
+		{
+			std::lock_guard<std::mutex> lock(streamingMutex_);
+			if (pendingMeshUpload_.has_value()) {
+				streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
+				continue;
+			}
+		}
+
 		const auto worldUpdateStart = std::chrono::steady_clock::now();
 		world_->updatePlayerPosition(cameraPosition);
 		recordTimingNs(
@@ -626,6 +634,7 @@ void WebGPURenderer::streamingThreadMain() {
 
 		const bool pendingJobs = world_->hasPendingJobs() || voxelMeshManager_->hasPendingJobs();
 		const double minSnapshotIntervalSeconds =
+			pendingJobs ? 0.0 :
 			(uploadColumnRadius_ >= 8) ? 0.35 :
 			(uploadColumnRadius_ >= 4) ? 0.25 :
 			0.15;

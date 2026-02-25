@@ -210,6 +210,9 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
     if (worldRevision != processedRevision) {
         scheduleRemeshForNewColumns(centerColumn);
     }
+
+    // Limit integration of completed meshing to one tile per update call.
+    applyCompletedTileResultsBudgeted();
 }
 
 void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
@@ -855,13 +858,72 @@ void MeshManager::scheduleTileLodCellMeshing(const TileLodCellCoord& coord,
                     deferredRemeshTileLods_.erase(coord);
                     return;
                 }
-                onTileLodCellMeshed(meshResult.coord, std::move(meshResult.meshlets));
+
+                std::unique_lock<std::shared_mutex> lock(meshMutex_);
+                pendingTileJobs_.erase(coord);
+                if (shuttingDown_.load(std::memory_order_acquire)) {
+                    deferredRemeshTileLods_.erase(coord);
+                    return;
+                }
+
+                const MeshTileCoord tileCoord = meshResult.coord.tileLod.tile;
+                auto& completedForTile = completedTileResultsByTile_[tileCoord];
+                completedForTile.push_back(CompletedTileCellResult{
+                    meshResult.coord,
+                    std::move(meshResult.meshlets)
+                });
+                if (completedTileResultQueued_.insert(tileCoord).second) {
+                    completedTileResultOrder_.push_back(tileCoord);
+                }
             }
         );
     } catch (const std::exception&) {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
         pendingTileJobs_.erase(coord);
         deferredRemeshTileLods_.erase(coord);
+    }
+}
+
+void MeshManager::applyCompletedTileResultsBudgeted() {
+    std::vector<CompletedTileCellResult> completedForTile;
+    {
+        std::unique_lock<std::shared_mutex> lock(meshMutex_);
+        while (!completedTileResultOrder_.empty()) {
+            const MeshTileCoord tileCoord = completedTileResultOrder_.front();
+            completedTileResultOrder_.pop_front();
+            completedTileResultQueued_.erase(tileCoord);
+
+            auto completedIt = completedTileResultsByTile_.find(tileCoord);
+            if (completedIt == completedTileResultsByTile_.end() || completedIt->second.empty()) {
+                continue;
+            }
+
+            completedForTile = std::move(completedIt->second);
+            completedTileResultsByTile_.erase(completedIt);
+            break;
+        }
+    }
+
+    if (completedForTile.empty()) {
+        return;
+    }
+
+    std::sort(
+        completedForTile.begin(),
+        completedForTile.end(),
+        [](const CompletedTileCellResult& a, const CompletedTileCellResult& b) {
+            if (a.coord.tileLod.lodLevel != b.coord.tileLod.lodLevel) {
+                return a.coord.tileLod.lodLevel < b.coord.tileLod.lodLevel;
+            }
+            if (a.coord.cellY != b.coord.cellY) {
+                return a.coord.cellY < b.coord.cellY;
+            }
+            return a.coord.cellX < b.coord.cellX;
+        }
+    );
+
+    for (CompletedTileCellResult& completed : completedForTile) {
+        onTileLodCellMeshed(completed.coord, std::move(completed.meshlets));
     }
 }
 
@@ -1244,7 +1306,10 @@ uint64_t MeshManager::meshRevision() const noexcept {
 
 bool MeshManager::hasPendingJobs() const {
     std::shared_lock<std::shared_mutex> lock(meshMutex_);
-    return !pendingTileJobs_.empty() || !deferredRemeshTileLods_.empty();
+    return !pendingTileJobs_.empty() ||
+           !deferredRemeshTileLods_.empty() ||
+           !completedTileResultsByTile_.empty() ||
+           !completedTileResultOrder_.empty();
 }
 
 int8_t MeshManager::desiredLodForTile(const MeshTileCoord& tileCoord,
