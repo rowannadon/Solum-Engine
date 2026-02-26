@@ -142,16 +142,39 @@ private:
 
     bool resizePending = false;
     static constexpr size_t kMeshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
+    static constexpr uint32_t kOcclusionDepthDownsample = 2u;
+    static constexpr const char* kOcclusionDepthTextureName = "meshlet_occlusion_depth_texture";
+    static constexpr const char* kOcclusionDepthViewName = "meshlet_occlusion_depth_view";
+    static constexpr const char* kOcclusionHiZTextureName = "meshlet_occlusion_hiz_texture";
+    static constexpr const char* kOcclusionHiZViewName = "meshlet_occlusion_hiz_view";
     static constexpr const char* kMeshletCullParamsBufferName = "meshlet_cull_params_buffer";
     static constexpr const char* kMeshletCullIndirectArgsBufferName = "meshlet_cull_indirect_args_buffer";
     static constexpr const char* kMeshletCullIndirectResetBufferName = "meshlet_cull_indirect_reset_buffer";
     static constexpr uint32_t kMeshletCullWorkgroupSize = 128u;
+    static constexpr uint32_t kOcclusionHiZWorkgroupSize = 8u;
+
+    BindGroupLayout meshletDepthPrepassBindGroupLayout_ = nullptr;
+    BindGroup meshletDepthPrepassBindGroup_ = nullptr;
+    RenderPipeline meshletDepthPrepassPipeline_ = nullptr;
+    BindGroupLayout meshletHiZSeedBindGroupLayout_ = nullptr;
+    BindGroupLayout meshletHiZDownsampleBindGroupLayout_ = nullptr;
+    ComputePipeline meshletHiZSeedPipeline_ = nullptr;
+    ComputePipeline meshletHiZDownsamplePipeline_ = nullptr;
+    uint32_t occlusionHiZMipCount_ = 1u;
+    uint32_t occlusionDepthWidth_ = 1u;
+    uint32_t occlusionDepthHeight_ = 1u;
 
     BindGroupLayout meshletCullBindGroupLayout_ = nullptr;
     BindGroup meshletCullBindGroup_ = nullptr;
     ComputePipeline meshletCullPipeline_ = nullptr;
 
     bool uploadMeshlets(PendingMeshUpload&& upload);
+    bool initializeMeshletOcclusionResources();
+    bool createOcclusionDepthResources();
+    void removeOcclusionDepthResources();
+    bool refreshMeshletOcclusionBindGroup();
+    void encodeMeshletOcclusionDepthPass(CommandEncoder encoder);
+    void encodeMeshletOcclusionHierarchyPass(CommandEncoder encoder);
     bool initializeMeshletCullingResources();
     bool refreshMeshletCullingBindGroup();
     void updateMeshletCullParams(uint32_t meshletCount);

@@ -88,6 +88,18 @@ std::string loadTextFile(const char* path) {
 	return ss.str();
 }
 
+uint32_t computeMipCount(uint32_t width, uint32_t height) {
+	uint32_t mipCount = 1u;
+	uint32_t w = std::max(width, 1u);
+	uint32_t h = std::max(height, 1u);
+	while (w > 1u || h > 1u) {
+		w = std::max(1u, w / 2u);
+		h = std::max(1u, h / 2u);
+		++mipCount;
+	}
+	return mipCount;
+}
+
 PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlets) {
 	PreparedMeshUploadData prepared;
 
@@ -253,6 +265,10 @@ bool WebGPURenderer::initialize() {
 		std::cerr << "Failed to create voxel pipeline and resources." << std::endl;
 		return false;
 	}
+	if (!initializeMeshletOcclusionResources()) {
+		std::cerr << "Failed to initialize meshlet occlusion resources." << std::endl;
+		return false;
+	}
 	if (!initializeMeshletCullingResources()) {
 		std::cerr << "Failed to initialize meshlet culling resources." << std::endl;
 		return false;
@@ -294,6 +310,21 @@ void WebGPURenderer::createRenderingTextures() {
 	if (!bindOk) {
 		std::cerr << "Failed to recreate voxel bind group." << std::endl;
 	}
+	if (!createOcclusionDepthResources()) {
+		std::cerr << "Failed to recreate meshlet occlusion depth resources." << std::endl;
+	}
+	if (meshletDepthPrepassPipeline_ && !refreshMeshletOcclusionBindGroup()) {
+		std::cerr << "Failed to refresh meshlet depth prepass bind group." << std::endl;
+	}
+	if (meshletCullPipeline_) {
+		const uint32_t meshletCount = meshletManager
+			? std::max(meshletManager->getMeshletCount(), static_cast<uint32_t>(activeMeshletBounds_.size()))
+			: static_cast<uint32_t>(activeMeshletBounds_.size());
+		updateMeshletCullParams(meshletCount);
+	}
+	if (meshletCullPipeline_ && !refreshMeshletCullingBindGroup()) {
+		std::cerr << "Failed to refresh meshlet culling bind group." << std::endl;
+	}
 }
 
 void WebGPURenderer::removeRenderingTextures() {
@@ -301,6 +332,7 @@ void WebGPURenderer::removeRenderingTextures() {
 		return;
 	}
 	voxelPipeline_->removeResources();
+	removeOcclusionDepthResources();
 }
 
 bool WebGPURenderer::resizeSurfaceAndAttachments() {
@@ -339,6 +371,488 @@ TextureManager* WebGPURenderer::getTextureManager() {
 
 BufferManager* WebGPURenderer::getBufferManager() {
 	return bufferManager.get();
+}
+
+bool WebGPURenderer::createOcclusionDepthResources() {
+	if (!textureManager || !context) {
+		return false;
+	}
+
+	textureManager->removeTextureView(kOcclusionHiZViewName);
+	textureManager->removeTexture(kOcclusionHiZTextureName);
+	textureManager->removeTextureView(kOcclusionDepthViewName);
+	textureManager->removeTexture(kOcclusionDepthTextureName);
+
+	const uint32_t width = std::max(1, context->width / static_cast<int>(kOcclusionDepthDownsample));
+	const uint32_t height = std::max(1, context->height / static_cast<int>(kOcclusionDepthDownsample));
+	occlusionDepthWidth_ = width;
+	occlusionDepthHeight_ = height;
+	occlusionHiZMipCount_ = computeMipCount(width, height);
+
+	TextureDescriptor depthDesc = Default;
+	depthDesc.label = StringView("meshlet occlusion depth texture");
+	depthDesc.dimension = TextureDimension::_2D;
+	depthDesc.format = TextureFormat::Depth32Float;
+	depthDesc.mipLevelCount = 1;
+	depthDesc.sampleCount = 1;
+	depthDesc.size = {width, height, 1};
+	depthDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
+	depthDesc.viewFormatCount = 0;
+	depthDesc.viewFormats = nullptr;
+	if (!textureManager->createTexture(kOcclusionDepthTextureName, depthDesc)) {
+		return false;
+	}
+
+	TextureViewDescriptor depthViewDesc = Default;
+	depthViewDesc.aspect = TextureAspect::DepthOnly;
+	depthViewDesc.baseArrayLayer = 0;
+	depthViewDesc.arrayLayerCount = 1;
+	depthViewDesc.baseMipLevel = 0;
+	depthViewDesc.mipLevelCount = 1;
+	depthViewDesc.dimension = TextureViewDimension::_2D;
+	depthViewDesc.format = TextureFormat::Depth32Float;
+	if (!textureManager->createTextureView(
+		kOcclusionDepthTextureName,
+		kOcclusionDepthViewName,
+		depthViewDesc
+	)) {
+		return false;
+	}
+
+	TextureDescriptor hizDesc = Default;
+	hizDesc.label = StringView("meshlet occlusion hiz texture");
+	hizDesc.dimension = TextureDimension::_2D;
+	hizDesc.format = TextureFormat::R32Float;
+	hizDesc.mipLevelCount = occlusionHiZMipCount_;
+	hizDesc.sampleCount = 1;
+	hizDesc.size = {width, height, 1};
+	hizDesc.usage = TextureUsage::TextureBinding | TextureUsage::StorageBinding;
+	hizDesc.viewFormatCount = 0;
+	hizDesc.viewFormats = nullptr;
+	if (!textureManager->createTexture(kOcclusionHiZTextureName, hizDesc)) {
+		return false;
+	}
+
+	TextureViewDescriptor hizViewDesc = Default;
+	hizViewDesc.aspect = TextureAspect::All;
+	hizViewDesc.baseArrayLayer = 0;
+	hizViewDesc.arrayLayerCount = 1;
+	hizViewDesc.baseMipLevel = 0;
+	hizViewDesc.mipLevelCount = occlusionHiZMipCount_;
+	hizViewDesc.dimension = TextureViewDimension::_2D;
+	hizViewDesc.format = TextureFormat::R32Float;
+	return textureManager->createTextureView(
+		kOcclusionHiZTextureName,
+		kOcclusionHiZViewName,
+		hizViewDesc
+	) != nullptr;
+}
+
+void WebGPURenderer::removeOcclusionDepthResources() {
+	if (!textureManager) {
+		return;
+	}
+	textureManager->removeTextureView(kOcclusionHiZViewName);
+	textureManager->removeTexture(kOcclusionHiZTextureName);
+	textureManager->removeTextureView(kOcclusionDepthViewName);
+	textureManager->removeTexture(kOcclusionDepthTextureName);
+	occlusionHiZMipCount_ = 1u;
+	occlusionDepthWidth_ = 1u;
+	occlusionDepthHeight_ = 1u;
+}
+
+bool WebGPURenderer::initializeMeshletOcclusionResources() {
+	if (!context || !bufferManager) {
+		return false;
+	}
+	if (!createOcclusionDepthResources()) {
+		return false;
+	}
+
+	std::vector<BindGroupLayoutEntry> prepassLayoutEntries(3, Default);
+	prepassLayoutEntries[0].binding = 0;
+	prepassLayoutEntries[0].visibility = ShaderStage::Vertex;
+	prepassLayoutEntries[0].buffer.type = BufferBindingType::Uniform;
+	prepassLayoutEntries[0].buffer.minBindingSize = sizeof(FrameUniforms);
+
+	prepassLayoutEntries[1].binding = 1;
+	prepassLayoutEntries[1].visibility = ShaderStage::Vertex;
+	prepassLayoutEntries[1].buffer.type = BufferBindingType::ReadOnlyStorage;
+
+	prepassLayoutEntries[2].binding = 2;
+	prepassLayoutEntries[2].visibility = ShaderStage::Vertex;
+	prepassLayoutEntries[2].buffer.type = BufferBindingType::ReadOnlyStorage;
+
+	BindGroupLayoutDescriptor prepassLayoutDesc = Default;
+	prepassLayoutDesc.label = StringView("meshlet depth prepass bgl");
+	prepassLayoutDesc.entryCount = static_cast<uint32_t>(prepassLayoutEntries.size());
+	prepassLayoutDesc.entries = prepassLayoutEntries.data();
+	meshletDepthPrepassBindGroupLayout_ = context->getDevice().createBindGroupLayout(prepassLayoutDesc);
+	if (!meshletDepthPrepassBindGroupLayout_) {
+		return false;
+	}
+
+	const std::string prepassShaderSource = loadTextFile(SHADER_DIR "/meshlet_depth_prepass.wgsl");
+	if (prepassShaderSource.empty()) {
+		return false;
+	}
+
+	ShaderModuleWGSLDescriptor shaderCodeDesc{};
+	shaderCodeDesc.chain.sType = SType::ShaderSourceWGSL;
+	shaderCodeDesc.code = StringView(prepassShaderSource);
+
+	ShaderModuleDescriptor shaderDesc = Default;
+#ifdef WEBGPU_BACKEND_WGPU
+	shaderDesc.hintCount = 0;
+	shaderDesc.hints = nullptr;
+#endif
+	shaderDesc.nextInChain = &shaderCodeDesc.chain;
+	ShaderModule prepassShader = context->getDevice().createShaderModule(shaderDesc);
+	if (!prepassShader) {
+		return false;
+	}
+
+	PipelineLayoutDescriptor pipelineLayoutDesc = Default;
+	pipelineLayoutDesc.bindGroupLayoutCount = 1;
+	pipelineLayoutDesc.bindGroupLayouts = reinterpret_cast<WGPUBindGroupLayout*>(&meshletDepthPrepassBindGroupLayout_);
+	PipelineLayout pipelineLayout = context->getDevice().createPipelineLayout(pipelineLayoutDesc);
+	if (!pipelineLayout) {
+		prepassShader.release();
+		return false;
+	}
+
+	RenderPipelineDescriptor pipelineDesc = Default;
+	pipelineDesc.label = StringView("meshlet depth prepass pipeline");
+	pipelineDesc.layout = pipelineLayout;
+	pipelineDesc.vertex.module = prepassShader;
+	pipelineDesc.vertex.entryPoint = StringView("vs_main");
+	pipelineDesc.vertex.constantCount = 0;
+	pipelineDesc.vertex.constants = nullptr;
+	pipelineDesc.vertex.bufferCount = 0;
+	pipelineDesc.vertex.buffers = nullptr;
+
+	pipelineDesc.primitive.topology = PrimitiveTopology::TriangleList;
+	pipelineDesc.primitive.stripIndexFormat = IndexFormat::Undefined;
+	pipelineDesc.primitive.frontFace = FrontFace::CCW;
+	pipelineDesc.primitive.cullMode = CullMode::Back;
+
+	pipelineDesc.multisample.count = 1;
+	pipelineDesc.multisample.mask = ~0u;
+	pipelineDesc.multisample.alphaToCoverageEnabled = false;
+
+	DepthStencilState depthState = Default;
+	depthState.depthWriteEnabled = OptionalBool::True;
+	depthState.depthCompare = CompareFunction::Less;
+	depthState.format = TextureFormat::Depth32Float;
+	depthState.stencilReadMask = 0;
+	depthState.stencilWriteMask = 0;
+	pipelineDesc.depthStencil = &depthState;
+	pipelineDesc.fragment = nullptr;
+
+	meshletDepthPrepassPipeline_ = context->getDevice().createRenderPipeline(pipelineDesc);
+	pipelineLayout.release();
+	prepassShader.release();
+	if (!meshletDepthPrepassPipeline_) {
+		return false;
+	}
+
+	std::vector<BindGroupLayoutEntry> hizSeedLayoutEntries(2, Default);
+	hizSeedLayoutEntries[0].binding = 0;
+	hizSeedLayoutEntries[0].visibility = ShaderStage::Compute;
+	hizSeedLayoutEntries[0].texture.sampleType = TextureSampleType::Depth;
+	hizSeedLayoutEntries[0].texture.viewDimension = TextureViewDimension::_2D;
+	hizSeedLayoutEntries[1].binding = 1;
+	hizSeedLayoutEntries[1].visibility = ShaderStage::Compute;
+	hizSeedLayoutEntries[1].storageTexture.access = StorageTextureAccess::WriteOnly;
+	hizSeedLayoutEntries[1].storageTexture.format = TextureFormat::R32Float;
+	hizSeedLayoutEntries[1].storageTexture.viewDimension = TextureViewDimension::_2D;
+
+	BindGroupLayoutDescriptor hizSeedLayoutDesc = Default;
+	hizSeedLayoutDesc.label = StringView("meshlet hiz seed bgl");
+	hizSeedLayoutDesc.entryCount = static_cast<uint32_t>(hizSeedLayoutEntries.size());
+	hizSeedLayoutDesc.entries = hizSeedLayoutEntries.data();
+	meshletHiZSeedBindGroupLayout_ = context->getDevice().createBindGroupLayout(hizSeedLayoutDesc);
+	if (!meshletHiZSeedBindGroupLayout_) {
+		return false;
+	}
+
+	std::vector<BindGroupLayoutEntry> hizDownsampleLayoutEntries(2, Default);
+	hizDownsampleLayoutEntries[0].binding = 0;
+	hizDownsampleLayoutEntries[0].visibility = ShaderStage::Compute;
+	hizDownsampleLayoutEntries[0].texture.sampleType = TextureSampleType::UnfilterableFloat;
+	hizDownsampleLayoutEntries[0].texture.viewDimension = TextureViewDimension::_2D;
+	hizDownsampleLayoutEntries[1].binding = 1;
+	hizDownsampleLayoutEntries[1].visibility = ShaderStage::Compute;
+	hizDownsampleLayoutEntries[1].storageTexture.access = StorageTextureAccess::WriteOnly;
+	hizDownsampleLayoutEntries[1].storageTexture.format = TextureFormat::R32Float;
+	hizDownsampleLayoutEntries[1].storageTexture.viewDimension = TextureViewDimension::_2D;
+
+	BindGroupLayoutDescriptor hizDownsampleLayoutDesc = Default;
+	hizDownsampleLayoutDesc.label = StringView("meshlet hiz downsample bgl");
+	hizDownsampleLayoutDesc.entryCount = static_cast<uint32_t>(hizDownsampleLayoutEntries.size());
+	hizDownsampleLayoutDesc.entries = hizDownsampleLayoutEntries.data();
+	meshletHiZDownsampleBindGroupLayout_ = context->getDevice().createBindGroupLayout(hizDownsampleLayoutDesc);
+	if (!meshletHiZDownsampleBindGroupLayout_) {
+		return false;
+	}
+
+	const std::string hizSeedSource = loadTextFile(SHADER_DIR "/meshlet_hiz_seed.wgsl");
+	const std::string hizDownsampleSource = loadTextFile(SHADER_DIR "/meshlet_hiz_downsample.wgsl");
+	if (hizSeedSource.empty() || hizDownsampleSource.empty()) {
+		return false;
+	}
+
+	auto createComputePipelineFromSource = [this](const std::string& source,
+	                                             BindGroupLayout layoutBgl,
+	                                             const char* label) -> ComputePipeline {
+		ShaderModuleWGSLDescriptor codeDesc{};
+		codeDesc.chain.sType = SType::ShaderSourceWGSL;
+		codeDesc.code = StringView(source);
+
+		ShaderModuleDescriptor moduleDesc = Default;
+#ifdef WEBGPU_BACKEND_WGPU
+		moduleDesc.hintCount = 0;
+		moduleDesc.hints = nullptr;
+#endif
+		moduleDesc.nextInChain = &codeDesc.chain;
+		ShaderModule module = context->getDevice().createShaderModule(moduleDesc);
+		if (!module) {
+			return nullptr;
+		}
+
+		PipelineLayoutDescriptor layoutDesc = Default;
+		layoutDesc.bindGroupLayoutCount = 1;
+		layoutDesc.bindGroupLayouts = reinterpret_cast<WGPUBindGroupLayout*>(&layoutBgl);
+		PipelineLayout pipelineLayout = context->getDevice().createPipelineLayout(layoutDesc);
+		if (!pipelineLayout) {
+			module.release();
+			return nullptr;
+		}
+
+		ComputePipelineDescriptor computeDesc = Default;
+		computeDesc.label = StringView(label);
+		computeDesc.layout = pipelineLayout;
+		computeDesc.compute.module = module;
+		computeDesc.compute.entryPoint = StringView("cs_main");
+		ComputePipeline pipeline = context->getDevice().createComputePipeline(computeDesc);
+
+		pipelineLayout.release();
+		module.release();
+		return pipeline;
+	};
+
+	meshletHiZSeedPipeline_ = createComputePipelineFromSource(
+		hizSeedSource,
+		meshletHiZSeedBindGroupLayout_,
+		"meshlet hiz seed pipeline"
+	);
+	if (!meshletHiZSeedPipeline_) {
+		return false;
+	}
+
+	meshletHiZDownsamplePipeline_ = createComputePipelineFromSource(
+		hizDownsampleSource,
+		meshletHiZDownsampleBindGroupLayout_,
+		"meshlet hiz downsample pipeline"
+	);
+	if (!meshletHiZDownsamplePipeline_) {
+		return false;
+	}
+
+	return refreshMeshletOcclusionBindGroup();
+}
+
+bool WebGPURenderer::refreshMeshletOcclusionBindGroup() {
+	if (!bufferManager || !meshletManager || !meshletDepthPrepassBindGroupLayout_) {
+		return false;
+	}
+
+	Buffer uniformBuffer = bufferManager->getBuffer("uniform_buffer");
+	Buffer meshDataBuffer = bufferManager->getBuffer(meshletManager->getActiveMeshDataBufferName());
+	Buffer metadataBuffer = bufferManager->getBuffer(meshletManager->getActiveMeshMetadataBufferName());
+	if (!uniformBuffer || !meshDataBuffer || !metadataBuffer) {
+		return false;
+	}
+
+	std::vector<BindGroupEntry> entries(3, Default);
+	entries[0].binding = 0;
+	entries[0].buffer = uniformBuffer;
+	entries[0].offset = 0;
+	entries[0].size = sizeof(FrameUniforms);
+
+	entries[1].binding = 1;
+	entries[1].buffer = meshDataBuffer;
+	entries[1].offset = 0;
+	entries[1].size = meshDataBuffer.getSize();
+
+	entries[2].binding = 2;
+	entries[2].buffer = metadataBuffer;
+	entries[2].offset = 0;
+	entries[2].size = metadataBuffer.getSize();
+
+	if (meshletDepthPrepassBindGroup_) {
+		meshletDepthPrepassBindGroup_.release();
+		meshletDepthPrepassBindGroup_ = nullptr;
+	}
+
+	BindGroupDescriptor bgDesc = Default;
+	bgDesc.label = StringView("meshlet depth prepass bg");
+	bgDesc.layout = meshletDepthPrepassBindGroupLayout_;
+	bgDesc.entryCount = static_cast<uint32_t>(entries.size());
+	bgDesc.entries = entries.data();
+	meshletDepthPrepassBindGroup_ = context->getDevice().createBindGroup(bgDesc);
+	return meshletDepthPrepassBindGroup_ != nullptr;
+}
+
+void WebGPURenderer::encodeMeshletOcclusionDepthPass(CommandEncoder encoder) {
+	if (!meshletDepthPrepassPipeline_ || !meshletDepthPrepassBindGroup_ || !meshletManager || !textureManager) {
+		return;
+	}
+
+	uint32_t meshletCount = meshletManager->getMeshletCount();
+	if (meshletCount == 0u && chunkedMeshUpload_.has_value() && !activeMeshletBounds_.empty()) {
+		meshletCount = static_cast<uint32_t>(activeMeshletBounds_.size());
+	}
+	if (meshletCount == 0u) {
+		return;
+	}
+
+	TextureView occlusionDepthView = textureManager->getTextureView(kOcclusionDepthViewName);
+	if (!occlusionDepthView) {
+		return;
+	}
+
+	RenderPassDepthStencilAttachment depthAttachment = Default;
+	depthAttachment.view = occlusionDepthView;
+	depthAttachment.depthClearValue = 1.0f;
+	depthAttachment.depthLoadOp = LoadOp::Clear;
+	depthAttachment.depthStoreOp = StoreOp::Store;
+	depthAttachment.depthReadOnly = false;
+	depthAttachment.stencilClearValue = 0;
+	depthAttachment.stencilLoadOp = LoadOp::Undefined;
+	depthAttachment.stencilStoreOp = StoreOp::Undefined;
+	depthAttachment.stencilReadOnly = true;
+
+	RenderPassDescriptor passDesc = Default;
+	passDesc.colorAttachmentCount = 0;
+	passDesc.colorAttachments = nullptr;
+	passDesc.depthStencilAttachment = &depthAttachment;
+	passDesc.timestampWrites = nullptr;
+
+	RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
+	pass.setPipeline(meshletDepthPrepassPipeline_);
+	pass.setBindGroup(0, meshletDepthPrepassBindGroup_, 0, nullptr);
+	pass.draw(MESHLET_VERTEX_CAPACITY, meshletCount, 0, 0);
+	pass.end();
+	pass.release();
+}
+
+void WebGPURenderer::encodeMeshletOcclusionHierarchyPass(CommandEncoder encoder) {
+	if (!context || !textureManager || !meshletHiZSeedPipeline_ || !meshletHiZDownsamplePipeline_ ||
+		!meshletHiZSeedBindGroupLayout_ || !meshletHiZDownsampleBindGroupLayout_) {
+		return;
+	}
+
+	TextureView depthView = textureManager->getTextureView(kOcclusionDepthViewName);
+	Texture hizTexture = textureManager->getTexture(kOcclusionHiZTextureName);
+	if (!depthView || !hizTexture) {
+		return;
+	}
+
+	const uint32_t mipCount = std::max(occlusionHiZMipCount_, 1u);
+	const Device device = context->getDevice();
+
+	auto createHizMipView = [hizTexture](uint32_t mipLevel) -> TextureView {
+		TextureViewDescriptor viewDesc = Default;
+		viewDesc.aspect = TextureAspect::All;
+		viewDesc.baseArrayLayer = 0;
+		viewDesc.arrayLayerCount = 1;
+		viewDesc.baseMipLevel = mipLevel;
+		viewDesc.mipLevelCount = 1;
+		viewDesc.dimension = TextureViewDimension::_2D;
+		viewDesc.format = TextureFormat::R32Float;
+		return hizTexture.createView(viewDesc);
+	};
+
+	ComputePassDescriptor passDesc = Default;
+	ComputePassEncoder pass = encoder.beginComputePass(passDesc);
+
+	{
+		TextureView dstMip0View = createHizMipView(0u);
+		if (dstMip0View) {
+			std::array<BindGroupEntry, 2> entries{};
+			entries[0] = Default;
+			entries[0].binding = 0;
+			entries[0].textureView = depthView;
+			entries[1] = Default;
+			entries[1].binding = 1;
+			entries[1].textureView = dstMip0View;
+
+			BindGroupDescriptor bgDesc = Default;
+			bgDesc.label = StringView("meshlet hiz seed bg");
+			bgDesc.layout = meshletHiZSeedBindGroupLayout_;
+			bgDesc.entryCount = static_cast<uint32_t>(entries.size());
+			bgDesc.entries = entries.data();
+			BindGroup bg = device.createBindGroup(bgDesc);
+
+			if (bg) {
+				pass.setPipeline(meshletHiZSeedPipeline_);
+				pass.setBindGroup(0, bg, 0, nullptr);
+				const uint32_t gx = (std::max(occlusionDepthWidth_, 1u) + kOcclusionHiZWorkgroupSize - 1u) / kOcclusionHiZWorkgroupSize;
+				const uint32_t gy = (std::max(occlusionDepthHeight_, 1u) + kOcclusionHiZWorkgroupSize - 1u) / kOcclusionHiZWorkgroupSize;
+				pass.dispatchWorkgroups(gx, gy, 1u);
+				bg.release();
+			}
+
+			dstMip0View.release();
+		}
+	}
+
+	for (uint32_t mip = 1u; mip < mipCount; ++mip) {
+		TextureView srcView = createHizMipView(mip - 1u);
+		TextureView dstView = createHizMipView(mip);
+		if (!srcView || !dstView) {
+			if (srcView) {
+				srcView.release();
+			}
+			if (dstView) {
+				dstView.release();
+			}
+			continue;
+		}
+
+		std::array<BindGroupEntry, 2> entries{};
+		entries[0] = Default;
+		entries[0].binding = 0;
+		entries[0].textureView = srcView;
+		entries[1] = Default;
+		entries[1].binding = 1;
+		entries[1].textureView = dstView;
+
+		BindGroupDescriptor bgDesc = Default;
+		bgDesc.label = StringView("meshlet hiz downsample bg");
+		bgDesc.layout = meshletHiZDownsampleBindGroupLayout_;
+		bgDesc.entryCount = static_cast<uint32_t>(entries.size());
+		bgDesc.entries = entries.data();
+		BindGroup bg = device.createBindGroup(bgDesc);
+
+		if (bg) {
+			const uint32_t mipWidth = std::max(1u, occlusionDepthWidth_ >> mip);
+			const uint32_t mipHeight = std::max(1u, occlusionDepthHeight_ >> mip);
+			const uint32_t gx = (mipWidth + kOcclusionHiZWorkgroupSize - 1u) / kOcclusionHiZWorkgroupSize;
+			const uint32_t gy = (mipHeight + kOcclusionHiZWorkgroupSize - 1u) / kOcclusionHiZWorkgroupSize;
+			pass.setPipeline(meshletHiZDownsamplePipeline_);
+			pass.setBindGroup(0, bg, 0, nullptr);
+			pass.dispatchWorkgroups(gx, gy, 1u);
+			bg.release();
+		}
+
+		srcView.release();
+		dstView.release();
+	}
+
+	pass.end();
+	pass.release();
 }
 
 bool WebGPURenderer::initializeMeshletCullingResources() {
@@ -387,7 +901,7 @@ bool WebGPURenderer::initializeMeshletCullingResources() {
 		);
 	}
 
-	std::vector<BindGroupLayoutEntry> cullLayoutEntries(5, Default);
+	std::vector<BindGroupLayoutEntry> cullLayoutEntries(6, Default);
 	cullLayoutEntries[0].binding = 0;
 	cullLayoutEntries[0].visibility = ShaderStage::Compute;
 	cullLayoutEntries[0].buffer.type = BufferBindingType::Uniform;
@@ -409,6 +923,11 @@ bool WebGPURenderer::initializeMeshletCullingResources() {
 	cullLayoutEntries[4].visibility = ShaderStage::Compute;
 	cullLayoutEntries[4].buffer.type = BufferBindingType::Uniform;
 	cullLayoutEntries[4].buffer.minBindingSize = 16u;
+
+	cullLayoutEntries[5].binding = 5;
+	cullLayoutEntries[5].visibility = ShaderStage::Compute;
+	cullLayoutEntries[5].texture.sampleType = TextureSampleType::UnfilterableFloat;
+	cullLayoutEntries[5].texture.viewDimension = TextureViewDimension::_2D;
 
 	BindGroupLayoutDescriptor bglDesc = Default;
 	bglDesc.label = StringView("meshlet cull bgl");
@@ -470,12 +989,12 @@ void WebGPURenderer::updateMeshletCullParams(uint32_t meshletCount) {
 	if (!bufferManager) {
 		return;
 	}
-	const uint32_t params[4] = {meshletCount, 0u, 0u, 0u};
+	const uint32_t params[4] = {meshletCount, std::max(occlusionHiZMipCount_, 1u), 0u, 0u};
 	bufferManager->writeBuffer(kMeshletCullParamsBufferName, 0u, params, sizeof(params));
 }
 
 bool WebGPURenderer::refreshMeshletCullingBindGroup() {
-	if (!bufferManager || !meshletManager || !meshletCullBindGroupLayout_) {
+	if (!bufferManager || !meshletManager || !meshletCullBindGroupLayout_ || !textureManager) {
 		return false;
 	}
 
@@ -484,11 +1003,12 @@ bool WebGPURenderer::refreshMeshletCullingBindGroup() {
 	Buffer visibleIndicesBuffer = bufferManager->getBuffer(meshletManager->getActiveVisibleMeshletIndexBufferName());
 	Buffer drawArgsBuffer = bufferManager->getBuffer(kMeshletCullIndirectArgsBufferName);
 	Buffer cullParamsBuffer = bufferManager->getBuffer(kMeshletCullParamsBufferName);
-	if (!uniformBuffer || !meshletAabbBuffer || !visibleIndicesBuffer || !drawArgsBuffer || !cullParamsBuffer) {
+	TextureView occlusionHiZView = textureManager->getTextureView(kOcclusionHiZViewName);
+	if (!uniformBuffer || !meshletAabbBuffer || !visibleIndicesBuffer || !drawArgsBuffer || !cullParamsBuffer || !occlusionHiZView) {
 		return false;
 	}
 
-	std::vector<BindGroupEntry> entries(5, Default);
+	std::vector<BindGroupEntry> entries(6, Default);
 	entries[0].binding = 0;
 	entries[0].buffer = uniformBuffer;
 	entries[0].offset = 0;
@@ -513,6 +1033,9 @@ bool WebGPURenderer::refreshMeshletCullingBindGroup() {
 	entries[4].buffer = cullParamsBuffer;
 	entries[4].offset = 0;
 	entries[4].size = 16u;
+
+	entries[5].binding = 5;
+	entries[5].textureView = occlusionHiZView;
 
 	if (meshletCullBindGroup_) {
 		meshletCullBindGroup_.release();
@@ -627,6 +1150,13 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 			meshletManager->getVerticesPerMeshlet(),
 			meshletManager->getMeshletCount()
 		);
+	}
+
+	if (meshletDepthPrepassBindGroupLayout_ && meshletDepthPrepassPipeline_) {
+		if (!refreshMeshletOcclusionBindGroup()) {
+			std::cerr << "Failed to bind meshlet depth prepass resources." << std::endl;
+			return false;
+		}
 	}
 
 	if (meshletCullBindGroupLayout_ && meshletCullPipeline_) {
@@ -1215,6 +1745,19 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 					);
 				}
 
+				if (meshletDepthPrepassBindGroupLayout_ && meshletDepthPrepassPipeline_) {
+					if (!refreshMeshletOcclusionBindGroup()) {
+						std::cerr << "Failed to bind meshlet depth prepass resources after upload." << std::endl;
+						recordTimingNs(
+							TimingStage::MainUploadMeshlets,
+							static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+								std::chrono::steady_clock::now() - uploadStart
+							).count())
+						);
+						return;
+					}
+				}
+
 				activeMeshletBounds_ = std::move(uploadState.upload.meshletBounds);
 				uploadedMeshRevision_ = uploadState.upload.meshRevision;
 				uploadedCenterColumn_ = uploadState.upload.centerColumn;
@@ -1448,6 +1991,10 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 	CommandEncoderDescriptor encoderDesc = Default;
 	encoderDesc.label = StringView("Frame command encoder");
 	CommandEncoder encoder = context->getDevice().createCommandEncoder(encoderDesc);
+	if (uniforms.occlusionParams[0] >= 0.5f) {
+		encodeMeshletOcclusionDepthPass(encoder);
+		encodeMeshletOcclusionHierarchyPass(encoder);
+	}
 	encodeMeshletCullingPass(encoder);
 
 	// GEOMETRY RENDER PASS
@@ -1585,6 +2132,35 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 
 void WebGPURenderer::terminate() {
 	stopStreamingThread();
+	removeOcclusionDepthResources();
+	if (meshletDepthPrepassBindGroup_) {
+		meshletDepthPrepassBindGroup_.release();
+		meshletDepthPrepassBindGroup_ = nullptr;
+	}
+	if (meshletDepthPrepassPipeline_) {
+		meshletDepthPrepassPipeline_.release();
+		meshletDepthPrepassPipeline_ = nullptr;
+	}
+	if (meshletDepthPrepassBindGroupLayout_) {
+		meshletDepthPrepassBindGroupLayout_.release();
+		meshletDepthPrepassBindGroupLayout_ = nullptr;
+	}
+	if (meshletHiZSeedPipeline_) {
+		meshletHiZSeedPipeline_.release();
+		meshletHiZSeedPipeline_ = nullptr;
+	}
+	if (meshletHiZDownsamplePipeline_) {
+		meshletHiZDownsamplePipeline_.release();
+		meshletHiZDownsamplePipeline_ = nullptr;
+	}
+	if (meshletHiZSeedBindGroupLayout_) {
+		meshletHiZSeedBindGroupLayout_.release();
+		meshletHiZSeedBindGroupLayout_ = nullptr;
+	}
+	if (meshletHiZDownsampleBindGroupLayout_) {
+		meshletHiZDownsampleBindGroupLayout_.release();
+		meshletHiZDownsampleBindGroupLayout_ = nullptr;
+	}
 	if (meshletCullBindGroup_) {
 		meshletCullBindGroup_.release();
 		meshletCullBindGroup_ = nullptr;

@@ -32,6 +32,10 @@ bool Application::Initialize() {
     uniforms.renderFlags[1] = 0u;
     uniforms.renderFlags[2] = 0u;
     uniforms.renderFlags[3] = 0u;
+    uniforms.occlusionParams[0] = 1.0f;
+    uniforms.occlusionParams[1] = 0.01f;
+    uniforms.occlusionParams[2] = 20.0f;
+    uniforms.occlusionParams[3] = 1.0f;
 
     camera.position = glm::vec3(0.0, 0.0, 175.0);
     camera.updateCameraVectors();

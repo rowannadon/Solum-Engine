@@ -30,6 +30,12 @@ struct FrameUniforms {
     // renderFlags[0] bit 4: bounds regions layer
     // renderFlags[0] bit 5: bounds meshlets layer
     uint32_t renderFlags[4] = { 0u, 0u, 0u, 0u };
+
+    // occlusionParams[0]: enabled (0.0 disabled, 1.0 enabled)
+    // occlusionParams[1]: depth bias in [0, 1]
+    // occlusionParams[2]: near-distance occlusion skip (world units)
+    // occlusionParams[3]: minimum projected AABB span (pixels) before occlusion tests
+    float occlusionParams[4] = { 1.0f, 0.01f, 20.0f, 1.0f };
 };
 
 static_assert((sizeof(FrameUniforms) % 16) == 0, "FrameUniforms must remain 16-byte aligned for WGSL uniforms");

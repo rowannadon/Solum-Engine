@@ -7,4 +7,5 @@ struct FrameUniforms {
     inverseViewMatrix: mat4x4f,
 
     renderFlags: vec4u,
+    occlusionParams: vec4f,
 };

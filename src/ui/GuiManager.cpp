@@ -201,6 +201,22 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
                     uniforms.renderFlags[0] &= ~kRenderFlagBoundsMeshlets;
                 }
             }
+
+            ImGui::Separator();
+            ImGui::Text("Occlusion Culling");
+            bool occlusionEnabled = uniforms.occlusionParams[0] >= 0.5f;
+            if (ImGui::Checkbox("Enable Occlusion", &occlusionEnabled)) {
+                uniforms.occlusionParams[0] = occlusionEnabled ? 1.0f : 0.0f;
+            }
+            ImGui::SliderFloat("Occlusion Bias", &uniforms.occlusionParams[1], 0.0f, 0.05f, "%.4f");
+            ImGui::SliderFloat("Near Skip Distance", &uniforms.occlusionParams[2], 0.0f, 128.0f, "%.1f");
+            ImGui::SliderFloat("Min Projected Span (px)", &uniforms.occlusionParams[3], 0.0f, 8.0f, "%.2f");
+            if (ImGui::Button("Reset Occlusion")) {
+                uniforms.occlusionParams[0] = 1.0f;
+                uniforms.occlusionParams[1] = 0.01f;
+                uniforms.occlusionParams[2] = 20.0f;
+                uniforms.occlusionParams[3] = 1.0f;
+            }
         }
 
         ImGui::End();
