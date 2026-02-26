@@ -49,6 +49,14 @@ struct MeshletMetadataGPU {
     uint32_t dataOffset = 0;
     uint32_t voxelScale = 1;
     uint32_t pad1 = 0;
+    int32_t aabbMinX = 0;
+    int32_t aabbMinY = 0;
+    int32_t aabbMinZ = 0;
+    int32_t aabbMaxX = 0;
+    int32_t aabbMaxY = 0;
+    int32_t aabbMaxZ = 0;
+    uint32_t pad2 = 0;
+    uint32_t pad3 = 0;
 };
 
-static_assert(sizeof(MeshletMetadataGPU) == 32, "Meshlet metadata layout must match shader");
+static_assert(sizeof(MeshletMetadataGPU) == 64, "Meshlet metadata layout must match shader");

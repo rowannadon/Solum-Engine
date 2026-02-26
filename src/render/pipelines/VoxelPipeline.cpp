@@ -98,7 +98,7 @@ bool VoxelPipeline::createPipeline() {
     config.useCustomBlending = false;
     config.alphaToCoverageEnabled = false;
 
-    std::vector<BindGroupLayoutEntry> globalUniforms(6, Default);
+    std::vector<BindGroupLayoutEntry> globalUniforms(7, Default);
 
     int i = 0;
     globalUniforms[i].binding = i;
@@ -118,7 +118,12 @@ bool VoxelPipeline::createPipeline() {
     i++;
 
     globalUniforms[i].binding = i;
-    globalUniforms[i].visibility = ShaderStage::Vertex | ShaderStage::Fragment;
+    globalUniforms[i].visibility = ShaderStage::Vertex;
+    globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
+    i++;
+
+    globalUniforms[i].binding = i;
+    globalUniforms[i].visibility = ShaderStage::Fragment;
     globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
     i++;
 
@@ -144,24 +149,27 @@ bool VoxelPipeline::createPipeline() {
 bool VoxelPipeline::createBindGroup() {
     return createBindGroupForMeshBuffers(
         MeshletManager::meshDataBufferName(0),
-        MeshletManager::meshMetadataBufferName(0)
+        MeshletManager::meshMetadataBufferName(0),
+        MeshletManager::kVisibleMeshletIndexBufferName
     );
 }
 
 bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
-                                                  const std::string& metadataBufferName) {
+                                                  const std::string& metadataBufferName,
+                                                  const std::string& visibleIndexBufferName) {
     Buffer uniformBuffer = r_.buf.getBuffer("uniform_buffer");
     Buffer meshDataBuffer = r_.buf.getBuffer(meshDataBufferName);
     Buffer metadataBuffer = r_.buf.getBuffer(metadataBufferName);
+    Buffer visibleIndexBuffer = r_.buf.getBuffer(visibleIndexBufferName);
     Buffer materialLookupBuffer = r_.buf.getBuffer(MaterialManager::kMaterialLookupBufferName);
     TextureView materialTextureArrayView = r_.tex.getTextureView(MaterialManager::kMaterialTextureArrayViewName);
     Sampler materialSampler = r_.tex.getSampler(MaterialManager::kMaterialSamplerName);
 
-    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !materialLookupBuffer || !materialTextureArrayView || !materialSampler) {
+    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !visibleIndexBuffer || !materialLookupBuffer || !materialTextureArrayView || !materialSampler) {
         return false;
     }
 
-    std::vector<BindGroupEntry> bindings(6, Default);
+    std::vector<BindGroupEntry> bindings(7, Default);
 
     int i = 0;
     bindings[i].binding = i;
@@ -180,6 +188,12 @@ bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBuf
     bindings[i].buffer = metadataBuffer;
     bindings[i].offset = 0;
     bindings[i].size = metadataBuffer.getSize();
+    i++;
+
+    bindings[i].binding = i;
+    bindings[i].buffer = visibleIndexBuffer;
+    bindings[i].offset = 0;
+    bindings[i].size = visibleIndexBuffer.getSize();
     i++;
 
     bindings[i].binding = i;

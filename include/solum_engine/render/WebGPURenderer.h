@@ -100,13 +100,19 @@ private:
     std::optional<VoxelPipeline> voxelPipeline_;
     std::optional<BoundsDebugPipeline> boundsDebugPipeline_;
 
+    std::vector<MeshletMetadataGPU> uploadedMeshletMetadata_;
+    std::vector<uint32_t> visibleMeshletIndices_;
+
     uint32_t meshletCapacity_ = 0;
     uint32_t quadCapacity_ = 0;
     uint64_t uploadedMeshRevision_ = 0;
-    uint64_t uploadedDebugBoundsRevision_ = 0;
-    uint32_t uploadedDebugBoundsLayerMask_ = 0u;
     ColumnCoord uploadedCenterColumn_{0, 0};
     bool hasUploadedCenterColumn_ = false;
+    uint64_t uploadedDebugBoundsRevision_ = 0;
+    uint64_t uploadedDebugBoundsMeshRevision_ = 0;
+    ColumnCoord uploadedDebugBoundsCenterColumn_{0, 0};
+    bool hasUploadedDebugBoundsCenterColumn_ = false;
+    uint32_t uploadedDebugBoundsLayerMask_ = 0u;
     int32_t uploadColumnRadius_ = 1;
     double lastMeshUploadTimeSeconds_ = -1.0;
 
@@ -140,6 +146,7 @@ private:
 
     bool uploadMeshlets(PendingMeshUpload&& upload);
     void updateWorldStreaming(const FrameUniforms& frameUniforms);
+    void updateVisibleMeshletDrawList(const FrameUniforms& frameUniforms);
     void updateDebugBounds(const FrameUniforms& frameUniforms);
     void rebuildDebugBounds(uint32_t layerMask);
     void startStreamingThread(const glm::vec3& initialCameraPosition, const ColumnCoord& initialCenterColumn);

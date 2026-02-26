@@ -121,7 +121,7 @@ class MeshManager {
 public:
     struct Config {
         std::vector<int32_t> lodChunkRadii{4, 8, 16};
-        float lodSseTargetPixels = 1.0f;
+        float lodSseTargetPixels = 4.0f;
         float lodSseHysteresisPixels = 0.25f;
         float lodSseMinDepthBlocks = 4.0f;
         float lodSseFallbackProjectionScale = 390.0f;

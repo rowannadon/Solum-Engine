@@ -15,6 +15,7 @@ public:
     static constexpr const char* kMeshDataBufferName1 = "meshlet_data_buffer_1";
     static constexpr const char* kMeshMetadataBufferName0 = "meshlet_metadata_buffer_0";
     static constexpr const char* kMeshMetadataBufferName1 = "meshlet_metadata_buffer_1";
+    static constexpr const char* kVisibleMeshletIndexBufferName = "meshlet_visible_index_buffer";
 
     static const char* meshDataBufferName(uint32_t bufferIndex) noexcept;
     static const char* meshMetadataBufferName(uint32_t bufferIndex) noexcept;
@@ -28,6 +29,7 @@ public:
     bool upload();
     bool writeMetadataChunk(uint32_t bufferIndex, uint64_t byteOffset, const void* data, size_t sizeBytes);
     bool writeQuadChunk(uint32_t bufferIndex, uint64_t byteOffset, const void* data, size_t sizeBytes);
+    bool writeVisibleIndices(uint64_t byteOffset, const void* data, size_t sizeBytes);
     void activateBuffer(uint32_t bufferIndex, uint32_t meshletCount, uint32_t quadWordCount);
 
     uint32_t getActiveBufferIndex() const noexcept;

@@ -40,6 +40,11 @@ bool MeshletManager::initialize(BufferManager* manager, uint32_t maxMeshlets, ui
     meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     meshDataDesc.mappedAtCreation = false;
 
+    BufferDescriptor visibleIndexDesc = Default;
+    visibleIndexDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(uint32_t);
+    visibleIndexDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    visibleIndexDesc.mappedAtCreation = false;
+
     for (uint32_t i = 0; i < kBufferSetCount; ++i) {
         metadataDesc.label = StringView("meshlet metadata buffer");
         Buffer metadataBuffer = bufferManager->createBuffer(meshMetadataBufferName(i), metadataDesc);
@@ -52,6 +57,12 @@ bool MeshletManager::initialize(BufferManager* manager, uint32_t maxMeshlets, ui
         if (!meshDataBuffer) {
             return false;
         }
+    }
+
+    visibleIndexDesc.label = StringView("meshlet visible index buffer");
+    Buffer visibleIndexBuffer = bufferManager->createBuffer(kVisibleMeshletIndexBufferName, visibleIndexDesc);
+    if (!visibleIndexBuffer) {
+        return false;
     }
 
     return true;
@@ -132,6 +143,15 @@ bool MeshletManager::writeQuadChunk(uint32_t bufferIndex,
     }
 
     bufferManager->writeBuffer(meshDataBufferName(bufferIndex), byteOffset, data, sizeBytes);
+    return true;
+}
+
+bool MeshletManager::writeVisibleIndices(uint64_t byteOffset, const void* data, size_t sizeBytes) {
+    if (bufferManager == nullptr || data == nullptr || sizeBytes == 0) {
+        return false;
+    }
+
+    bufferManager->writeBuffer(kVisibleMeshletIndexBufferName, byteOffset, data, sizeBytes);
     return true;
 }
 

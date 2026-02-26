@@ -8,10 +8,12 @@ inline constexpr uint32_t kRenderFlagBoundsDebug = 1u << 1;
 inline constexpr uint32_t kRenderFlagBoundsChunks = 1u << 2;
 inline constexpr uint32_t kRenderFlagBoundsColumns = 1u << 3;
 inline constexpr uint32_t kRenderFlagBoundsRegions = 1u << 4;
+inline constexpr uint32_t kRenderFlagBoundsMeshletAabbs = 1u << 5;
 inline constexpr uint32_t kRenderFlagBoundsLayerMask =
     kRenderFlagBoundsChunks |
     kRenderFlagBoundsColumns |
-    kRenderFlagBoundsRegions;
+    kRenderFlagBoundsRegions |
+    kRenderFlagBoundsMeshletAabbs;
 
 struct FrameUniforms {
     glm::mat4 projectionMatrix;
@@ -26,6 +28,7 @@ struct FrameUniforms {
     // renderFlags[0] bit 2: bounds chunks layer
     // renderFlags[0] bit 3: bounds columns layer
     // renderFlags[0] bit 4: bounds regions layer
+    // renderFlags[0] bit 5: bounds meshlet AABB layer
     uint32_t renderFlags[4] = { 0u, 0u, 0u, 0u };
 };
 

@@ -19,7 +19,8 @@ public:
 
     bool createBindGroup() override;
     bool createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
-                                       const std::string& metadataBufferName);
+                                       const std::string& metadataBufferName,
+                                       const std::string& visibleIndexBufferName);
     
     bool build() override;
 

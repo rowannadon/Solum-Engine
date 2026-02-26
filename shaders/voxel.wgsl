@@ -12,12 +12,21 @@ struct MeshletMetadata {
     dataOffset: u32,
     voxelScale: u32,
     pad1: u32,
+    aabbMinX: i32,
+    aabbMinY: i32,
+    aabbMinZ: i32,
+    aabbMaxX: i32,
+    aabbMaxY: i32,
+    aabbMaxZ: i32,
+    pad2: u32,
+    pad3: u32,
 };
 
 @group(0) @binding(2) var<storage, read> meshletMetadata: array<MeshletMetadata>;
-@group(0) @binding(3) var<storage, read> materialToTexture: array<u32, 65536>;
-@group(0) @binding(4) var materialTextures: texture_2d_array<f32>;
-@group(0) @binding(5) var materialSampler: sampler;
+@group(0) @binding(3) var<storage, read> visibleMeshletIndices: array<u32>;
+@group(0) @binding(4) var<storage, read> materialToTexture: array<u32, 65536>;
+@group(0) @binding(5) var materialTextures: texture_2d_array<f32>;
+@group(0) @binding(6) var materialSampler: sampler;
 
 struct VertexInput {
     @builtin(instance_index) instance_idx: u32,
@@ -172,7 +181,8 @@ fn face_uv(face: u32, cornerOffset: vec3f) -> vec2f {
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
 
-    let meshlet = meshletMetadata[in.instance_idx];
+    let meshletId = visibleMeshletIndices[in.instance_idx];
+    let meshlet = meshletMetadata[meshletId];
     let quadIdx = in.vertex_idx / 6u;
     let triangleVertex = in.vertex_idx % 6u;
 

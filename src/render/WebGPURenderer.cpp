@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <exception>
+#include <limits>
 #include <unordered_set>
 
 #include "solum_engine/render/WebGPURenderer.h"
@@ -15,6 +16,7 @@ namespace {
 constexpr glm::vec4 kChunkBoundsColor{0.2f, 0.95f, 0.35f, 0.22f};
 constexpr glm::vec4 kColumnBoundsColor{1.0f, 0.7f, 0.2f, 0.6f};
 constexpr glm::vec4 kRegionBoundsColor{0.2f, 0.8f, 1.0f, 0.95f};
+constexpr glm::vec4 kMeshletAabbBoundsColor{1.0f, 0.2f, 0.2f, 0.85f};
 
 struct PreparedMeshUploadData {
 	std::vector<MeshletMetadataGPU> metadata;
@@ -24,6 +26,151 @@ struct PreparedMeshUploadData {
 	uint32_t requiredMeshletCapacity = 64u;
 	uint32_t requiredQuadCapacity = 64u * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
 };
+
+std::array<glm::vec4, 6> extractFrustumPlanes(const glm::mat4& clipFromMeshlet) {
+	auto normalizePlane = [](const glm::vec4& plane) {
+		const float length = glm::length(glm::vec3(plane));
+		if (length <= 1.0e-6f) {
+			return plane;
+		}
+		return plane / length;
+	};
+
+	std::array<glm::vec4, 6> planes{};
+
+	planes[0] = normalizePlane(glm::vec4(
+		clipFromMeshlet[0][3] + clipFromMeshlet[0][0],
+		clipFromMeshlet[1][3] + clipFromMeshlet[1][0],
+		clipFromMeshlet[2][3] + clipFromMeshlet[2][0],
+		clipFromMeshlet[3][3] + clipFromMeshlet[3][0]
+	));  // left
+
+	planes[1] = normalizePlane(glm::vec4(
+		clipFromMeshlet[0][3] - clipFromMeshlet[0][0],
+		clipFromMeshlet[1][3] - clipFromMeshlet[1][0],
+		clipFromMeshlet[2][3] - clipFromMeshlet[2][0],
+		clipFromMeshlet[3][3] - clipFromMeshlet[3][0]
+	));  // right
+
+	planes[2] = normalizePlane(glm::vec4(
+		clipFromMeshlet[0][3] + clipFromMeshlet[0][1],
+		clipFromMeshlet[1][3] + clipFromMeshlet[1][1],
+		clipFromMeshlet[2][3] + clipFromMeshlet[2][1],
+		clipFromMeshlet[3][3] + clipFromMeshlet[3][1]
+	));  // bottom
+
+	planes[3] = normalizePlane(glm::vec4(
+		clipFromMeshlet[0][3] - clipFromMeshlet[0][1],
+		clipFromMeshlet[1][3] - clipFromMeshlet[1][1],
+		clipFromMeshlet[2][3] - clipFromMeshlet[2][1],
+		clipFromMeshlet[3][3] - clipFromMeshlet[3][1]
+	));  // top
+
+	planes[4] = normalizePlane(glm::vec4(
+		clipFromMeshlet[0][3] + clipFromMeshlet[0][2],
+		clipFromMeshlet[1][3] + clipFromMeshlet[1][2],
+		clipFromMeshlet[2][3] + clipFromMeshlet[2][2],
+		clipFromMeshlet[3][3] + clipFromMeshlet[3][2]
+	));  // near
+
+	planes[5] = normalizePlane(glm::vec4(
+		clipFromMeshlet[0][3] - clipFromMeshlet[0][2],
+		clipFromMeshlet[1][3] - clipFromMeshlet[1][2],
+		clipFromMeshlet[2][3] - clipFromMeshlet[2][2],
+		clipFromMeshlet[3][3] - clipFromMeshlet[3][2]
+	));  // far
+
+	return planes;
+}
+
+bool computeMeshletAabb(const Meshlet& meshlet, glm::ivec3& outMin, glm::ivec3& outMax) {
+	if (meshlet.quadCount == 0) {
+		return false;
+	}
+
+	const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
+	glm::ivec3 minBounds{
+		std::numeric_limits<int32_t>::max(),
+		std::numeric_limits<int32_t>::max(),
+		std::numeric_limits<int32_t>::max()
+	};
+	glm::ivec3 maxBounds{
+		std::numeric_limits<int32_t>::min(),
+		std::numeric_limits<int32_t>::min(),
+		std::numeric_limits<int32_t>::min()
+	};
+
+	for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
+		const uint16_t packed = meshlet.packedQuadLocalOffsets[i];
+		const int32_t localX = static_cast<int32_t>(packed & 0x1Fu);
+		const int32_t localY = static_cast<int32_t>((packed >> 5u) & 0x1Fu);
+		const int32_t localZ = static_cast<int32_t>((packed >> 10u) & 0x1Fu);
+		const glm::ivec3 quadMin{
+			meshlet.origin.x + localX * static_cast<int32_t>(voxelScale),
+			meshlet.origin.y + localY * static_cast<int32_t>(voxelScale),
+			meshlet.origin.z + localZ * static_cast<int32_t>(voxelScale)
+		};
+		const glm::ivec3 quadMax = quadMin + glm::ivec3(static_cast<int32_t>(voxelScale));
+		minBounds = glm::min(minBounds, quadMin);
+		maxBounds = glm::max(maxBounds, quadMax);
+	}
+
+	outMin = minBounds;
+	outMax = maxBounds;
+	return true;
+}
+
+bool aabbIntersectsFrustum(const glm::ivec3& aabbMin,
+                           const glm::ivec3& aabbMax,
+                           const std::array<glm::vec4, 6>& frustumPlanes) {
+	const glm::vec3 minV = glm::vec3(aabbMin);
+	const glm::vec3 maxV = glm::vec3(aabbMax);
+
+	for (const glm::vec4& plane : frustumPlanes) {
+		const glm::vec3 normal = glm::vec3(plane);
+		const glm::vec3 positive{
+			(normal.x >= 0.0f) ? maxV.x : minV.x,
+			(normal.y >= 0.0f) ? maxV.y : minV.y,
+			(normal.z >= 0.0f) ? maxV.z : minV.z
+		};
+		if (glm::dot(normal, positive) + plane.w < 0.0f) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void buildVisibleMeshletIndices(const std::vector<MeshletMetadataGPU>& metadata,
+                                const std::array<glm::vec4, 6>& frustumPlanes,
+                                std::vector<uint32_t>& outVisibleIndices) {
+	outVisibleIndices.clear();
+	outVisibleIndices.reserve(metadata.size());
+
+	for (uint32_t meshletIndex = 0; meshletIndex < metadata.size(); ++meshletIndex) {
+		const MeshletMetadataGPU& entry = metadata[meshletIndex];
+		if (entry.quadCount == 0u) {
+			continue;
+		}
+
+		const glm::ivec3 aabbMin{
+			entry.aabbMinX,
+			entry.aabbMinY,
+			entry.aabbMinZ
+		};
+		const glm::ivec3 aabbMax{
+			entry.aabbMaxX,
+			entry.aabbMaxY,
+			entry.aabbMaxZ
+		};
+
+		if (!aabbIntersectsFrustum(aabbMin, aabbMax, frustumPlanes)) {
+			continue;
+		}
+
+		outVisibleIndices.push_back(meshletIndex);
+	}
+}
 
 PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlets) {
 	PreparedMeshUploadData prepared;
@@ -52,6 +199,17 @@ PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlet
 		metadata.faceDirection = meshlet.faceDirection;
 		metadata.dataOffset = static_cast<uint32_t>(prepared.quadData.size());
 		metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
+		glm::ivec3 aabbMin{};
+		glm::ivec3 aabbMax{};
+		if (!computeMeshletAabb(meshlet, aabbMin, aabbMax)) {
+			continue;
+		}
+		metadata.aabbMinX = aabbMin.x;
+		metadata.aabbMinY = aabbMin.y;
+		metadata.aabbMinZ = aabbMin.z;
+		metadata.aabbMaxX = aabbMax.x;
+		metadata.aabbMaxY = aabbMax.y;
+		metadata.aabbMaxZ = aabbMax.z;
 		prepared.metadata.push_back(metadata);
 
 		for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
@@ -180,7 +338,7 @@ bool WebGPURenderer::initialize() {
 	lastMeshUploadTimeSeconds_ = -1.0;
 
 	voxelPipeline_.emplace(*services_);
-	voxelPipeline_->setDrawConfig(meshletManager->getVerticesPerMeshlet(), meshletManager->getMeshletCount());
+	voxelPipeline_->setDrawConfig(meshletManager->getVerticesPerMeshlet(), 0u);
 	if (!voxelPipeline_->build()) {
 		std::cerr << "Failed to create voxel pipeline and resources." << std::endl;
 		return false;
@@ -191,6 +349,8 @@ bool WebGPURenderer::initialize() {
 		return false;
 	}
 	uploadedDebugBoundsRevision_ = 0;
+	uploadedDebugBoundsMeshRevision_ = 0;
+	hasUploadedDebugBoundsCenterColumn_ = false;
 	uploadedDebugBoundsLayerMask_ = 0u;
 
 	try {
@@ -211,7 +371,13 @@ void WebGPURenderer::createRenderingTextures() {
 		std::cerr << "Failed to recreate voxel rendering resources." << std::endl;
 		return;
 	}
-	if (!voxelPipeline_->createBindGroup()) {
+	const bool bound = (meshletManager != nullptr)
+		? voxelPipeline_->createBindGroupForMeshBuffers(
+			meshletManager->getActiveMeshDataBufferName(),
+			meshletManager->getActiveMeshMetadataBufferName(),
+			MeshletManager::kVisibleMeshletIndexBufferName)
+		: voxelPipeline_->createBindGroup();
+	if (!bound) {
 		std::cerr << "Failed to recreate voxel bind group." << std::endl;
 	}
 }
@@ -293,12 +459,14 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 		if (voxelPipeline_.has_value() &&
 			!voxelPipeline_->createBindGroupForMeshBuffers(
 				meshletManager->getActiveMeshDataBufferName(),
-				meshletManager->getActiveMeshMetadataBufferName())) {
+				meshletManager->getActiveMeshMetadataBufferName(),
+				MeshletManager::kVisibleMeshletIndexBufferName)) {
 			std::cerr << "Failed to recreate voxel bind group after meshlet buffer resize." << std::endl;
 			return false;
 		}
 	}
 
+	uploadedMeshletMetadata_ = upload.metadata;
 	meshletManager->adoptPreparedData(std::move(upload.metadata), std::move(upload.quadData));
 	if (!meshletManager->upload()) {
 		std::cerr << "Failed to upload meshlet buffers." << std::endl;
@@ -308,13 +476,14 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 	if (voxelPipeline_.has_value()) {
 		if (!voxelPipeline_->createBindGroupForMeshBuffers(
 				meshletManager->getActiveMeshDataBufferName(),
-				meshletManager->getActiveMeshMetadataBufferName())) {
+				meshletManager->getActiveMeshMetadataBufferName(),
+				MeshletManager::kVisibleMeshletIndexBufferName)) {
 			std::cerr << "Failed to bind active meshlet buffers." << std::endl;
 			return false;
 		}
 		voxelPipeline_->setDrawConfig(
 			meshletManager->getVerticesPerMeshlet(),
-			meshletManager->getMeshletCount()
+			0u
 		);
 	}
 
@@ -841,7 +1010,8 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 			if (voxelPipeline_.has_value() &&
 				!voxelPipeline_->createBindGroupForMeshBuffers(
 					MeshletManager::meshDataBufferName(uploadState.targetBufferIndex),
-					MeshletManager::meshMetadataBufferName(uploadState.targetBufferIndex))) {
+					MeshletManager::meshMetadataBufferName(uploadState.targetBufferIndex),
+					MeshletManager::kVisibleMeshletIndexBufferName)) {
 				std::cerr << "Failed to bind staged meshlet buffers." << std::endl;
 				recordTimingNs(
 					TimingStage::MainUploadMeshlets,
@@ -857,11 +1027,12 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 				uploadState.upload.totalMeshletCount,
 				static_cast<uint32_t>(uploadState.upload.quadData.size())
 			);
+			uploadedMeshletMetadata_ = std::move(uploadState.upload.metadata);
 
 			if (voxelPipeline_.has_value()) {
 				voxelPipeline_->setDrawConfig(
 					meshletManager->getVerticesPerMeshlet(),
-					meshletManager->getMeshletCount()
+					0u
 				);
 			}
 
@@ -883,6 +1054,38 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 	);
 }
 
+void WebGPURenderer::updateVisibleMeshletDrawList(const FrameUniforms& frameUniforms) {
+	if (!voxelPipeline_.has_value() || !meshletManager) {
+		return;
+	}
+
+	const uint32_t verticesPerMeshlet = meshletManager->getVerticesPerMeshlet();
+	if (uploadedMeshletMetadata_.empty()) {
+		visibleMeshletIndices_.clear();
+		voxelPipeline_->setDrawConfig(verticesPerMeshlet, 0u);
+		return;
+	}
+
+	const glm::mat4 clipFromMeshlet =
+		frameUniforms.projectionMatrix *
+		frameUniforms.viewMatrix *
+		frameUniforms.modelMatrix;
+	const std::array<glm::vec4, 6> frustumPlanes = extractFrustumPlanes(clipFromMeshlet);
+	buildVisibleMeshletIndices(uploadedMeshletMetadata_, frustumPlanes, visibleMeshletIndices_);
+
+	if (!visibleMeshletIndices_.empty()) {
+		if (!meshletManager->writeVisibleIndices(
+				0,
+				visibleMeshletIndices_.data(),
+				visibleMeshletIndices_.size() * sizeof(uint32_t))) {
+			voxelPipeline_->setDrawConfig(verticesPerMeshlet, 0u);
+			return;
+		}
+	}
+
+	voxelPipeline_->setDrawConfig(verticesPerMeshlet, static_cast<uint32_t>(visibleMeshletIndices_.size()));
+}
+
 void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
 	if (!world_ || !boundsDebugPipeline_.has_value()) {
 		return;
@@ -890,12 +1093,22 @@ void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
 
 	std::vector<ColumnCoord> generatedColumns;
 	world_->copyGeneratedColumns(generatedColumns);
+	std::vector<Meshlet> meshletsForBounds;
+	if ((layerMask & kRenderFlagBoundsMeshletAabbs) != 0u &&
+		voxelMeshManager_ &&
+		hasUploadedCenterColumn_) {
+		meshletsForBounds = voxelMeshManager_->copyMeshletsAround(
+			uploadedCenterColumn_,
+			uploadColumnRadius_
+		);
+	}
 
 	std::vector<DebugLineVertex> vertices;
 	const size_t chunkBoxCount = generatedColumns.size() * static_cast<size_t>(cfg::COLUMN_HEIGHT);
 	const size_t columnBoxCount = generatedColumns.size();
 	const size_t regionBoxEstimate = std::max<size_t>(1, generatedColumns.size() / static_cast<size_t>(cfg::REGION_VOLUME_COLUMNS));
-	vertices.reserve((chunkBoxCount + columnBoxCount + regionBoxEstimate) * 24ull);
+	const size_t meshletBoxCount = meshletsForBounds.size();
+	vertices.reserve((chunkBoxCount + columnBoxCount + regionBoxEstimate + meshletBoxCount) * 24ull);
 
 	std::unordered_set<RegionCoord> visibleRegions;
 	visibleRegions.reserve(generatedColumns.size());
@@ -959,6 +1172,22 @@ void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
 		}
 	}
 
+	if ((layerMask & kRenderFlagBoundsMeshletAabbs) != 0u) {
+		for (const Meshlet& meshlet : meshletsForBounds) {
+			glm::ivec3 meshletMin{};
+			glm::ivec3 meshletMax{};
+			if (!computeMeshletAabb(meshlet, meshletMin, meshletMax)) {
+				continue;
+			}
+			appendWireBox(
+				vertices,
+				glm::vec3(meshletMin),
+				glm::vec3(meshletMax),
+				kMeshletAabbBoundsColor
+			);
+		}
+	}
+
 	if (!boundsDebugPipeline_->updateVertices(vertices)) {
 		std::cerr << "Failed to upload debug bounds vertices." << std::endl;
 	}
@@ -981,16 +1210,33 @@ void WebGPURenderer::updateDebugBounds(const FrameUniforms& frameUniforms) {
 		boundsDebugPipeline_->updateVertices({});
 		uploadedDebugBoundsLayerMask_ = 0u;
 		uploadedDebugBoundsRevision_ = worldRevision;
+		uploadedDebugBoundsMeshRevision_ = uploadedMeshRevision_;
+		hasUploadedDebugBoundsCenterColumn_ = hasUploadedCenterColumn_;
+		uploadedDebugBoundsCenterColumn_ = uploadedCenterColumn_;
 		return;
 	}
 
 	const bool layersChanged = layerMask != uploadedDebugBoundsLayerMask_;
-	if (!layersChanged && worldRevision == uploadedDebugBoundsRevision_) {
+	const bool meshletLayerEnabled = (layerMask & kRenderFlagBoundsMeshletAabbs) != 0u;
+	const bool uploadedCenterChanged =
+		hasUploadedCenterColumn_ != hasUploadedDebugBoundsCenterColumn_ ||
+		(hasUploadedCenterColumn_ &&
+		 hasUploadedDebugBoundsCenterColumn_ &&
+		 !(uploadedCenterColumn_ == uploadedDebugBoundsCenterColumn_));
+	const bool meshletBoundsChanged = meshletLayerEnabled &&
+		(uploadedMeshRevision_ != uploadedDebugBoundsMeshRevision_ || uploadedCenterChanged);
+
+	if (!layersChanged &&
+		worldRevision == uploadedDebugBoundsRevision_ &&
+		!meshletBoundsChanged) {
 		return;
 	}
 
 	rebuildDebugBounds(layerMask);
 	uploadedDebugBoundsRevision_ = worldRevision;
+	uploadedDebugBoundsMeshRevision_ = uploadedMeshRevision_;
+	hasUploadedDebugBoundsCenterColumn_ = hasUploadedCenterColumn_;
+	uploadedDebugBoundsCenterColumn_ = uploadedCenterColumn_;
 	uploadedDebugBoundsLayerMask_ = layerMask;
 }
 
@@ -1028,6 +1274,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 			std::chrono::steady_clock::now() - streamUpdateStart
 		).count())
 	);
+	updateVisibleMeshletDrawList(uniforms);
 
 	const auto debugUpdateStart = std::chrono::steady_clock::now();
 	updateDebugBounds(uniforms);
