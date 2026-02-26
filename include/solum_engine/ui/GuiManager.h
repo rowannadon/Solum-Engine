@@ -1,3 +1,5 @@
+#pragma once
+
 #include <glm/glm.hpp>
 
 #include <imgui/imgui.h>
@@ -5,12 +7,11 @@
 #include <imgui/backends/imgui_impl_wgpu.h>
 
 #include <webgpu/webgpu.hpp>
+#include <vector>
 
 #include "solum_engine/core/Camera.h"
 #include "solum_engine/render/RuntimeTiming.h"
 #include "solum_engine/render/Uniforms.h"
-
-using namespace wgpu;
 
 class GuiManager {
         // ImGUI state
@@ -40,7 +41,7 @@ class GuiManager {
     ImGUIState imguiState;  // Add ImGUI state
 
 public:
-    bool initImGUI(GLFWwindow* window, Device device, TextureFormat format);
+    bool initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::TextureFormat format);
     void renderImGUI(FrameUniforms& uniforms,
                      const std::vector<float>& frameTimes,
                      FirstPersonCamera& camera,

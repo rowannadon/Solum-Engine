@@ -8,6 +8,7 @@
 #include "nlohmann_json/json.hpp"
 
 using json = nlohmann::json;
+using namespace wgpu;
 
 namespace {
 constexpr uint32_t kFirstMaterialId = 1u;

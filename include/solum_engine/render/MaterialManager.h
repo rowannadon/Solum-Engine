@@ -45,8 +45,8 @@ private:
                              uint32_t& outHeight);
     static uint32_t mipLevelCount(uint32_t width, uint32_t height);
     static void writeMipMapsArrayLayer(TextureManager& textureManager,
-                                       Texture texture,
-                                       Extent3D textureSize,
+                                       wgpu::Texture texture,
+                                       wgpu::Extent3D textureSize,
                                        uint32_t mipLevelCount,
                                        uint32_t arrayLayer,
                                        const std::vector<uint8_t>& pixels);

@@ -4,6 +4,8 @@
 #include "solum_engine/render/MeshletManager.h"
 #include "solum_engine/render/Uniforms.h"
 
+using namespace wgpu;
+
 bool VoxelPipeline::build() {
     return createResources() && createPipeline() && createBindGroup();
 }

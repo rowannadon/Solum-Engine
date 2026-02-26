@@ -27,9 +27,9 @@ public:
     bool build() override;
 
     bool render(
-        TextureView targetView,
-        CommandEncoder encoder,
-        const std::function<void(RenderPassEncoder&)>& overlayCallback = {}
+        wgpu::TextureView targetView,
+        wgpu::CommandEncoder encoder,
+        const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
     ) override;
 private:
     uint32_t meshletVertexCount = 0;

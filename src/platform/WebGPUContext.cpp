@@ -3,6 +3,8 @@
 #include <cstring>
 #include <optional>
 
+using namespace wgpu;
+
 namespace {
 const char* presentModeName(PresentMode mode) {
     switch (mode) {
@@ -57,34 +59,19 @@ PresentMode choosePreferredPresentMode(const SurfaceCapabilities& capabilities) 
                   << presentModeName(*envMode) << std::endl;
     }
 
-#if defined(_WIN32) || defined(__APPLE__)
-return PresentMode::Fifo;
-    if (supports(PresentMode::Immediate)) {
-        return PresentMode::Immediate;
-    }
-    if (supports(PresentMode::Mailbox)) {
-        return PresentMode::Mailbox;
+    // Default to FIFO for stable frame pacing unless explicitly overridden.
+    if (supports(PresentMode::Fifo)) {
+        return PresentMode::Fifo;
     }
     if (supports(PresentMode::FifoRelaxed)) {
         return PresentMode::FifoRelaxed;
     }
-    if (supports(PresentMode::Fifo)) {
-        return PresentMode::Fifo;
-    }
-#else
     if (supports(PresentMode::Mailbox)) {
         return PresentMode::Mailbox;
     }
     if (supports(PresentMode::Immediate)) {
         return PresentMode::Immediate;
     }
-    if (supports(PresentMode::FifoRelaxed)) {
-        return PresentMode::FifoRelaxed;
-    }
-    if (supports(PresentMode::Fifo)) {
-        return PresentMode::Fifo;
-    }
-#endif
 
     return (capabilities.presentModeCount > 0) ? capabilities.presentModes[0] : PresentMode::Fifo;
 }

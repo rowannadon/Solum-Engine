@@ -20,7 +20,7 @@ public:
     bool isEnabled() const { return enabled_; }
 
     bool updateVertices(const std::vector<DebugLineVertex>& vertices);
-    void draw(RenderPassEncoder& renderPass);
+    void draw(wgpu::RenderPassEncoder& renderPass);
 
     bool createResources() override;
     void removeResources() override;
@@ -29,9 +29,9 @@ public:
     bool build() override;
 
     bool render(
-        TextureView targetView,
-        CommandEncoder encoder,
-        const std::function<void(RenderPassEncoder&)>& overlayCallback = {}
+        wgpu::TextureView targetView,
+        wgpu::CommandEncoder encoder,
+        const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
     ) override;
 
 private:

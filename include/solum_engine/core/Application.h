@@ -1,3 +1,5 @@
+#pragma once
+
 // Application.h
 #include <webgpu/webgpu.hpp>
 #include <GLFW/glfw3.h>

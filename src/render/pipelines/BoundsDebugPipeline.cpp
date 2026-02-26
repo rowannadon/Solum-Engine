@@ -5,6 +5,8 @@
 
 #include "solum_engine/render/Uniforms.h"
 
+using namespace wgpu;
+
 namespace {
 constexpr const char* kPipelineName = "debug_bounds_pipeline";
 constexpr const char* kBindGroupLayoutName = "debug_bounds_uniforms";

@@ -5,6 +5,8 @@
 #include <iostream>
 #include <numeric>
 
+using namespace wgpu;
+
 const char* MeshletManager::meshDataBufferName(uint32_t bufferIndex) noexcept {
     return (bufferIndex % kBufferSetCount == 0u) ? kMeshDataBufferName0 : kMeshDataBufferName1;
 }

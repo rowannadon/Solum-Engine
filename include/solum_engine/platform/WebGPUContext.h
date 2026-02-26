@@ -5,8 +5,6 @@
 
 #include <webgpu/webgpu.hpp>
 
-using namespace wgpu;
-
 struct RenderConfig {
     int width = 1280;
     int height = 720;
@@ -15,25 +13,25 @@ struct RenderConfig {
 
 class WebGPUContext {
 public:
-    Instance instance;
-    Device device;
-    Queue queue;
-    Surface surface;
-    Adapter adapter;
-    GLFWwindow* window;
-    int width;
-    int height;
-    TextureFormat surfaceFormat = TextureFormat::Undefined;
+    wgpu::Instance instance;
+    wgpu::Device device;
+    wgpu::Queue queue;
+    wgpu::Surface surface;
+    wgpu::Adapter adapter;
+    GLFWwindow* window = nullptr;
+    int width = 0;
+    int height = 0;
+    wgpu::TextureFormat surfaceFormat = wgpu::TextureFormat::Undefined;
 
-    Device getDevice() { return device; }
-    Queue getQueue() { return queue; }
+    wgpu::Device getDevice() { return device; }
+    wgpu::Queue getQueue() { return queue; }
     GLFWwindow* getWindow() { return window; }
-    Surface getSurface() { return surface; }
-    TextureFormat getSurfaceFormat() { return surfaceFormat; }
+    wgpu::Surface getSurface() { return surface; }
+    wgpu::TextureFormat getSurfaceFormat() { return surfaceFormat; }
 
     bool initialize(const RenderConfig& config);
     bool configureSurface();
     void unconfigureSurface();
-    Limits GetRequiredLimits(Adapter adapter) const;
+    wgpu::Limits GetRequiredLimits(wgpu::Adapter adapter) const;
     void terminate();
 };

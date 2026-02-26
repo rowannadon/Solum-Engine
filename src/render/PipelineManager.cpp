@@ -4,12 +4,15 @@
 #include <string>
 #include <iostream>
 
-RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineName, PipelineConfig& config) {
+using namespace wgpu;
+
+RenderPipeline PipelineManager::createRenderPipeline(const std::string& pipelineName, PipelineConfig& config) {
     std::cout << "Creating shader module..." << std::endl;
     ShaderModule shaderModule = loadShaderModule(config.shaderPath, device);
     std::cout << "Shader module: " << shaderModule << std::endl;
     if (shaderModule == nullptr) {
         std::cout << "Failed to load shader: " << config.shaderPath << std::endl;
+        return nullptr;
     }
 
     RenderPipelineDescriptor pipelineDesc = Default;
@@ -110,6 +113,12 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineN
     RenderPipeline pipeline = device.createRenderPipeline(pipelineDesc);
     std::cout << "Render pipeline: " << pipeline << std::endl;
 
+    auto existingPipeline = pipelines.find(pipelineName);
+    if (existingPipeline != pipelines.end() && existingPipeline->second) {
+        existingPipeline->second.release();
+        pipelines.erase(existingPipeline);
+    }
+
     pipelines[pipelineName] = pipeline;
 
     // Clean up
@@ -119,7 +128,14 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string pipelineN
     return pipeline;
 }
 
-BindGroupLayout PipelineManager::createBindGroupLayout(const std::string bindGroupLayoutName, const std::vector<BindGroupLayoutEntry>& entries) {
+BindGroupLayout PipelineManager::createBindGroupLayout(const std::string& bindGroupLayoutName,
+                                                       const std::vector<BindGroupLayoutEntry>& entries) {
+    auto existing = bindGroupLayouts.find(bindGroupLayoutName);
+    if (existing != bindGroupLayouts.end() && existing->second) {
+        existing->second.release();
+        bindGroupLayouts.erase(existing);
+    }
+
     BindGroupLayoutDescriptor chunkDataBindGroupLayoutDesc = Default;
     chunkDataBindGroupLayoutDesc.entryCount = (uint32_t)entries.size();
     chunkDataBindGroupLayoutDesc.entries = entries.data();
@@ -129,7 +145,7 @@ BindGroupLayout PipelineManager::createBindGroupLayout(const std::string bindGro
     return layout;
 }
 
-void PipelineManager::deleteBindGroup(std::string bindGroupName) {
+void PipelineManager::deleteBindGroup(const std::string& bindGroupName) {
     BindGroup group = getBindGroup(bindGroupName);
     if (group) {
         group.release();
@@ -137,8 +153,14 @@ void PipelineManager::deleteBindGroup(std::string bindGroupName) {
     }
 }
 
-BindGroup PipelineManager::createBindGroup(const std::string bindGroupName, const std::string bindGroupLayoutName, const std::vector<BindGroupEntry>& bindings) {
-    BindGroupLayout layout = bindGroupLayouts.find(bindGroupLayoutName)->second;
+BindGroup PipelineManager::createBindGroup(const std::string& bindGroupName,
+                                           const std::string& bindGroupLayoutName,
+                                           const std::vector<BindGroupEntry>& bindings) {
+    auto layoutIt = bindGroupLayouts.find(bindGroupLayoutName);
+    if (layoutIt == bindGroupLayouts.end()) {
+        return nullptr;
+    }
+    BindGroupLayout layout = layoutIt->second;
     if (!layout) {
 		return nullptr;
     }
@@ -149,12 +171,18 @@ BindGroup PipelineManager::createBindGroup(const std::string bindGroupName, cons
     bindGroupDesc.entryCount = (uint32_t)bindings.size();
     bindGroupDesc.entries = bindings.data();
 
+    auto existing = bindGroups.find(bindGroupName);
+    if (existing != bindGroups.end() && existing->second) {
+        existing->second.release();
+        bindGroups.erase(existing);
+    }
+
     BindGroup bindGroup = device.createBindGroup(bindGroupDesc);
     bindGroups[bindGroupName] = bindGroup;
     return bindGroup;
 }
 
-RenderPipeline PipelineManager::getPipeline(std::string pipelineName) {
+RenderPipeline PipelineManager::getPipeline(const std::string& pipelineName) const {
     auto pipeline = pipelines.find(pipelineName);
     if (pipeline != pipelines.end()) {
         return pipeline->second;
@@ -162,7 +190,7 @@ RenderPipeline PipelineManager::getPipeline(std::string pipelineName) {
     return nullptr;
 }
 
-BindGroupLayout PipelineManager::getBindGroupLayout(std::string bindGroupLayoutName) {
+BindGroupLayout PipelineManager::getBindGroupLayout(const std::string& bindGroupLayoutName) const {
     auto layout = bindGroupLayouts.find(bindGroupLayoutName);
     if (layout != bindGroupLayouts.end()) {
         return layout->second;
@@ -170,8 +198,8 @@ BindGroupLayout PipelineManager::getBindGroupLayout(std::string bindGroupLayoutN
     return nullptr;
 }
 
-BindGroup PipelineManager::getBindGroup(std::string bindGroupLayoutName) {
-    auto bindGroup = bindGroups.find(bindGroupLayoutName);
+BindGroup PipelineManager::getBindGroup(const std::string& bindGroupName) const {
+    auto bindGroup = bindGroups.find(bindGroupName);
     if (bindGroup != bindGroups.end()) {
         return bindGroup->second;
     }
@@ -179,23 +207,27 @@ BindGroup PipelineManager::getBindGroup(std::string bindGroupLayoutName) {
 }
 
 void PipelineManager::terminate() {
-    for (auto pair : pipelines) {
+    for (auto& pair : pipelines) {
         if (pair.second) {
             pair.second.release();
         }
     }
 
-    for (auto pair : bindGroupLayouts) {
+    for (auto& pair : bindGroupLayouts) {
         if (pair.second) {
             pair.second.release();
         }
     }
 
-    for (auto pair : bindGroups) {
+    for (auto& pair : bindGroups) {
         if (pair.second) {
             pair.second.release();
         }
     }
+
+    pipelines.clear();
+    bindGroupLayouts.clear();
+    bindGroups.clear();
 }
 
 ShaderModule PipelineManager::loadShaderModule(const std::filesystem::path& path, Device device) {

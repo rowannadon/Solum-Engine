@@ -1,39 +1,44 @@
 #include "solum_engine/render/TextureManager.h"
 
 // ---------- basic IO ----------
-void TextureManager::writeTexture(const TexelCopyTextureInfo& destination,
+void TextureManager::writeTexture(const wgpu::TexelCopyTextureInfo& destination,
     const void* data, size_t size,
-    const TexelCopyBufferLayout& source,
-    const Extent3D& writeSize) {
+    const wgpu::TexelCopyBufferLayout& source,
+    const wgpu::Extent3D& writeSize) {
     queue.writeTexture(destination, data, size, source, writeSize);
 }
 
-Texture TextureManager::getTexture(const std::string textureName) {
+wgpu::Texture TextureManager::getTexture(const std::string& textureName) const {
     auto it = textures.find(textureName);
     return it != textures.end() ? it->second : nullptr;
 }
-TextureView TextureManager::getTextureView(const std::string viewName) {
+wgpu::TextureView TextureManager::getTextureView(const std::string& viewName) const {
     auto it = textureViews.find(viewName);
     return it != textureViews.end() ? it->second : nullptr;
 }
-Sampler TextureManager::getSampler(const std::string samplerName) {
+wgpu::Sampler TextureManager::getSampler(const std::string& samplerName) const {
     auto it = samplers.find(samplerName);
     return it != samplers.end() ? it->second : nullptr;
 }
-Texture TextureManager::createTexture(const std::string& name, const TextureDescriptor& config) {
-    Texture texture = device.createTexture(config);
+wgpu::Texture TextureManager::createTexture(const std::string& name, const wgpu::TextureDescriptor& config) {
+    removeTexture(name);
+    wgpu::Texture texture = device.createTexture(config);
     textures[name] = texture;
     return texture;
 }
-TextureView TextureManager::createTextureView(const std::string& textureName, const std::string& viewName, const TextureViewDescriptor& config) {
+wgpu::TextureView TextureManager::createTextureView(const std::string& textureName,
+                                                    const std::string& viewName,
+                                                    const wgpu::TextureViewDescriptor& config) {
+    removeTextureView(viewName);
     auto it = textures.find(textureName);
     if (it == textures.end()) return nullptr;
-    TextureView view = it->second.createView(config);
+    wgpu::TextureView view = it->second.createView(config);
     textureViews[viewName] = view;
     return view;
 }
-Sampler TextureManager::createSampler(const std::string& samplerName, const SamplerDescriptor& config) {
-    Sampler sampler = device.createSampler(config);
+wgpu::Sampler TextureManager::createSampler(const std::string& samplerName, const wgpu::SamplerDescriptor& config) {
+    removeSampler(samplerName);
+    wgpu::Sampler sampler = device.createSampler(config);
     samplers[samplerName] = sampler;
     return sampler;
 }
@@ -75,6 +80,7 @@ void TextureManager::removeTextureView(const std::string& name) {
 void TextureManager::removeTexture(const std::string& name) {
     auto it = textures.find(name);
     if (it != textures.end()) {
+        it->second.destroy();
         it->second.release();
         textures.erase(it);
     }

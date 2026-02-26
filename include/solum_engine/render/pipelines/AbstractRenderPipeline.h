@@ -4,6 +4,9 @@
 #include "solum_engine/render/TextureManager.h"
 #include "solum_engine/render/PipelineManager.h"
 #include "solum_engine/platform/WebGPUContext.h"
+
+#include <webgpu/webgpu.hpp>
+
 #include <functional>
 
 struct RenderServices {
@@ -33,8 +36,8 @@ public:
     virtual bool build() = 0;
 
     virtual bool render(
-        TextureView targetView,
-        CommandEncoder encoder,
-        const std::function<void(RenderPassEncoder&)>& overlayCallback = {}
+        wgpu::TextureView targetView,
+        wgpu::CommandEncoder encoder,
+        const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
     ) = 0;
 };

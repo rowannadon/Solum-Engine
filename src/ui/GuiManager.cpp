@@ -5,7 +5,9 @@
 
 namespace { constexpr bool kEnableImGuiGamepadNav = false; }
 
-bool GuiManager:: initImGUI(GLFWwindow* window, Device device, TextureFormat format) {
+using namespace wgpu;
+
+bool GuiManager::initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::TextureFormat format) {
 // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();

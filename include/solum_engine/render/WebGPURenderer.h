@@ -23,7 +23,7 @@
 #include "solum_engine/render/RuntimeTiming.h"
 #include "solum_engine/render/pipelines/BoundsDebugPipeline.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
-#include "solum_engine/render/MeshletManager.h"
+#include "solum_engine/render/MeshletBufferController.h"
 #include "solum_engine/voxel/StreamingUpload.h"
 
 class World;
@@ -55,41 +55,22 @@ private:
         uint64_t mainUploadsApplied = 0;
     };
 
-    struct ChunkedMeshUploadState {
-        StreamingMeshUpload upload;
-        uint32_t targetBufferIndex = 0;
-        size_t metadataUploadedBytes = 0;
-        size_t quadUploadedBytes = 0;
-        size_t aabbUploadedBytes = 0;
-    };
-
     std::unique_ptr<WebGPUContext> context;
     std::unique_ptr<PipelineManager> pipelineManager;
     std::unique_ptr<BufferManager> bufferManager;
     std::unique_ptr<TextureManager> textureManager;
     std::unique_ptr<MaterialManager> materialManager;
 
-    std::unique_ptr<MeshletManager> meshletManager;
+    MeshletBufferController meshletBuffers_;
 
     std::optional<RenderServices> services_;
     std::optional<VoxelPipeline> voxelPipeline_;
     std::optional<BoundsDebugPipeline> boundsDebugPipeline_;
     const World* debugWorld_ = nullptr;
 
-    uint32_t meshletCapacity_ = 0;
-    uint32_t quadCapacity_ = 0;
-    uint64_t uploadedMeshRevision_ = 0;
-    std::vector<MeshletAabb> activeMeshletBounds_;
     uint64_t uploadedDebugBoundsRevision_ = 0;
     uint64_t uploadedDebugBoundsMeshRevision_ = 0;
     uint32_t uploadedDebugBoundsLayerMask_ = 0u;
-    ColumnCoord uploadedCenterColumn_{0, 0};
-    bool hasUploadedCenterColumn_ = false;
-    double lastMeshUploadTimeSeconds_ = -1.0;
-
-    std::optional<StreamingMeshUpload> pendingMeshUpload_;
-    std::optional<ChunkedMeshUploadState> chunkedMeshUpload_;
-    std::atomic<bool> mainMeshUploadInProgress_{false};
 
     std::array<TimingAccumulator, static_cast<std::size_t>(TimingStage::Count)> timingAccumulators_{};
     std::atomic<uint64_t> mainUploadsApplied_{0};
@@ -98,7 +79,6 @@ private:
     std::optional<std::chrono::steady_clock::time_point> lastTimingSampleTime_;
 
     bool resizePending = false;
-    static constexpr size_t kMeshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
     static constexpr uint32_t kOcclusionDepthDownsample = 2u;
     static constexpr const char* kOcclusionDepthTextureName = "meshlet_occlusion_depth_texture";
     static constexpr const char* kOcclusionDepthViewName = "meshlet_occlusion_depth_view";
@@ -110,32 +90,31 @@ private:
     static constexpr uint32_t kMeshletCullWorkgroupSize = 128u;
     static constexpr uint32_t kOcclusionHiZWorkgroupSize = 8u;
 
-    BindGroupLayout meshletDepthPrepassBindGroupLayout_ = nullptr;
-    BindGroup meshletDepthPrepassBindGroup_ = nullptr;
-    RenderPipeline meshletDepthPrepassPipeline_ = nullptr;
-    BindGroupLayout meshletHiZSeedBindGroupLayout_ = nullptr;
-    BindGroupLayout meshletHiZDownsampleBindGroupLayout_ = nullptr;
-    ComputePipeline meshletHiZSeedPipeline_ = nullptr;
-    ComputePipeline meshletHiZDownsamplePipeline_ = nullptr;
+    wgpu::BindGroupLayout meshletDepthPrepassBindGroupLayout_ = nullptr;
+    wgpu::BindGroup meshletDepthPrepassBindGroup_ = nullptr;
+    wgpu::RenderPipeline meshletDepthPrepassPipeline_ = nullptr;
+    wgpu::BindGroupLayout meshletHiZSeedBindGroupLayout_ = nullptr;
+    wgpu::BindGroupLayout meshletHiZDownsampleBindGroupLayout_ = nullptr;
+    wgpu::ComputePipeline meshletHiZSeedPipeline_ = nullptr;
+    wgpu::ComputePipeline meshletHiZDownsamplePipeline_ = nullptr;
     uint32_t occlusionHiZMipCount_ = 1u;
     uint32_t occlusionDepthWidth_ = 1u;
     uint32_t occlusionDepthHeight_ = 1u;
 
-    BindGroupLayout meshletCullBindGroupLayout_ = nullptr;
-    BindGroup meshletCullBindGroup_ = nullptr;
-    ComputePipeline meshletCullPipeline_ = nullptr;
+    wgpu::BindGroupLayout meshletCullBindGroupLayout_ = nullptr;
+    wgpu::BindGroup meshletCullBindGroup_ = nullptr;
+    wgpu::ComputePipeline meshletCullPipeline_ = nullptr;
 
-    bool uploadMeshlets(StreamingMeshUpload&& upload);
     bool initializeMeshletOcclusionResources();
     bool createOcclusionDepthResources();
     void removeOcclusionDepthResources();
     bool refreshMeshletOcclusionBindGroup();
-    void encodeMeshletOcclusionDepthPass(CommandEncoder encoder);
-    void encodeMeshletOcclusionHierarchyPass(CommandEncoder encoder);
+    void encodeMeshletOcclusionDepthPass(wgpu::CommandEncoder encoder);
+    void encodeMeshletOcclusionHierarchyPass(wgpu::CommandEncoder encoder);
     bool initializeMeshletCullingResources();
     bool refreshMeshletCullingBindGroup();
     void updateMeshletCullParams(uint32_t meshletCount);
-    void encodeMeshletCullingPass(CommandEncoder encoder);
+    void encodeMeshletCullingPass(wgpu::CommandEncoder encoder);
     void processPendingMeshUploads();
     void updateDebugBounds(const FrameUniforms& frameUniforms);
     void rebuildDebugBounds(uint32_t layerMask);
@@ -163,7 +142,7 @@ public:
     bool resizeSurfaceAndAttachments();
     void requestResize();
 
-    std::pair<SurfaceTexture, TextureView> GetNextSurfaceViewData();
+    std::pair<wgpu::SurfaceTexture, wgpu::TextureView> GetNextSurfaceViewData();
     RuntimeTimingSnapshot getRuntimeTimingSnapshot();
 
     void setDebugWorld(const World* world);
