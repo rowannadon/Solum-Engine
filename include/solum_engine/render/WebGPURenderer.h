@@ -6,17 +6,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <optional>
-#include <thread>
 #include <utility>
 #include <vector>
-
-#include <glm/glm.hpp>
 
 #include "solum_engine/render/PipelineManager.h"
 #include "solum_engine/render/BufferManager.h"
@@ -28,14 +24,14 @@
 #include "solum_engine/render/pipelines/BoundsDebugPipeline.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 #include "solum_engine/render/MeshletManager.h"
-#include "solum_engine/voxel/MeshManager.h"
-#include "solum_engine/voxel/World.h"
+#include "solum_engine/voxel/StreamingUpload.h"
+
+class World;
 
 class WebGPURenderer {
 private:
     enum class TimingStage : std::size_t {
-        MainUpdateWorldStreaming = 0,
-        MainUploadMeshlets,
+        MainUploadMeshlets = 0,
         MainUpdateDebugBounds,
         MainRenderFrameCpu,
         MainAcquireSurface,
@@ -43,11 +39,6 @@ private:
         MainQueueSubmit,
         MainPresent,
         MainDeviceTick,
-        StreamWait,
-        StreamWorldUpdate,
-        StreamMeshUpdate,
-        StreamCopyMeshlets,
-        StreamPrepareUpload,
         Count
     };
 
@@ -61,28 +52,11 @@ private:
         std::array<uint64_t, static_cast<std::size_t>(TimingStage::Count)> totalNs{};
         std::array<uint64_t, static_cast<std::size_t>(TimingStage::Count)> callCount{};
         std::array<uint64_t, static_cast<std::size_t>(TimingStage::Count)> maxNs{};
-        uint64_t streamSkipNoCamera = 0;
-        uint64_t streamSkipUnchanged = 0;
-        uint64_t streamSkipThrottle = 0;
-        uint64_t streamSnapshotsPrepared = 0;
         uint64_t mainUploadsApplied = 0;
     };
 
-    struct PendingMeshUpload {
-        std::vector<MeshletMetadataGPU> metadata;
-        std::vector<uint32_t> quadData;
-        std::vector<MeshletAabbGPU> meshletAabbsGpu;
-        std::vector<MeshletAabb> meshletBounds;
-        uint32_t totalMeshletCount = 0;
-        uint32_t totalQuadCount = 0;
-        uint32_t requiredMeshletCapacity = 0;
-        uint32_t requiredQuadCapacity = 0;
-        uint64_t meshRevision = 0;
-        ColumnCoord centerColumn{0, 0};
-    };
-
     struct ChunkedMeshUploadState {
-        PendingMeshUpload upload;
+        StreamingMeshUpload upload;
         uint32_t targetBufferIndex = 0;
         size_t metadataUploadedBytes = 0;
         size_t quadUploadedBytes = 0;
@@ -96,12 +70,11 @@ private:
     std::unique_ptr<MaterialManager> materialManager;
 
     std::unique_ptr<MeshletManager> meshletManager;
-    std::unique_ptr<World> world_;
-    std::unique_ptr<MeshManager> voxelMeshManager_;
 
     std::optional<RenderServices> services_;
     std::optional<VoxelPipeline> voxelPipeline_;
     std::optional<BoundsDebugPipeline> boundsDebugPipeline_;
+    const World* debugWorld_ = nullptr;
 
     uint32_t meshletCapacity_ = 0;
     uint32_t quadCapacity_ = 0;
@@ -112,29 +85,13 @@ private:
     uint32_t uploadedDebugBoundsLayerMask_ = 0u;
     ColumnCoord uploadedCenterColumn_{0, 0};
     bool hasUploadedCenterColumn_ = false;
-    int32_t uploadColumnRadius_ = 1;
     double lastMeshUploadTimeSeconds_ = -1.0;
 
-    std::thread streamingThread_;
-    std::mutex streamingMutex_;
-    std::condition_variable streamingCv_;
-    bool streamingStopRequested_ = false;
-    bool hasLatestStreamingCamera_ = false;
-    glm::vec3 latestStreamingCamera_{0.0f, 0.0f, 0.0f};
-    float latestStreamingSseProjectionScale_ = 390.0f;
-    std::optional<PendingMeshUpload> pendingMeshUpload_;
+    std::optional<StreamingMeshUpload> pendingMeshUpload_;
     std::optional<ChunkedMeshUploadState> chunkedMeshUpload_;
     std::atomic<bool> mainMeshUploadInProgress_{false};
-    uint64_t streamerLastPreparedRevision_ = 0;
-    ColumnCoord streamerLastPreparedCenter_{0, 0};
-    bool streamerHasLastPreparedCenter_ = false;
-    std::optional<std::chrono::steady_clock::time_point> streamerLastSnapshotTime_;
 
     std::array<TimingAccumulator, static_cast<std::size_t>(TimingStage::Count)> timingAccumulators_{};
-    std::atomic<uint64_t> streamSkipNoCamera_{0};
-    std::atomic<uint64_t> streamSkipUnchanged_{0};
-    std::atomic<uint64_t> streamSkipThrottle_{0};
-    std::atomic<uint64_t> streamSnapshotsPrepared_{0};
     std::atomic<uint64_t> mainUploadsApplied_{0};
     std::mutex timingSnapshotMutex_;
     TimingRawTotals lastTimingRawTotals_{};
@@ -168,7 +125,7 @@ private:
     BindGroup meshletCullBindGroup_ = nullptr;
     ComputePipeline meshletCullPipeline_ = nullptr;
 
-    bool uploadMeshlets(PendingMeshUpload&& upload);
+    bool uploadMeshlets(StreamingMeshUpload&& upload);
     bool initializeMeshletOcclusionResources();
     bool createOcclusionDepthResources();
     void removeOcclusionDepthResources();
@@ -179,14 +136,9 @@ private:
     bool refreshMeshletCullingBindGroup();
     void updateMeshletCullParams(uint32_t meshletCount);
     void encodeMeshletCullingPass(CommandEncoder encoder);
-    void updateWorldStreaming(const FrameUniforms& frameUniforms);
+    void processPendingMeshUploads();
     void updateDebugBounds(const FrameUniforms& frameUniforms);
     void rebuildDebugBounds(uint32_t layerMask);
-    void startStreamingThread(const glm::vec3& initialCameraPosition, const ColumnCoord& initialCenterColumn);
-    void stopStreamingThread();
-    void streamingThreadMain();
-    glm::vec3 extractCameraPosition(const FrameUniforms& frameUniforms) const;
-    int32_t cameraColumnChebyshevDistance(const ColumnCoord& a, const ColumnCoord& b) const;
     void recordTimingNs(TimingStage stage, uint64_t ns) noexcept;
     TimingRawTotals captureTimingRawTotals() const;
     static TimingStageSnapshot makeStageSnapshot(const TimingRawTotals& current,
@@ -196,7 +148,7 @@ private:
 
 public:
     WebGPURenderer() = default;
-    ~WebGPURenderer();
+    ~WebGPURenderer() = default;
 
     bool initialize();
 
@@ -213,6 +165,11 @@ public:
 
     std::pair<SurfaceTexture, TextureView> GetNextSurfaceViewData();
     RuntimeTimingSnapshot getRuntimeTimingSnapshot();
+
+    void setDebugWorld(const World* world);
+    void queueMeshUpload(StreamingMeshUpload&& upload);
+    bool isMeshUploadInProgress() const noexcept;
+    uint64_t uploadedMeshRevision() const noexcept;
 
     void renderFrame(FrameUniforms& uniforms);
 

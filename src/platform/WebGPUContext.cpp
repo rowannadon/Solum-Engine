@@ -58,6 +58,7 @@ PresentMode choosePreferredPresentMode(const SurfaceCapabilities& capabilities) 
     }
 
 #if defined(_WIN32) || defined(__APPLE__)
+return PresentMode::Fifo;
     if (supports(PresentMode::Immediate)) {
         return PresentMode::Immediate;
     }

@@ -27,6 +27,7 @@
 #include "solum_engine/render/WebGPURenderer.h"
 #include "solum_engine/ui/GuiManager.h"
 #include "solum_engine/core/Camera.h"
+#include "solum_engine/voxel/VoxelStreamingSystem.h"
 
 class Application {
 public:
@@ -74,6 +75,7 @@ private:
     GuiManager gui;
 
     WebGPURenderer gpu;
+    VoxelStreamingSystem voxelStreaming_;
     BufferManager *buf;
 
     FirstPersonCamera camera;

@@ -2,10 +2,13 @@
 
 #include "solum_engine/core/Application.h"
 
+#include <algorithm>
 #include <cfloat>
+#include <cmath>
 
 bool Application::Initialize() {
     if (!gpu.initialize()) return false;
+    if (!voxelStreaming_.initialize()) return false;
     buf = gpu.getBufferManager();
 
     window = gpu.getWindow();
@@ -41,6 +44,8 @@ bool Application::Initialize() {
     camera.updateCameraVectors();
     updateProjectionMatrix(camera.zoom);
     updateViewMatrix();
+    gpu.setDebugWorld(voxelStreaming_.world());
+    voxelStreaming_.start(camera.position, gpu.uploadedMeshRevision());
 
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
 
@@ -58,6 +63,7 @@ bool Application::Initialize() {
 
 
 void Application::Terminate() {
+    voxelStreaming_.stop();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     gui.terminateImGUI();
 }
@@ -98,7 +104,45 @@ void Application::MainLoop() {
     uniforms.viewMatrix = viewGPU;
     uniforms.inverseViewMatrix = glm::inverse(viewGPU);
 
-    runtimeTimingSnapshot_ = gpu.getRuntimeTimingSnapshot();
+    const auto streamUpdateStart = std::chrono::steady_clock::now();
+    const float projectionYScale = std::abs(uniforms.projectionMatrix[1][1]);
+    const int32_t framebufferHeight = std::max(1, gpu.getContext()->height);
+    float sseProjectionScale = 0.5f * static_cast<float>(framebufferHeight) * projectionYScale;
+    if (!std::isfinite(sseProjectionScale) || sseProjectionScale <= 0.0f) {
+        sseProjectionScale = 390.0f;
+    }
+
+    voxelStreaming_.setMainUploadInProgress(gpu.isMeshUploadInProgress());
+    voxelStreaming_.updateCamera(camera.position, sseProjectionScale);
+    if (auto upload = voxelStreaming_.consumePendingMeshUpload()) {
+        gpu.queueMeshUpload(std::move(*upload));
+    }
+    voxelStreaming_.recordMainUpdateDurationNs(
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - streamUpdateStart
+        ).count())
+    );
+
+    const RuntimeTimingSnapshot gpuTiming = gpu.getRuntimeTimingSnapshot();
+    const RuntimeTimingSnapshot streamingTiming = voxelStreaming_.getRuntimeTimingSnapshot();
+    runtimeTimingSnapshot_ = gpuTiming;
+    runtimeTimingSnapshot_.sampleWindowSeconds =
+        std::max(runtimeTimingSnapshot_.sampleWindowSeconds, streamingTiming.sampleWindowSeconds);
+    runtimeTimingSnapshot_.mainUpdateWorldStreaming = streamingTiming.mainUpdateWorldStreaming;
+    runtimeTimingSnapshot_.streamWait = streamingTiming.streamWait;
+    runtimeTimingSnapshot_.streamWorldUpdate = streamingTiming.streamWorldUpdate;
+    runtimeTimingSnapshot_.streamMeshUpdate = streamingTiming.streamMeshUpdate;
+    runtimeTimingSnapshot_.streamCopyMeshlets = streamingTiming.streamCopyMeshlets;
+    runtimeTimingSnapshot_.streamPrepareUpload = streamingTiming.streamPrepareUpload;
+    runtimeTimingSnapshot_.streamSkipNoCamera = streamingTiming.streamSkipNoCamera;
+    runtimeTimingSnapshot_.streamSkipUnchanged = streamingTiming.streamSkipUnchanged;
+    runtimeTimingSnapshot_.streamSkipThrottle = streamingTiming.streamSkipThrottle;
+    runtimeTimingSnapshot_.streamSnapshotsPrepared = streamingTiming.streamSnapshotsPrepared;
+    runtimeTimingSnapshot_.worldHasPendingJobs = streamingTiming.worldHasPendingJobs;
+    runtimeTimingSnapshot_.meshHasPendingJobs = streamingTiming.meshHasPendingJobs;
+    runtimeTimingSnapshot_.pendingUploadQueued =
+        streamingTiming.pendingUploadQueued || gpuTiming.pendingUploadQueued;
+
     gui.renderImGUI(uniforms, frameTimes, camera, frameTime, runtimeTimingSnapshot_);
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
     
