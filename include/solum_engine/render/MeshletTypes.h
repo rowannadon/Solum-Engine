@@ -12,6 +12,14 @@ inline uint16_t packMeshletLocalOffset(uint32_t x, uint32_t y, uint32_t z) {
     return static_cast<uint16_t>((x & 0x1Fu) | ((y & 0x1Fu) << 5u) | ((z & 0x1Fu) << 10u));
 }
 
+inline glm::uvec3 unpackMeshletLocalOffset(uint16_t packedOffset) {
+    return glm::uvec3(
+        static_cast<uint32_t>(packedOffset & 0x1Fu),
+        static_cast<uint32_t>((packedOffset >> 5u) & 0x1Fu),
+        static_cast<uint32_t>((packedOffset >> 10u) & 0x1Fu)
+    );
+}
+
 inline uint32_t packMeshletQuadData(uint16_t packedLocalOffset, uint16_t materialId) {
     return static_cast<uint32_t>(packedLocalOffset) | (static_cast<uint32_t>(materialId) << 16u);
 }
@@ -51,4 +59,15 @@ struct MeshletMetadataGPU {
     uint32_t pad1 = 0;
 };
 
+struct MeshletAabb {
+    glm::vec3 minCorner{0.0f};
+    glm::vec3 maxCorner{0.0f};
+};
+
+struct MeshletAabbGPU {
+    glm::vec4 minCorner{0.0f};
+    glm::vec4 maxCorner{0.0f};
+};
+
 static_assert(sizeof(MeshletMetadataGPU) == 32, "Meshlet metadata layout must match shader");
+static_assert(sizeof(MeshletAabbGPU) == 32, "Meshlet AABB GPU layout must remain tightly packed");

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <iostream>
 #include <exception>
+#include <fstream>
+#include <sstream>
 #include <unordered_set>
 
 #include "solum_engine/render/WebGPURenderer.h"
@@ -15,15 +17,76 @@ namespace {
 constexpr glm::vec4 kChunkBoundsColor{0.2f, 0.95f, 0.35f, 0.22f};
 constexpr glm::vec4 kColumnBoundsColor{1.0f, 0.7f, 0.2f, 0.6f};
 constexpr glm::vec4 kRegionBoundsColor{0.2f, 0.8f, 1.0f, 0.95f};
+constexpr glm::vec4 kMeshletBoundsColor{1.0f, 0.35f, 0.15f, 0.4f};
 
 struct PreparedMeshUploadData {
 	std::vector<MeshletMetadataGPU> metadata;
 	std::vector<uint32_t> quadData;
+	std::vector<MeshletAabbGPU> meshletAabbsGpu;
+	std::vector<MeshletAabb> meshletBounds;
 	uint32_t totalMeshletCount = 0;
 	uint32_t totalQuadCount = 0;
 	uint32_t requiredMeshletCapacity = 64u;
 	uint32_t requiredQuadCapacity = 64u * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
 };
+
+MeshletAabb computeMeshletAabb(const Meshlet& meshlet) {
+	if (meshlet.quadCount == 0u) {
+		const glm::vec3 origin = glm::vec3(meshlet.origin);
+		return MeshletAabb{origin, origin};
+	}
+
+	static const std::array<std::array<glm::vec3, 4>, 6> kFaceCornerOffsets{{
+		{{glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
+		{{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 1.0f}}},
+		{{glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
+		{{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 0.0f, 1.0f}}},
+		{{glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 0.0f, 1.0f}, glm::vec3{0.0f, 1.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
+		{{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 0.0f}}},
+	}};
+
+	const uint32_t safeFaceDirection = std::min(meshlet.faceDirection, 5u);
+	const float voxelScale = static_cast<float>(std::max(meshlet.voxelScale, 1u));
+
+	bool firstVertex = true;
+	glm::vec3 minCorner{0.0f};
+	glm::vec3 maxCorner{0.0f};
+
+	for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
+		const glm::uvec3 local = unpackMeshletLocalOffset(meshlet.packedQuadLocalOffsets[quadIndex]);
+		const glm::vec3 quadBase = glm::vec3(meshlet.origin) + (glm::vec3(local) * voxelScale);
+		for (const glm::vec3& cornerOffset : kFaceCornerOffsets[safeFaceDirection]) {
+			const glm::vec3 vertex = quadBase + (cornerOffset * voxelScale);
+			if (firstVertex) {
+				minCorner = vertex;
+				maxCorner = vertex;
+				firstVertex = false;
+				continue;
+			}
+			minCorner = glm::min(minCorner, vertex);
+			maxCorner = glm::max(maxCorner, vertex);
+		}
+	}
+
+	return MeshletAabb{minCorner, maxCorner};
+}
+
+MeshletAabbGPU toGpuAabb(const MeshletAabb& aabb) {
+	return MeshletAabbGPU{
+		glm::vec4(aabb.minCorner, 0.0f),
+		glm::vec4(aabb.maxCorner, 0.0f)
+	};
+}
+
+std::string loadTextFile(const char* path) {
+	std::ifstream file(path);
+	if (!file.is_open()) {
+		return {};
+	}
+	std::ostringstream ss;
+	ss << file.rdbuf();
+	return ss.str();
+}
 
 PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlets) {
 	PreparedMeshUploadData prepared;
@@ -38,6 +101,8 @@ PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlet
 
 	prepared.metadata.reserve(prepared.totalMeshletCount);
 	prepared.quadData.reserve(prepared.totalQuadCount);
+	prepared.meshletAabbsGpu.reserve(prepared.totalMeshletCount);
+	prepared.meshletBounds.reserve(prepared.totalMeshletCount);
 
 	for (const Meshlet& meshlet : meshlets) {
 		if (meshlet.quadCount == 0) {
@@ -53,6 +118,9 @@ PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlet
 		metadata.dataOffset = static_cast<uint32_t>(prepared.quadData.size());
 		metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
 		prepared.metadata.push_back(metadata);
+		const MeshletAabb meshletBounds = computeMeshletAabb(meshlet);
+		prepared.meshletAabbsGpu.push_back(toGpuAabb(meshletBounds));
+		prepared.meshletBounds.push_back(meshletBounds);
 
 		for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
 			prepared.quadData.push_back(packMeshletQuadData(
@@ -185,12 +253,18 @@ bool WebGPURenderer::initialize() {
 		std::cerr << "Failed to create voxel pipeline and resources." << std::endl;
 		return false;
 	}
+	if (!initializeMeshletCullingResources()) {
+		std::cerr << "Failed to initialize meshlet culling resources." << std::endl;
+		return false;
+	}
+	voxelPipeline_->setIndirectDrawBuffer(kMeshletCullIndirectArgsBufferName, 0u);
 	boundsDebugPipeline_.emplace(*services_);
 	if (!boundsDebugPipeline_->build()) {
 		std::cerr << "Failed to create bounds debug pipeline and resources." << std::endl;
 		return false;
 	}
 	uploadedDebugBoundsRevision_ = 0;
+	uploadedDebugBoundsMeshRevision_ = 0;
 	uploadedDebugBoundsLayerMask_ = 0u;
 
 	try {
@@ -211,7 +285,13 @@ void WebGPURenderer::createRenderingTextures() {
 		std::cerr << "Failed to recreate voxel rendering resources." << std::endl;
 		return;
 	}
-	if (!voxelPipeline_->createBindGroup()) {
+	const bool bindOk = meshletManager
+		? voxelPipeline_->createBindGroupForMeshBuffers(
+			meshletManager->getActiveMeshDataBufferName(),
+			meshletManager->getActiveMeshMetadataBufferName(),
+			meshletManager->getActiveVisibleMeshletIndexBufferName())
+		: voxelPipeline_->createBindGroup();
+	if (!bindOk) {
 		std::cerr << "Failed to recreate voxel bind group." << std::endl;
 	}
 }
@@ -261,6 +341,231 @@ BufferManager* WebGPURenderer::getBufferManager() {
 	return bufferManager.get();
 }
 
+bool WebGPURenderer::initializeMeshletCullingResources() {
+	if (!context || !bufferManager) {
+		return false;
+	}
+
+	{
+		BufferDescriptor paramsDesc = Default;
+		paramsDesc.label = StringView("meshlet cull params buffer");
+		paramsDesc.size = 16u;
+		paramsDesc.usage = BufferUsage::Uniform | BufferUsage::CopyDst;
+		paramsDesc.mappedAtCreation = false;
+		if (!bufferManager->createBuffer(kMeshletCullParamsBufferName, paramsDesc)) {
+			return false;
+		}
+	}
+
+	{
+		BufferDescriptor indirectDesc = Default;
+		indirectDesc.label = StringView("meshlet cull indirect args buffer");
+		indirectDesc.size = sizeof(uint32_t) * 4u;
+		indirectDesc.usage = BufferUsage::Storage | BufferUsage::Indirect | BufferUsage::CopyDst;
+		indirectDesc.mappedAtCreation = false;
+		if (!bufferManager->createBuffer(kMeshletCullIndirectArgsBufferName, indirectDesc)) {
+			return false;
+		}
+	}
+
+	{
+		BufferDescriptor resetDesc = Default;
+		resetDesc.label = StringView("meshlet cull indirect reset buffer");
+		resetDesc.size = sizeof(uint32_t) * 4u;
+		resetDesc.usage = BufferUsage::CopySrc | BufferUsage::CopyDst;
+		resetDesc.mappedAtCreation = false;
+		if (!bufferManager->createBuffer(kMeshletCullIndirectResetBufferName, resetDesc)) {
+			return false;
+		}
+
+		const uint32_t drawArgsReset[4] = {MESHLET_VERTEX_CAPACITY, 0u, 0u, 0u};
+		bufferManager->writeBuffer(
+			kMeshletCullIndirectResetBufferName,
+			0u,
+			drawArgsReset,
+			sizeof(drawArgsReset)
+		);
+	}
+
+	std::vector<BindGroupLayoutEntry> cullLayoutEntries(5, Default);
+	cullLayoutEntries[0].binding = 0;
+	cullLayoutEntries[0].visibility = ShaderStage::Compute;
+	cullLayoutEntries[0].buffer.type = BufferBindingType::Uniform;
+	cullLayoutEntries[0].buffer.minBindingSize = sizeof(FrameUniforms);
+
+	cullLayoutEntries[1].binding = 1;
+	cullLayoutEntries[1].visibility = ShaderStage::Compute;
+	cullLayoutEntries[1].buffer.type = BufferBindingType::ReadOnlyStorage;
+
+	cullLayoutEntries[2].binding = 2;
+	cullLayoutEntries[2].visibility = ShaderStage::Compute;
+	cullLayoutEntries[2].buffer.type = BufferBindingType::Storage;
+
+	cullLayoutEntries[3].binding = 3;
+	cullLayoutEntries[3].visibility = ShaderStage::Compute;
+	cullLayoutEntries[3].buffer.type = BufferBindingType::Storage;
+
+	cullLayoutEntries[4].binding = 4;
+	cullLayoutEntries[4].visibility = ShaderStage::Compute;
+	cullLayoutEntries[4].buffer.type = BufferBindingType::Uniform;
+	cullLayoutEntries[4].buffer.minBindingSize = 16u;
+
+	BindGroupLayoutDescriptor bglDesc = Default;
+	bglDesc.label = StringView("meshlet cull bgl");
+	bglDesc.entryCount = static_cast<uint32_t>(cullLayoutEntries.size());
+	bglDesc.entries = cullLayoutEntries.data();
+	meshletCullBindGroupLayout_ = context->getDevice().createBindGroupLayout(bglDesc);
+	if (!meshletCullBindGroupLayout_) {
+		return false;
+	}
+
+	const std::string cullShaderSource = loadTextFile(SHADER_DIR "/meshlet_cull.wgsl");
+	if (cullShaderSource.empty()) {
+		return false;
+	}
+
+	ShaderModuleWGSLDescriptor shaderCodeDesc{};
+	shaderCodeDesc.chain.sType = SType::ShaderSourceWGSL;
+	shaderCodeDesc.code = StringView(cullShaderSource);
+
+	ShaderModuleDescriptor shaderDesc = Default;
+#ifdef WEBGPU_BACKEND_WGPU
+	shaderDesc.hintCount = 0;
+	shaderDesc.hints = nullptr;
+#endif
+	shaderDesc.nextInChain = &shaderCodeDesc.chain;
+	ShaderModule cullShader = context->getDevice().createShaderModule(shaderDesc);
+	if (!cullShader) {
+		return false;
+	}
+
+	PipelineLayoutDescriptor layoutDesc = Default;
+	layoutDesc.bindGroupLayoutCount = 1;
+	layoutDesc.bindGroupLayouts = reinterpret_cast<WGPUBindGroupLayout*>(&meshletCullBindGroupLayout_);
+	PipelineLayout layout = context->getDevice().createPipelineLayout(layoutDesc);
+	if (!layout) {
+		cullShader.release();
+		return false;
+	}
+
+	ComputePipelineDescriptor pipelineDesc = Default;
+	pipelineDesc.label = StringView("meshlet cull pipeline");
+	pipelineDesc.layout = layout;
+	pipelineDesc.compute.module = cullShader;
+	pipelineDesc.compute.entryPoint = StringView("cs_main");
+	meshletCullPipeline_ = context->getDevice().createComputePipeline(pipelineDesc);
+
+	layout.release();
+	cullShader.release();
+
+	if (!meshletCullPipeline_) {
+		return false;
+	}
+
+	updateMeshletCullParams(meshletManager ? meshletManager->getMeshletCount() : 0u);
+	return refreshMeshletCullingBindGroup();
+}
+
+void WebGPURenderer::updateMeshletCullParams(uint32_t meshletCount) {
+	if (!bufferManager) {
+		return;
+	}
+	const uint32_t params[4] = {meshletCount, 0u, 0u, 0u};
+	bufferManager->writeBuffer(kMeshletCullParamsBufferName, 0u, params, sizeof(params));
+}
+
+bool WebGPURenderer::refreshMeshletCullingBindGroup() {
+	if (!bufferManager || !meshletManager || !meshletCullBindGroupLayout_) {
+		return false;
+	}
+
+	Buffer uniformBuffer = bufferManager->getBuffer("uniform_buffer");
+	Buffer meshletAabbBuffer = bufferManager->getBuffer(meshletManager->getActiveMeshAabbBufferName());
+	Buffer visibleIndicesBuffer = bufferManager->getBuffer(meshletManager->getActiveVisibleMeshletIndexBufferName());
+	Buffer drawArgsBuffer = bufferManager->getBuffer(kMeshletCullIndirectArgsBufferName);
+	Buffer cullParamsBuffer = bufferManager->getBuffer(kMeshletCullParamsBufferName);
+	if (!uniformBuffer || !meshletAabbBuffer || !visibleIndicesBuffer || !drawArgsBuffer || !cullParamsBuffer) {
+		return false;
+	}
+
+	std::vector<BindGroupEntry> entries(5, Default);
+	entries[0].binding = 0;
+	entries[0].buffer = uniformBuffer;
+	entries[0].offset = 0;
+	entries[0].size = sizeof(FrameUniforms);
+
+	entries[1].binding = 1;
+	entries[1].buffer = meshletAabbBuffer;
+	entries[1].offset = 0;
+	entries[1].size = meshletAabbBuffer.getSize();
+
+	entries[2].binding = 2;
+	entries[2].buffer = visibleIndicesBuffer;
+	entries[2].offset = 0;
+	entries[2].size = visibleIndicesBuffer.getSize();
+
+	entries[3].binding = 3;
+	entries[3].buffer = drawArgsBuffer;
+	entries[3].offset = 0;
+	entries[3].size = drawArgsBuffer.getSize();
+
+	entries[4].binding = 4;
+	entries[4].buffer = cullParamsBuffer;
+	entries[4].offset = 0;
+	entries[4].size = 16u;
+
+	if (meshletCullBindGroup_) {
+		meshletCullBindGroup_.release();
+		meshletCullBindGroup_ = nullptr;
+	}
+
+	BindGroupDescriptor bgDesc = Default;
+	bgDesc.label = StringView("meshlet cull bg");
+	bgDesc.layout = meshletCullBindGroupLayout_;
+	bgDesc.entryCount = static_cast<uint32_t>(entries.size());
+	bgDesc.entries = entries.data();
+	meshletCullBindGroup_ = context->getDevice().createBindGroup(bgDesc);
+	return meshletCullBindGroup_ != nullptr;
+}
+
+void WebGPURenderer::encodeMeshletCullingPass(CommandEncoder encoder) {
+	if (!meshletCullPipeline_ || !meshletCullBindGroup_ || !meshletManager) {
+		return;
+	}
+
+	Buffer resetBuffer = bufferManager->getBuffer(kMeshletCullIndirectResetBufferName);
+	Buffer indirectArgsBuffer = bufferManager->getBuffer(kMeshletCullIndirectArgsBufferName);
+	if (!resetBuffer || !indirectArgsBuffer) {
+		return;
+	}
+	encoder.copyBufferToBuffer(
+		resetBuffer,
+		0u,
+		indirectArgsBuffer,
+		0u,
+		sizeof(uint32_t) * 4u
+	);
+
+	uint32_t meshletCount = meshletManager->getMeshletCount();
+	if (meshletCount == 0u && chunkedMeshUpload_.has_value() && !activeMeshletBounds_.empty()) {
+		// While resized buffers stream in, continue culling the previous active set.
+		meshletCount = static_cast<uint32_t>(activeMeshletBounds_.size());
+	}
+
+	if (meshletCount == 0u) {
+		return;
+	}
+
+	ComputePassDescriptor passDesc = Default;
+	ComputePassEncoder pass = encoder.beginComputePass(passDesc);
+	pass.setPipeline(meshletCullPipeline_);
+	pass.setBindGroup(0, meshletCullBindGroup_, 0, nullptr);
+	const uint32_t workgroupCount = (meshletCount + kMeshletCullWorkgroupSize - 1u) / kMeshletCullWorkgroupSize;
+	pass.dispatchWorkgroups(workgroupCount, 1u, 1u);
+	pass.end();
+	pass.release();
+}
+
 bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 	const uint32_t requiredMeshletCapacity = std::max(
 		upload.requiredMeshletCapacity,
@@ -293,13 +598,18 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 		if (voxelPipeline_.has_value() &&
 			!voxelPipeline_->createBindGroupForMeshBuffers(
 				meshletManager->getActiveMeshDataBufferName(),
-				meshletManager->getActiveMeshMetadataBufferName())) {
+				meshletManager->getActiveMeshMetadataBufferName(),
+				meshletManager->getActiveVisibleMeshletIndexBufferName())) {
 			std::cerr << "Failed to recreate voxel bind group after meshlet buffer resize." << std::endl;
 			return false;
 		}
 	}
 
-	meshletManager->adoptPreparedData(std::move(upload.metadata), std::move(upload.quadData));
+	meshletManager->adoptPreparedData(
+		std::move(upload.metadata),
+		std::move(upload.quadData),
+		std::move(upload.meshletAabbsGpu)
+	);
 	if (!meshletManager->upload()) {
 		std::cerr << "Failed to upload meshlet buffers." << std::endl;
 		return false;
@@ -308,7 +618,8 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 	if (voxelPipeline_.has_value()) {
 		if (!voxelPipeline_->createBindGroupForMeshBuffers(
 				meshletManager->getActiveMeshDataBufferName(),
-				meshletManager->getActiveMeshMetadataBufferName())) {
+				meshletManager->getActiveMeshMetadataBufferName(),
+				meshletManager->getActiveVisibleMeshletIndexBufferName())) {
 			std::cerr << "Failed to bind active meshlet buffers." << std::endl;
 			return false;
 		}
@@ -317,6 +628,16 @@ bool WebGPURenderer::uploadMeshlets(PendingMeshUpload&& upload) {
 			meshletManager->getMeshletCount()
 		);
 	}
+
+	if (meshletCullBindGroupLayout_ && meshletCullPipeline_) {
+		updateMeshletCullParams(meshletManager->getMeshletCount());
+		if (!refreshMeshletCullingBindGroup()) {
+			std::cerr << "Failed to bind meshlet culling resources." << std::endl;
+			return false;
+		}
+	}
+
+	activeMeshletBounds_ = std::move(upload.meshletBounds);
 
 	return true;
 }
@@ -674,11 +995,13 @@ void WebGPURenderer::streamingThreadMain() {
 			if (streamingStopRequested_) {
 				return;
 			}
-			pendingMeshUpload_ = PendingMeshUpload{
-				std::move(prepared.metadata),
-				std::move(prepared.quadData),
-				prepared.totalMeshletCount,
-				prepared.totalQuadCount,
+				pendingMeshUpload_ = PendingMeshUpload{
+					std::move(prepared.metadata),
+					std::move(prepared.quadData),
+					std::move(prepared.meshletAabbsGpu),
+					std::move(prepared.meshletBounds),
+					prepared.totalMeshletCount,
+					prepared.totalQuadCount,
 				prepared.requiredMeshletCapacity,
 				prepared.requiredQuadCapacity,
 				currentRevision,
@@ -774,13 +1097,14 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 			quadCapacity_ = requiredQuadCapacity;
 		}
 
-		chunkedMeshUpload_ = ChunkedMeshUploadState{
-			std::move(*pendingUpload),
-			meshletManager->getInactiveBufferIndex(),
-			0,
-			0
-		};
-	}
+			chunkedMeshUpload_ = ChunkedMeshUploadState{
+				std::move(*pendingUpload),
+				meshletManager->getInactiveBufferIndex(),
+				0,
+				0,
+				0
+			};
+		}
 
 	if (chunkedMeshUpload_.has_value()) {
 		ChunkedMeshUploadState& uploadState = *chunkedMeshUpload_;
@@ -810,7 +1134,7 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 			remainingBudgetBytes -= metadataChunkBytes;
 		}
 
-		const size_t quadTotalBytes = uploadState.upload.quadData.size() * sizeof(uint32_t);
+			const size_t quadTotalBytes = uploadState.upload.quadData.size() * sizeof(uint32_t);
 		if (uploadState.quadUploadedBytes < quadTotalBytes && remainingBudgetBytes > 0) {
 			const size_t remainingQuad = quadTotalBytes - uploadState.quadUploadedBytes;
 			const size_t quadChunkBytes = std::min(remainingBudgetBytes, remainingQuad);
@@ -829,19 +1153,45 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 				);
 				return;
 			}
-			uploadState.quadUploadedBytes += quadChunkBytes;
-			remainingBudgetBytes -= quadChunkBytes;
-		}
+				uploadState.quadUploadedBytes += quadChunkBytes;
+				remainingBudgetBytes -= quadChunkBytes;
+			}
 
-		const bool uploadComplete =
-			uploadState.metadataUploadedBytes >= metadataTotalBytes &&
-			uploadState.quadUploadedBytes >= quadTotalBytes;
+			const size_t aabbTotalBytes =
+				uploadState.upload.meshletAabbsGpu.size() * sizeof(MeshletAabbGPU);
+			if (uploadState.aabbUploadedBytes < aabbTotalBytes && remainingBudgetBytes > 0) {
+				const size_t remainingAabbs = aabbTotalBytes - uploadState.aabbUploadedBytes;
+				const size_t aabbChunkBytes = std::min(remainingBudgetBytes, remainingAabbs);
+				const auto* aabbBytes = reinterpret_cast<const uint8_t*>(uploadState.upload.meshletAabbsGpu.data());
+				if (!meshletManager->writeAabbChunk(
+						uploadState.targetBufferIndex,
+						static_cast<uint64_t>(uploadState.aabbUploadedBytes),
+						aabbBytes + uploadState.aabbUploadedBytes,
+						aabbChunkBytes)) {
+					std::cerr << "Failed to stream meshlet aabb chunk." << std::endl;
+					recordTimingNs(
+						TimingStage::MainUploadMeshlets,
+						static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+							std::chrono::steady_clock::now() - uploadStart
+						).count())
+					);
+					return;
+				}
+				uploadState.aabbUploadedBytes += aabbChunkBytes;
+				remainingBudgetBytes -= aabbChunkBytes;
+			}
+
+			const bool uploadComplete =
+				uploadState.metadataUploadedBytes >= metadataTotalBytes &&
+				uploadState.quadUploadedBytes >= quadTotalBytes &&
+				uploadState.aabbUploadedBytes >= aabbTotalBytes;
 
 		if (uploadComplete) {
 			if (voxelPipeline_.has_value() &&
 				!voxelPipeline_->createBindGroupForMeshBuffers(
 					MeshletManager::meshDataBufferName(uploadState.targetBufferIndex),
-					MeshletManager::meshMetadataBufferName(uploadState.targetBufferIndex))) {
+					MeshletManager::meshMetadataBufferName(uploadState.targetBufferIndex),
+					MeshletManager::visibleMeshletIndexBufferName(uploadState.targetBufferIndex))) {
 				std::cerr << "Failed to bind staged meshlet buffers." << std::endl;
 				recordTimingNs(
 					TimingStage::MainUploadMeshlets,
@@ -858,20 +1208,34 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 				static_cast<uint32_t>(uploadState.upload.quadData.size())
 			);
 
-			if (voxelPipeline_.has_value()) {
-				voxelPipeline_->setDrawConfig(
-					meshletManager->getVerticesPerMeshlet(),
-					meshletManager->getMeshletCount()
-				);
-			}
+				if (voxelPipeline_.has_value()) {
+					voxelPipeline_->setDrawConfig(
+						meshletManager->getVerticesPerMeshlet(),
+						meshletManager->getMeshletCount()
+					);
+				}
 
-			uploadedMeshRevision_ = uploadState.upload.meshRevision;
-			uploadedCenterColumn_ = uploadState.upload.centerColumn;
-			hasUploadedCenterColumn_ = true;
-			lastMeshUploadTimeSeconds_ = glfwGetTime();
-			mainUploadsApplied_.fetch_add(1, std::memory_order_relaxed);
-			chunkedMeshUpload_.reset();
-			mainMeshUploadInProgress_.store(false, std::memory_order_relaxed);
+				activeMeshletBounds_ = std::move(uploadState.upload.meshletBounds);
+				uploadedMeshRevision_ = uploadState.upload.meshRevision;
+				uploadedCenterColumn_ = uploadState.upload.centerColumn;
+				hasUploadedCenterColumn_ = true;
+				lastMeshUploadTimeSeconds_ = glfwGetTime();
+				if (meshletCullBindGroupLayout_ && meshletCullPipeline_) {
+					updateMeshletCullParams(meshletManager->getMeshletCount());
+					if (!refreshMeshletCullingBindGroup()) {
+						std::cerr << "Failed to bind meshlet culling resources after upload." << std::endl;
+						recordTimingNs(
+							TimingStage::MainUploadMeshlets,
+							static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+								std::chrono::steady_clock::now() - uploadStart
+							).count())
+						);
+						return;
+					}
+				}
+				mainUploadsApplied_.fetch_add(1, std::memory_order_relaxed);
+				chunkedMeshUpload_.reset();
+				mainMeshUploadInProgress_.store(false, std::memory_order_relaxed);
 		}
 	}
 
@@ -884,18 +1248,29 @@ void WebGPURenderer::updateWorldStreaming(const FrameUniforms& frameUniforms) {
 }
 
 void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
-	if (!world_ || !boundsDebugPipeline_.has_value()) {
+	if (!boundsDebugPipeline_.has_value()) {
 		return;
 	}
 
+	const bool includeChunkBounds = (layerMask & kRenderFlagBoundsChunks) != 0u;
+	const bool includeColumnBounds = (layerMask & kRenderFlagBoundsColumns) != 0u;
+	const bool includeRegionBounds = (layerMask & kRenderFlagBoundsRegions) != 0u;
+	const bool includeMeshletBounds = (layerMask & kRenderFlagBoundsMeshlets) != 0u;
+	const bool includeWorldBounds = includeChunkBounds || includeColumnBounds || includeRegionBounds;
+
 	std::vector<ColumnCoord> generatedColumns;
-	world_->copyGeneratedColumns(generatedColumns);
+	if (includeWorldBounds && world_) {
+		world_->copyGeneratedColumns(generatedColumns);
+	}
 
 	std::vector<DebugLineVertex> vertices;
-	const size_t chunkBoxCount = generatedColumns.size() * static_cast<size_t>(cfg::COLUMN_HEIGHT);
-	const size_t columnBoxCount = generatedColumns.size();
-	const size_t regionBoxEstimate = std::max<size_t>(1, generatedColumns.size() / static_cast<size_t>(cfg::REGION_VOLUME_COLUMNS));
-	vertices.reserve((chunkBoxCount + columnBoxCount + regionBoxEstimate) * 24ull);
+	const size_t chunkBoxCount = includeChunkBounds ? (generatedColumns.size() * static_cast<size_t>(cfg::COLUMN_HEIGHT)) : 0u;
+	const size_t columnBoxCount = includeColumnBounds ? generatedColumns.size() : 0u;
+	const size_t regionBoxEstimate = includeRegionBounds
+		? std::max<size_t>(1, generatedColumns.size() / static_cast<size_t>(cfg::REGION_VOLUME_COLUMNS))
+		: 0u;
+	const size_t meshletBoxCount = includeMeshletBounds ? activeMeshletBounds_.size() : 0u;
+	vertices.reserve((chunkBoxCount + columnBoxCount + regionBoxEstimate + meshletBoxCount) * 24ull);
 
 	std::unordered_set<RegionCoord> visibleRegions;
 	visibleRegions.reserve(generatedColumns.size());
@@ -908,7 +1283,7 @@ void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
 			static_cast<float>(columnOrigin.v.y),
 			static_cast<float>(columnOrigin.v.z)
 		};
-		if ((layerMask & kRenderFlagBoundsColumns) != 0u) {
+		if (includeColumnBounds) {
 			const glm::vec3 columnMax = columnMin + glm::vec3(
 				static_cast<float>(cfg::CHUNK_SIZE),
 				static_cast<float>(cfg::CHUNK_SIZE),
@@ -919,7 +1294,7 @@ void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
 
 		visibleRegions.insert(column_to_region(columnCoord));
 
-		if ((layerMask & kRenderFlagBoundsChunks) != 0u) {
+		if (includeChunkBounds) {
 			for (int32_t localZ = 0; localZ < cfg::COLUMN_HEIGHT; ++localZ) {
 				const ChunkCoord chunkCoord = column_local_to_chunk(columnCoord, localZ);
 				const BlockCoord chunkOrigin = chunk_to_block_origin(chunkCoord);
@@ -938,7 +1313,7 @@ void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
 		}
 	}
 
-	if ((layerMask & kRenderFlagBoundsRegions) != 0u) {
+	if (includeRegionBounds) {
 		std::vector<RegionCoord> sortedRegions(visibleRegions.begin(), visibleRegions.end());
 		std::sort(sortedRegions.begin(), sortedRegions.end());
 		for (const RegionCoord& regionCoord : sortedRegions) {
@@ -959,13 +1334,19 @@ void WebGPURenderer::rebuildDebugBounds(uint32_t layerMask) {
 		}
 	}
 
+	if (includeMeshletBounds) {
+		for (const MeshletAabb& bounds : activeMeshletBounds_) {
+			appendWireBox(vertices, bounds.minCorner, bounds.maxCorner, kMeshletBoundsColor);
+		}
+	}
+
 	if (!boundsDebugPipeline_->updateVertices(vertices)) {
 		std::cerr << "Failed to upload debug bounds vertices." << std::endl;
 	}
 }
 
 void WebGPURenderer::updateDebugBounds(const FrameUniforms& frameUniforms) {
-	if (!boundsDebugPipeline_.has_value() || !world_) {
+	if (!boundsDebugPipeline_.has_value()) {
 		return;
 	}
 
@@ -975,22 +1356,33 @@ void WebGPURenderer::updateDebugBounds(const FrameUniforms& frameUniforms) {
 		return;
 	}
 
-	const uint64_t worldRevision = world_->generationRevision();
+	const uint64_t worldRevision = world_ ? world_->generationRevision() : 0u;
+	const uint64_t meshRevision = uploadedMeshRevision_;
 	const uint32_t layerMask = frameUniforms.renderFlags[0] & kRenderFlagBoundsLayerMask;
 	if (layerMask == 0u) {
 		boundsDebugPipeline_->updateVertices({});
 		uploadedDebugBoundsLayerMask_ = 0u;
 		uploadedDebugBoundsRevision_ = worldRevision;
+		uploadedDebugBoundsMeshRevision_ = meshRevision;
 		return;
 	}
 
+	const bool includeWorldBounds = (layerMask & (
+		kRenderFlagBoundsChunks |
+		kRenderFlagBoundsColumns |
+		kRenderFlagBoundsRegions)) != 0u;
+	const bool includeMeshletBounds = (layerMask & kRenderFlagBoundsMeshlets) != 0u;
+
 	const bool layersChanged = layerMask != uploadedDebugBoundsLayerMask_;
-	if (!layersChanged && worldRevision == uploadedDebugBoundsRevision_) {
+	const bool worldChanged = includeWorldBounds && (worldRevision != uploadedDebugBoundsRevision_);
+	const bool meshChanged = includeMeshletBounds && (meshRevision != uploadedDebugBoundsMeshRevision_);
+	if (!layersChanged && !worldChanged && !meshChanged) {
 		return;
 	}
 
 	rebuildDebugBounds(layerMask);
 	uploadedDebugBoundsRevision_ = worldRevision;
+	uploadedDebugBoundsMeshRevision_ = meshRevision;
 	uploadedDebugBoundsLayerMask_ = layerMask;
 }
 
@@ -1056,6 +1448,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 	CommandEncoderDescriptor encoderDesc = Default;
 	encoderDesc.label = StringView("Frame command encoder");
 	CommandEncoder encoder = context->getDevice().createCommandEncoder(encoderDesc);
+	encodeMeshletCullingPass(encoder);
 
 	// GEOMETRY RENDER PASS
 	{
@@ -1192,6 +1585,18 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 
 void WebGPURenderer::terminate() {
 	stopStreamingThread();
+	if (meshletCullBindGroup_) {
+		meshletCullBindGroup_.release();
+		meshletCullBindGroup_ = nullptr;
+	}
+	if (meshletCullPipeline_) {
+		meshletCullPipeline_.release();
+		meshletCullPipeline_ = nullptr;
+	}
+	if (meshletCullBindGroupLayout_) {
+		meshletCullBindGroupLayout_.release();
+		meshletCullBindGroupLayout_ = nullptr;
+	}
 	if (boundsDebugPipeline_.has_value()) {
 		boundsDebugPipeline_->removeResources();
 		boundsDebugPipeline_.reset();

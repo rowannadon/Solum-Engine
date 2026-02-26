@@ -25,12 +25,15 @@ bool Application::Initialize() {
     uniforms.inverseProjectionMatrix = glm::mat4x4(1.0);
     uniforms.viewMatrix = glm::mat4x4(1.0);
     uniforms.inverseViewMatrix = glm::mat4x4(1.0);
-    uniforms.renderFlags[0] = kRenderFlagBoundsLayerMask;
+    uniforms.renderFlags[0] =
+        kRenderFlagBoundsChunks |
+        kRenderFlagBoundsColumns |
+        kRenderFlagBoundsRegions;
     uniforms.renderFlags[1] = 0u;
     uniforms.renderFlags[2] = 0u;
     uniforms.renderFlags[3] = 0u;
 
-    camera.position = glm::vec3(10.0, 10.0, 0.0);
+    camera.position = glm::vec3(0.0, 0.0, 175.0);
     camera.updateCameraVectors();
     updateProjectionMatrix(camera.zoom);
     updateViewMatrix();

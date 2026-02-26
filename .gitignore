@@ -8,3 +8,5 @@ out/
 *.~
 *.tmp
 *.temp
+
+*.DS_Store

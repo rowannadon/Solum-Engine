@@ -13,6 +13,18 @@ void VoxelPipeline::setDrawConfig(uint32_t meshletVertices, uint32_t totalMeshle
     meshletCount = totalMeshletCount;
 }
 
+void VoxelPipeline::setIndirectDrawBuffer(const std::string& bufferName, uint64_t offset) {
+    indirectDrawBufferName_ = bufferName;
+    indirectDrawOffset_ = offset;
+    useIndirectDraw_ = !indirectDrawBufferName_.empty();
+}
+
+void VoxelPipeline::clearIndirectDrawBuffer() {
+    useIndirectDraw_ = false;
+    indirectDrawBufferName_.clear();
+    indirectDrawOffset_ = 0u;
+}
+
 bool VoxelPipeline::createResources() {
     int width, height;
     glfwGetFramebufferSize(r_.ctx.getWindow(), &width, &height);
@@ -98,7 +110,7 @@ bool VoxelPipeline::createPipeline() {
     config.useCustomBlending = false;
     config.alphaToCoverageEnabled = false;
 
-    std::vector<BindGroupLayoutEntry> globalUniforms(6, Default);
+    std::vector<BindGroupLayoutEntry> globalUniforms(7, Default);
 
     int i = 0;
     globalUniforms[i].binding = i;
@@ -119,6 +131,11 @@ bool VoxelPipeline::createPipeline() {
 
     globalUniforms[i].binding = i;
     globalUniforms[i].visibility = ShaderStage::Vertex | ShaderStage::Fragment;
+    globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
+    i++;
+
+    globalUniforms[i].binding = i;
+    globalUniforms[i].visibility = ShaderStage::Vertex;
     globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
     i++;
 
@@ -144,24 +161,27 @@ bool VoxelPipeline::createPipeline() {
 bool VoxelPipeline::createBindGroup() {
     return createBindGroupForMeshBuffers(
         MeshletManager::meshDataBufferName(0),
-        MeshletManager::meshMetadataBufferName(0)
+        MeshletManager::meshMetadataBufferName(0),
+        MeshletManager::visibleMeshletIndexBufferName(0)
     );
 }
 
 bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
-                                                  const std::string& metadataBufferName) {
+                                                  const std::string& metadataBufferName,
+                                                  const std::string& visibleIndicesBufferName) {
     Buffer uniformBuffer = r_.buf.getBuffer("uniform_buffer");
     Buffer meshDataBuffer = r_.buf.getBuffer(meshDataBufferName);
     Buffer metadataBuffer = r_.buf.getBuffer(metadataBufferName);
+    Buffer visibleIndicesBuffer = r_.buf.getBuffer(visibleIndicesBufferName);
     Buffer materialLookupBuffer = r_.buf.getBuffer(MaterialManager::kMaterialLookupBufferName);
     TextureView materialTextureArrayView = r_.tex.getTextureView(MaterialManager::kMaterialTextureArrayViewName);
     Sampler materialSampler = r_.tex.getSampler(MaterialManager::kMaterialSamplerName);
 
-    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !materialLookupBuffer || !materialTextureArrayView || !materialSampler) {
+    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !visibleIndicesBuffer || !materialLookupBuffer || !materialTextureArrayView || !materialSampler) {
         return false;
     }
 
-    std::vector<BindGroupEntry> bindings(6, Default);
+    std::vector<BindGroupEntry> bindings(7, Default);
 
     int i = 0;
     bindings[i].binding = i;
@@ -186,6 +206,12 @@ bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBuf
     bindings[i].buffer = materialLookupBuffer;
     bindings[i].offset = 0;
     bindings[i].size = materialLookupBuffer.getSize();
+    i++;
+
+    bindings[i].binding = i;
+    bindings[i].buffer = visibleIndicesBuffer;
+    bindings[i].offset = 0;
+    bindings[i].size = visibleIndicesBuffer.getSize();
     i++;
 
     bindings[i].binding = i;
@@ -239,7 +265,14 @@ bool VoxelPipeline::render(
 
     voxelRenderPass.setBindGroup(0, r_.pip.getBindGroup("global_uniforms_bg"), 0, nullptr);
 
-    if (meshletVertexCount > 0 && meshletCount > 0) {
+    if (useIndirectDraw_) {
+        Buffer indirectBuffer = r_.buf.getBuffer(indirectDrawBufferName_);
+        if (indirectBuffer) {
+            voxelRenderPass.drawIndirect(indirectBuffer, indirectDrawOffset_);
+        } else if (meshletVertexCount > 0 && meshletCount > 0) {
+            voxelRenderPass.draw(meshletVertexCount, meshletCount, 0, 0);
+        }
+    } else if (meshletVertexCount > 0 && meshletCount > 0) {
         voxelRenderPass.draw(meshletVertexCount, meshletCount, 0, 0);
     }
 

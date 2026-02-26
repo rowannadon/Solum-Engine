@@ -71,6 +71,8 @@ private:
     struct PendingMeshUpload {
         std::vector<MeshletMetadataGPU> metadata;
         std::vector<uint32_t> quadData;
+        std::vector<MeshletAabbGPU> meshletAabbsGpu;
+        std::vector<MeshletAabb> meshletBounds;
         uint32_t totalMeshletCount = 0;
         uint32_t totalQuadCount = 0;
         uint32_t requiredMeshletCapacity = 0;
@@ -84,6 +86,7 @@ private:
         uint32_t targetBufferIndex = 0;
         size_t metadataUploadedBytes = 0;
         size_t quadUploadedBytes = 0;
+        size_t aabbUploadedBytes = 0;
     };
 
     std::unique_ptr<WebGPUContext> context;
@@ -103,7 +106,9 @@ private:
     uint32_t meshletCapacity_ = 0;
     uint32_t quadCapacity_ = 0;
     uint64_t uploadedMeshRevision_ = 0;
+    std::vector<MeshletAabb> activeMeshletBounds_;
     uint64_t uploadedDebugBoundsRevision_ = 0;
+    uint64_t uploadedDebugBoundsMeshRevision_ = 0;
     uint32_t uploadedDebugBoundsLayerMask_ = 0u;
     ColumnCoord uploadedCenterColumn_{0, 0};
     bool hasUploadedCenterColumn_ = false;
@@ -137,8 +142,20 @@ private:
 
     bool resizePending = false;
     static constexpr size_t kMeshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
+    static constexpr const char* kMeshletCullParamsBufferName = "meshlet_cull_params_buffer";
+    static constexpr const char* kMeshletCullIndirectArgsBufferName = "meshlet_cull_indirect_args_buffer";
+    static constexpr const char* kMeshletCullIndirectResetBufferName = "meshlet_cull_indirect_reset_buffer";
+    static constexpr uint32_t kMeshletCullWorkgroupSize = 128u;
+
+    BindGroupLayout meshletCullBindGroupLayout_ = nullptr;
+    BindGroup meshletCullBindGroup_ = nullptr;
+    ComputePipeline meshletCullPipeline_ = nullptr;
 
     bool uploadMeshlets(PendingMeshUpload&& upload);
+    bool initializeMeshletCullingResources();
+    bool refreshMeshletCullingBindGroup();
+    void updateMeshletCullParams(uint32_t meshletCount);
+    void encodeMeshletCullingPass(CommandEncoder encoder);
     void updateWorldStreaming(const FrameUniforms& frameUniforms);
     void updateDebugBounds(const FrameUniforms& frameUniforms);
     void rebuildDebugBounds(uint32_t layerMask);

@@ -168,6 +168,7 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
             bool showChunks = (uniforms.renderFlags[0] & kRenderFlagBoundsChunks) != 0u;
             bool showColumns = (uniforms.renderFlags[0] & kRenderFlagBoundsColumns) != 0u;
             bool showRegions = (uniforms.renderFlags[0] & kRenderFlagBoundsRegions) != 0u;
+            bool showMeshlets = (uniforms.renderFlags[0] & kRenderFlagBoundsMeshlets) != 0u;
 
             if (ImGui::Checkbox("Chunks", &showChunks)) {
                 if (showChunks) {
@@ -190,6 +191,14 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
                     uniforms.renderFlags[0] |= kRenderFlagBoundsRegions;
                 } else {
                     uniforms.renderFlags[0] &= ~kRenderFlagBoundsRegions;
+                }
+            }
+
+            if (ImGui::Checkbox("Meshlets", &showMeshlets)) {
+                if (showMeshlets) {
+                    uniforms.renderFlags[0] |= kRenderFlagBoundsMeshlets;
+                } else {
+                    uniforms.renderFlags[0] &= ~kRenderFlagBoundsMeshlets;
                 }
             }
         }
