@@ -209,6 +209,7 @@ void StructureManager::placeStructureForPoint(const PlacementPoint& point,
                                               const glm::ivec3& anchorWorld,
                                               const glm::ivec3& clipMinInclusive,
                                               const glm::ivec3& clipMaxExclusive,
+                                              Rotation rotation,
                                               Column& column) const {
     if (structures_.empty()) {
         return;
@@ -225,9 +226,13 @@ void StructureManager::placeStructureForPoint(const PlacementPoint& point,
     }
 
     const LoadedStructure& structure = structures_[structureIndex];
+    const Rotation resolvedRotation = (rotation == Rotation::Random)
+        ? pickRotation(point.key, structureIndex)
+        : rotation;
+
     for (const LoadedVoxel& voxel : structure.voxels) {
         const glm::ivec3 offset = voxel.local - structure.generationOrigin;
-        const glm::ivec3 worldPos = anchorWorld + offset;
+        const glm::ivec3 worldPos = anchorWorld + rotateOffset(offset, resolvedRotation);
 
         if (worldPos.x < clipMinInclusive.x || worldPos.x >= clipMaxExclusive.x ||
             worldPos.y < clipMinInclusive.y || worldPos.y >= clipMaxExclusive.y ||
@@ -251,6 +256,21 @@ void StructureManager::placeStructureForPoint(const PlacementPoint& point,
             voxel.material
         );
     }
+}
+
+void StructureManager::placeStructureForPoint(const PlacementPoint& point,
+                                              const glm::ivec3& anchorWorld,
+                                              const glm::ivec3& clipMinInclusive,
+                                              const glm::ivec3& clipMaxExclusive,
+                                              Column& column) const {
+    placeStructureForPoint(
+        point,
+        anchorWorld,
+        clipMinInclusive,
+        clipMaxExclusive,
+        Rotation::Random,
+        column
+    );
 }
 
 StructureManager::CandidatePoint StructureManager::makeCandidateForCell(int32_t cellX, int32_t cellY) const {
@@ -332,6 +352,40 @@ std::size_t StructureManager::pickStructureIndex(uint64_t pointKey) const {
     }
 
     return structures_.size() - 1;
+}
+
+StructureManager::Rotation StructureManager::pickRotation(uint64_t pointKey,
+                                                          std::size_t structureIndex) const {
+    const uint64_t mixed = splitmix64(
+        pointKey ^ (static_cast<uint64_t>(structureIndex + 1u) * 0x9E3779B97F4A7C15ull) ^ seed_
+    );
+    switch (mixed & 0x3ull) {
+        case 0ull:
+            return Rotation::Deg0;
+        case 1ull:
+            return Rotation::Deg90;
+        case 2ull:
+            return Rotation::Deg180;
+        default:
+            return Rotation::Deg270;
+    }
+}
+
+glm::ivec3 StructureManager::rotateOffset(const glm::ivec3& offset, Rotation rotation) {
+    switch (rotation) {
+        case Rotation::Deg0:
+            return offset;
+        case Rotation::Deg90:
+            return glm::ivec3{offset.y, -offset.x, offset.z};
+        case Rotation::Deg180:
+            return glm::ivec3{-offset.x, -offset.y, offset.z};
+        case Rotation::Deg270:
+            return glm::ivec3{-offset.y, offset.x, offset.z};
+        case Rotation::Random:
+            return offset;
+        default:
+            return offset;
+    }
 }
 
 bool StructureManager::loadVoxStructure(const StructureDefinition& definition, LoadedStructure& outStructure) const {

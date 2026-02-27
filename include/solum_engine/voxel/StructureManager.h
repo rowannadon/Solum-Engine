@@ -13,6 +13,14 @@ class Column;
 
 class StructureManager {
 public:
+    enum class Rotation : uint8_t {
+        Random = 255,
+        Deg0 = 0,
+        Deg90 = 1,
+        Deg180 = 2,
+        Deg270 = 3
+    };
+
     struct ColorMaterialMapping {
         uint8_t r = 0;
         uint8_t g = 0;
@@ -58,6 +66,12 @@ public:
                                 const glm::ivec3& anchorWorld,
                                 const glm::ivec3& clipMinInclusive,
                                 const glm::ivec3& clipMaxExclusive,
+                                Rotation rotation,
+                                Column& column) const;
+    void placeStructureForPoint(const PlacementPoint& point,
+                                const glm::ivec3& anchorWorld,
+                                const glm::ivec3& clipMinInclusive,
+                                const glm::ivec3& clipMaxExclusive,
                                 Column& column) const;
 
 private:
@@ -87,6 +101,8 @@ private:
     CandidatePoint makeCandidateForCell(int32_t cellX, int32_t cellY) const;
     bool isCandidateAccepted(const CandidatePoint& candidate) const;
     std::size_t pickStructureIndex(uint64_t pointKey) const;
+    Rotation pickRotation(uint64_t pointKey, std::size_t structureIndex) const;
+    static glm::ivec3 rotateOffset(const glm::ivec3& offset, Rotation rotation);
     bool loadVoxStructure(const StructureDefinition& definition, LoadedStructure& outStructure) const;
 
     SamplerConfig samplerConfig_{};
