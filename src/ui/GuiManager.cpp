@@ -28,7 +28,7 @@ bool GuiManager::initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::Textur
 
     ImGui_ImplWGPU_InitInfo webgpu_init_info = {};
     webgpu_init_info.Device = device;
-    webgpu_init_info.NumFramesInFlight = 3;
+    webgpu_init_info.NumFramesInFlight = 2;
     webgpu_init_info.RenderTargetFormat = format;
     // Match the main voxel pass so ImGui can be drawn in the same render pass.
     webgpu_init_info.DepthStencilFormat = TextureFormat::Depth32Float;

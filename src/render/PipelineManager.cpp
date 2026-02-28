@@ -7,11 +7,9 @@
 using namespace wgpu;
 
 RenderPipeline PipelineManager::createRenderPipeline(const std::string& pipelineName, PipelineConfig& config) {
-    std::cout << "Creating shader module..." << std::endl;
     ShaderModule shaderModule = loadShaderModule(config.shaderPath, device);
-    std::cout << "Shader module: " << shaderModule << std::endl;
     if (shaderModule == nullptr) {
-        std::cout << "Failed to load shader: " << config.shaderPath << std::endl;
+        std::cerr << "Failed to load shader: " << config.shaderPath << std::endl;
         return nullptr;
     }
 
@@ -55,35 +53,39 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string& pipeline
 
     // Fragment state
     FragmentState fragmentState = Default;
-    pipelineDesc.fragment = &fragmentState;
-    fragmentState.module = shaderModule;
-    fragmentState.entryPoint = StringView(config.fragmentShaderName);
-    fragmentState.constantCount = 0;
-    fragmentState.constants = nullptr;
-
     BlendState blendState = Default;
     ColorTargetState colorTarget = Default;
+    if (config.useFragmentStage) {
+        pipelineDesc.fragment = &fragmentState;
+        fragmentState.module = shaderModule;
+        fragmentState.entryPoint = StringView(config.fragmentShaderName);
+        fragmentState.constantCount = 0;
+        fragmentState.constants = nullptr;
 
-    if (config.useColorTarget) {
-        // Blend state
-        if (config.useCustomBlending) {
-            blendState = config.blendState;
-            colorTarget.blend = &blendState;
+        if (config.useColorTarget) {
+            // Blend state
+            if (config.useCustomBlending) {
+                blendState = config.blendState;
+                colorTarget.blend = &blendState;
+            }
+            else {
+                colorTarget.blend = nullptr;
+            }
+
+            // Color target state
+            colorTarget.format = config.useCustomColorFormat ? config.colorFormat : surfaceFormat;
+            colorTarget.writeMask = ColorWriteMask::All;
+
+            fragmentState.targetCount = 1;
+            fragmentState.targets = &colorTarget;
         }
         else {
-            colorTarget.blend = nullptr;
+            fragmentState.targetCount = 0;
+            fragmentState.targets = nullptr;
         }
-
-        // Color target state
-        colorTarget.format = config.useCustomColorFormat ? config.colorFormat : surfaceFormat;
-        colorTarget.writeMask = ColorWriteMask::All;
-
-        fragmentState.targetCount = 1;
-        fragmentState.targets = &colorTarget;
     }
     else {
-        fragmentState.targetCount = 0;
-        fragmentState.targets = nullptr;
+        pipelineDesc.fragment = nullptr;
     }
 
     // Depth stencil state - declare outside to keep in scope
@@ -111,7 +113,6 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string& pipeline
     pipelineDesc.layout = layout;
 
     RenderPipeline pipeline = device.createRenderPipeline(pipelineDesc);
-    std::cout << "Render pipeline: " << pipeline << std::endl;
 
     auto existingPipeline = pipelines.find(pipelineName);
     if (existingPipeline != pipelines.end() && existingPipeline->second) {
@@ -122,6 +123,40 @@ RenderPipeline PipelineManager::createRenderPipeline(const std::string& pipeline
     pipelines[pipelineName] = pipeline;
 
     // Clean up
+    shaderModule.release();
+    layout.release();
+
+    return pipeline;
+}
+
+ComputePipeline PipelineManager::createComputePipeline(const std::string& pipelineName, ComputePipelineConfig& config) {
+    ShaderModule shaderModule = loadShaderModule(config.shaderPath, device);
+    if (!shaderModule) {
+        std::cerr << "Failed to load compute shader: " << config.shaderPath << std::endl;
+        return nullptr;
+    }
+
+    PipelineLayoutDescriptor layoutDesc = Default;
+    layoutDesc.bindGroupLayoutCount = static_cast<uint32_t>(config.bindGroupLayouts.size());
+    layoutDesc.bindGroupLayouts = reinterpret_cast<WGPUBindGroupLayout*>(config.bindGroupLayouts.data());
+    PipelineLayout layout = device.createPipelineLayout(layoutDesc);
+
+    ComputePipelineDescriptor pipelineDesc = Default;
+    pipelineDesc.label = StringView(pipelineName);
+    pipelineDesc.layout = layout;
+    pipelineDesc.compute.module = shaderModule;
+    pipelineDesc.compute.entryPoint = StringView(config.entryPoint);
+
+    ComputePipeline pipeline = device.createComputePipeline(pipelineDesc);
+
+    auto existingPipeline = computePipelines.find(pipelineName);
+    if (existingPipeline != computePipelines.end() && existingPipeline->second) {
+        existingPipeline->second.release();
+        computePipelines.erase(existingPipeline);
+    }
+
+    computePipelines[pipelineName] = pipeline;
+
     shaderModule.release();
     layout.release();
 
@@ -190,6 +225,14 @@ RenderPipeline PipelineManager::getPipeline(const std::string& pipelineName) con
     return nullptr;
 }
 
+ComputePipeline PipelineManager::getComputePipeline(const std::string& pipelineName) const {
+    auto pipeline = computePipelines.find(pipelineName);
+    if (pipeline != computePipelines.end()) {
+        return pipeline->second;
+    }
+    return nullptr;
+}
+
 BindGroupLayout PipelineManager::getBindGroupLayout(const std::string& bindGroupLayoutName) const {
     auto layout = bindGroupLayouts.find(bindGroupLayoutName);
     if (layout != bindGroupLayouts.end()) {
@@ -212,6 +255,11 @@ void PipelineManager::terminate() {
             pair.second.release();
         }
     }
+    for (auto& pair : computePipelines) {
+        if (pair.second) {
+            pair.second.release();
+        }
+    }
 
     for (auto& pair : bindGroupLayouts) {
         if (pair.second) {
@@ -226,6 +274,7 @@ void PipelineManager::terminate() {
     }
 
     pipelines.clear();
+    computePipelines.clear();
     bindGroupLayouts.clear();
     bindGroups.clear();
 }

@@ -33,10 +33,18 @@ struct PipelineConfig {
     bool alphaToCoverageEnabled = false;
     bool useCustomColorFormat = false;
     bool useDepthStencil = true;  // Add this flag
+    bool useFragmentStage = true;
+};
+
+struct ComputePipelineConfig {
+    std::string shaderPath;
+    std::string entryPoint = "cs_main";
+    std::vector<wgpu::BindGroupLayout> bindGroupLayouts;
 };
 
 class PipelineManager {
     std::unordered_map<std::string, wgpu::RenderPipeline> pipelines;
+    std::unordered_map<std::string, wgpu::ComputePipeline> computePipelines;
     std::unordered_map<std::string, wgpu::BindGroupLayout> bindGroupLayouts;
     std::unordered_map<std::string, wgpu::BindGroup> bindGroups;
     wgpu::Device device;
@@ -46,6 +54,7 @@ public:
     PipelineManager(wgpu::Device d, wgpu::TextureFormat sf) : device(d), surfaceFormat(sf) {}
 
     wgpu::RenderPipeline createRenderPipeline(const std::string& pipelineName, PipelineConfig& config);
+    wgpu::ComputePipeline createComputePipeline(const std::string& pipelineName, ComputePipelineConfig& config);
 
     wgpu::BindGroupLayout createBindGroupLayout(const std::string& bindGroupLayoutName,
                                                 const std::vector<wgpu::BindGroupLayoutEntry>& entries);
@@ -53,6 +62,7 @@ public:
                                     const std::string& bindGroupLayoutName,
                                     const std::vector<wgpu::BindGroupEntry>& bindings);
     wgpu::RenderPipeline getPipeline(const std::string& pipelineName) const;
+    wgpu::ComputePipeline getComputePipeline(const std::string& pipelineName) const;
     wgpu::BindGroupLayout getBindGroupLayout(const std::string& bindGroupLayoutName) const;
     wgpu::BindGroup getBindGroup(const std::string& bindGroupName) const;
     void deleteBindGroup(const std::string& bindGroupName);

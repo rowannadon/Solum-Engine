@@ -67,5 +67,5 @@ private:
     std::optional<ChunkedMeshUploadState> chunkedMeshUpload_;
     std::atomic<bool> meshUploadInProgress_{false};
 
-    static constexpr size_t kMeshUploadBudgetBytesPerFrame = 512u * 1024u;
+    static constexpr size_t kMeshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
 };
