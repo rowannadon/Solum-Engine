@@ -1442,7 +1442,7 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 		return { surfaceTexture, nullptr };
 	}
 
-	TextureViewDescriptor viewDescriptor;
+	TextureViewDescriptor viewDescriptor = Default;
 	viewDescriptor.nextInChain = nullptr;
 	viewDescriptor.label = StringView("Surface texture view");
 	viewDescriptor.format = texture.getFormat();
