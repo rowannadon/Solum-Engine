@@ -24,7 +24,6 @@ void BufferManager::writeBuffer(const std::string& bufferName, uint64_t bufferOf
 wgpu::Buffer BufferManager::createBuffer(const std::string& bufferName, const wgpu::BufferDescriptor& config) {
     auto existing = buffers.find(bufferName);
     if (existing != buffers.end() && existing->second) {
-        existing->second.destroy();
         existing->second.release();
         buffers.erase(existing);
     }

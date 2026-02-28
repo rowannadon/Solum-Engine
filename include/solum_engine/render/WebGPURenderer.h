@@ -105,6 +105,9 @@ private:
     wgpu::BindGroup meshletCullBindGroup_ = nullptr;
     wgpu::ComputePipeline meshletCullPipeline_ = nullptr;
 
+    static constexpr uint32_t kMaxFramesInFlight = 1u;
+    std::atomic<uint32_t> framesInFlight_{0};
+
     bool initializeMeshletOcclusionResources();
     bool createOcclusionDepthResources();
     void removeOcclusionDepthResources();

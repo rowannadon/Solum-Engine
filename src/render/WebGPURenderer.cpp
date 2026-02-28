@@ -715,6 +715,10 @@ bool WebGPURenderer::initializeMeshletCullingResources() {
 		if (!bufferManager->createBuffer(kMeshletCullIndirectArgsBufferName, indirectDesc)) {
 			return false;
 		}
+		// Initialize to safe values so drawIndirect never reads garbage.
+		// vertexCount = MESHLET_VERTEX_CAPACITY, instanceCount = 0 (no draws).
+		const uint32_t safeDrawArgs[4] = {MESHLET_VERTEX_CAPACITY, 0u, 0u, 0u};
+		bufferManager->writeBuffer(kMeshletCullIndirectArgsBufferName, 0u, safeDrawArgs, sizeof(safeDrawArgs));
 	}
 
 	{
@@ -1280,6 +1284,13 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 		);
 	};
 
+	// Wait for previous GPU frames to complete before submitting more work.
+	// Without this, the GPU queue can grow unbounded, causing IOFence timeouts
+	// on macOS Metal when the swapchain IOSurface is held too long.
+	while (framesInFlight_.load(std::memory_order_acquire) >= kMaxFramesInFlight) {
+		context->instance.processEvents();
+	}
+
 	int fbWidth = 0;
 	int fbHeight = 0;
 	glfwGetFramebufferSize(context->getWindow(), &fbWidth, &fbHeight);
@@ -1363,12 +1374,11 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 			std::chrono::steady_clock::now() - submitStart
 		).count())
 	);
-	/*context->getQueue().onSubmittedWorkDone(wgpu::CallbackMode::AllowProcessEvents,
-		[&](wgpu::QueueWorkDoneStatus status) {
-			if (status == wgpu::QueueWorkDoneStatus::Success) {
-				benchmarkManager->processFrameTime("frame_timing");
-			}
-		});*/
+	framesInFlight_.fetch_add(1, std::memory_order_release);
+	context->getQueue().onSubmittedWorkDone(wgpu::CallbackMode::AllowProcessEvents,
+		[this](wgpu::QueueWorkDoneStatus) {
+			framesInFlight_.fetch_sub(1, std::memory_order_release);
+		});
 
 	command.release();
 
