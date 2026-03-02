@@ -1,12 +1,4 @@
-struct FrameUniforms {
-    projectionMatrix: mat4x4f,
-    viewMatrix: mat4x4f,
-    modelMatrix: mat4x4f,
-    inverseProjectionMatrix: mat4x4f,
-    inverseViewMatrix: mat4x4f,
-    renderFlags: vec4u,
-    occlusionParams: vec4f,
-};
+// #include "uniforms.wgsl"
 
 struct MeshletAabb {
     minCorner: vec4f,
@@ -184,7 +176,7 @@ fn cs_main(
     @builtin(local_invocation_index) localIndex: u32
 ) {
     if (localIndex == 0u) {
-        clipFromLocalWg = frameUniforms.projectionMatrix * frameUniforms.viewMatrix * frameUniforms.modelMatrix;
+        clipFromLocalWg = clip_from_local_matrix();
     }
     workgroupBarrier();
 

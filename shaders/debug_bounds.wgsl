@@ -15,8 +15,8 @@ struct VSOutput {
 @vertex
 fn vs_main(input: VSInput) -> VSOutput {
     var output: VSOutput;
-    let worldPosition = frameUniforms.modelMatrix * vec4f(input.position, 1.0);
-    output.clipPosition = frameUniforms.projectionMatrix * frameUniforms.viewMatrix * worldPosition;
+    let worldPosition = local_to_world_position(input.position);
+    output.clipPosition = world_to_clip_position(worldPosition);
     output.color = input.color;
     return output;
 }
