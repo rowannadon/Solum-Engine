@@ -13,12 +13,27 @@
 
 class MeshletBufferController {
 public:
+    struct Config {
+        size_t uploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
+    };
+
+    struct ActiveBindings {
+        const char* meshDataBufferName = nullptr;
+        const char* meshMetadataBufferName = nullptr;
+        const char* meshAabbBufferName = nullptr;
+        const char* visibleMeshletIndexBufferName = nullptr;
+        uint32_t meshletCount = 0u;
+        uint32_t effectiveMeshletCountForPasses = 0u;
+        uint32_t verticesPerMeshlet = MESHLET_VERTEX_CAPACITY;
+    };
+
     struct ProcessResult {
         bool buffersRecreated = false;
         bool uploadApplied = false;
     };
 
     bool initialize(BufferManager* bufferManager);
+    bool initialize(BufferManager* bufferManager, Config config);
     bool uploadImmediate(StreamingMeshUpload&& upload);
     void queueUpload(StreamingMeshUpload&& upload);
     ProcessResult processPendingUpload();
@@ -39,6 +54,7 @@ public:
     bool isUploadInProgress() const noexcept;
     bool hasPendingOrActiveUpload() const noexcept;
     bool hasChunkedUploadInProgress() const noexcept;
+    ActiveBindings activeBindings() const noexcept;
     void resetPendingUploads();
 
 private:
@@ -58,6 +74,7 @@ private:
 
     BufferManager* bufferManager_ = nullptr;
     std::unique_ptr<MeshletManager> meshletManager_;
+    Config config_{};
     uint32_t meshletCapacity_ = 0;
     uint32_t quadCapacity_ = 0;
     uint64_t uploadedMeshRevision_ = 0;
@@ -67,5 +84,4 @@ private:
     std::optional<ChunkedMeshUploadState> chunkedMeshUpload_;
     std::atomic<bool> meshUploadInProgress_{false};
 
-    static constexpr size_t kMeshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
 };

@@ -5,26 +5,34 @@
 #include <cstdint>
 #include <iostream>
 
+#include "solum_engine/render/MeshUploadCapacityPolicy.h"
+
 uint32_t MeshletBufferController::computeRequiredMeshletCapacity(const StreamingMeshUpload& upload) noexcept {
-    return std::max(
+    return MeshUploadCapacityPolicy::compute(
+        upload.totalMeshletCount,
+        upload.totalQuadCount,
         upload.requiredMeshletCapacity,
-        std::max(upload.totalMeshletCount + 16u, 64u)
-    );
+        upload.requiredQuadCapacity
+    ).requiredMeshletCapacity;
 }
 
 uint32_t MeshletBufferController::computeRequiredQuadCapacity(const StreamingMeshUpload& upload,
                                                               uint32_t requiredMeshletCapacity) noexcept {
-    return std::max(
-        upload.requiredQuadCapacity,
-        std::max(
-            upload.totalQuadCount + (1024u * MESHLET_QUAD_DATA_WORD_STRIDE),
-            requiredMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE
-        )
-    );
+    return MeshUploadCapacityPolicy::compute(
+        upload.totalMeshletCount,
+        upload.totalQuadCount,
+        requiredMeshletCapacity,
+        upload.requiredQuadCapacity
+    ).requiredQuadCapacity;
 }
 
 bool MeshletBufferController::initialize(BufferManager* bufferManager) {
+    return initialize(bufferManager, Config{});
+}
+
+bool MeshletBufferController::initialize(BufferManager* bufferManager, Config config) {
     bufferManager_ = bufferManager;
+    config_ = config;
     meshletManager_.reset();
     meshletCapacity_ = 0;
     quadCapacity_ = 0;
@@ -219,7 +227,7 @@ MeshletBufferController::ProcessResult MeshletBufferController::processPendingUp
     }
 
     ChunkedMeshUploadState& uploadState = *chunkedMeshUpload_;
-    if (!streamChunkedUploadBytes(uploadState, kMeshUploadBudgetBytesPerFrame)) {
+    if (!streamChunkedUploadBytes(uploadState, config_.uploadBudgetBytesPerFrame)) {
         return result;
     }
 
@@ -323,6 +331,18 @@ bool MeshletBufferController::hasPendingOrActiveUpload() const noexcept {
 
 bool MeshletBufferController::hasChunkedUploadInProgress() const noexcept {
     return chunkedMeshUpload_.has_value();
+}
+
+MeshletBufferController::ActiveBindings MeshletBufferController::activeBindings() const noexcept {
+    return ActiveBindings{
+        activeMeshDataBufferName(),
+        activeMeshMetadataBufferName(),
+        activeMeshAabbBufferName(),
+        activeVisibleMeshletIndexBufferName(),
+        meshletCount(),
+        effectiveMeshletCountForPasses(),
+        verticesPerMeshlet()
+    };
 }
 
 void MeshletBufferController::resetPendingUploads() {

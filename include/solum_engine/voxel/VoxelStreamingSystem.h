@@ -14,8 +14,10 @@
 #include <glm/glm.hpp>
 
 #include "solum_engine/render/RuntimeTiming.h"
+#include "solum_engine/render/TimingAccumulator.h"
 #include "solum_engine/resources/Coords.h"
 #include "solum_engine/voxel/StreamingUpload.h"
+#include "solum_engine/voxel/mesh_stream/UploadMailbox.h"
 
 class MeshManager;
 class World;
@@ -30,12 +32,6 @@ private:
         StreamCopyMeshlets,
         StreamPrepareUpload,
         Count
-    };
-
-    struct TimingAccumulator {
-        std::atomic<uint64_t> totalNs{0};
-        std::atomic<uint64_t> callCount{0};
-        std::atomic<uint64_t> maxNs{0};
     };
 
     struct TimingRawTotals {
@@ -59,7 +55,7 @@ private:
     bool hasLatestStreamingCamera_ = false;
     glm::vec3 latestStreamingCamera_{0.0f, 0.0f, 0.0f};
     float latestStreamingSseProjectionScale_ = 390.0f;
-    std::optional<StreamingMeshUpload> pendingMeshUpload_;
+    UploadMailbox uploadMailbox_{};
     uint64_t streamerLastPreparedRevision_ = 0;
     ColumnCoord streamerLastPreparedCenter_{0, 0};
     bool streamerHasLastPreparedCenter_ = false;
@@ -95,7 +91,7 @@ public:
 
     void setMainUploadInProgress(bool inProgress) noexcept;
     void updateCamera(const glm::vec3& cameraPosition, float sseProjectionScale);
-    std::optional<StreamingMeshUpload> consumePendingMeshUpload();
+    std::optional<StreamingMeshUpload> tryConsumePreparedUpload();
     void recordMainUpdateDurationNs(uint64_t ns) noexcept;
 
     RuntimeTimingSnapshot getRuntimeTimingSnapshot();

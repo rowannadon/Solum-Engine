@@ -151,11 +151,3 @@ void BoundsDebugPipeline::draw(RenderPassEncoder& renderPass) {
     renderPass.setVertexBuffer(0, vertexBuffer, 0, static_cast<uint64_t>(vertexCount_) * sizeof(DebugLineVertex));
     renderPass.draw(vertexCount_, 1, 0, 0);
 }
-
-bool BoundsDebugPipeline::render(
-    TextureView /* targetView */,
-    CommandEncoder /* encoder */,
-    const std::function<void(RenderPassEncoder&)>& /* overlayCallback */
-) {
-    return false;
-}

@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "solum_engine/render/RuntimeTiming.h"
+#include "solum_engine/render/TimingAccumulator.h"
 
 enum class MainTimingStage : std::size_t {
     UploadMeshlets = 0,
@@ -29,12 +30,6 @@ public:
     RuntimeTimingSnapshot snapshot(bool pendingUploadQueued);
 
 private:
-    struct TimingAccumulator {
-        std::atomic<uint64_t> totalNs{0};
-        std::atomic<uint64_t> callCount{0};
-        std::atomic<uint64_t> maxNs{0};
-    };
-
     struct TimingRawTotals {
         std::array<uint64_t, static_cast<std::size_t>(MainTimingStage::Count)> totalNs{};
         std::array<uint64_t, static_cast<std::size_t>(MainTimingStage::Count)> callCount{};

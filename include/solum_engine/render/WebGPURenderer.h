@@ -4,6 +4,7 @@
 #include <GLFW/glfw3.h>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -28,6 +29,11 @@
 class World;
 
 class WebGPURenderer {
+public:
+    struct Config {
+        size_t meshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
+    };
+
 private:
     std::unique_ptr<WebGPUContext> context;
     std::unique_ptr<PipelineManager> pipelineManager;
@@ -51,6 +57,7 @@ private:
     static constexpr uint32_t kMaxFramesInFlight = 2u;
     std::atomic<uint32_t> framesInFlight_{0};
 
+    bool refreshMeshBindings(bool uploadApplied, bool rebuildDrawConfig);
     void processPendingMeshUploads();
 
 public:
@@ -58,6 +65,7 @@ public:
     ~WebGPURenderer() = default;
 
     bool initialize();
+    bool initialize(const Config& config);
 
     PipelineManager* getPipelineManager();
     BufferManager* getBufferManager();

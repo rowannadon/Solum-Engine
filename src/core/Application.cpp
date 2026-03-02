@@ -6,8 +6,12 @@
 #include <cfloat>
 #include <cmath>
 
+#include "solum_engine/render/RuntimeTimingMerger.h"
+
 bool Application::Initialize() {
-    if (!gpu.initialize()) return false;
+    WebGPURenderer::Config rendererConfig{};
+    rendererConfig.meshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
+    if (!gpu.initialize(rendererConfig)) return false;
     if (!voxelStreaming_.initialize()) return false;
     buf = gpu.getBufferManager();
 
@@ -21,6 +25,7 @@ bool Application::Initialize() {
     } else {
         std::cout << "Monitor refresh rate unavailable, using default: " << refreshRate << " Hz" << std::endl;
     }
+    framePacer_ = std::make_unique<FramePacer>(static_cast<float>(refreshRate));
 
     // initialize uniforms
     uniforms.modelMatrix = glm::mat4x4(1.0);
@@ -69,9 +74,6 @@ void Application::Terminate() {
 }
 
 void Application::MainLoop() {
-    float TARGET_FPS = static_cast<float>(refreshRate);
-    float TARGET_FRAME_TIME = 1.0f / TARGET_FPS;
-
     float currentFrame = static_cast<float>(glfwGetTime());
     deltaTime = currentFrame - lastFrame;
     lastFrame = currentFrame;
@@ -114,7 +116,7 @@ void Application::MainLoop() {
 
     voxelStreaming_.setMainUploadInProgress(gpu.isMeshUploadInProgress());
     voxelStreaming_.updateCamera(camera.position, sseProjectionScale);
-    if (auto upload = voxelStreaming_.consumePendingMeshUpload()) {
+    if (auto upload = voxelStreaming_.tryConsumePreparedUpload()) {
         gpu.queueMeshUpload(std::move(*upload));
     }
     voxelStreaming_.recordMainUpdateDurationNs(
@@ -125,75 +127,20 @@ void Application::MainLoop() {
 
     const RuntimeTimingSnapshot gpuTiming = gpu.getRuntimeTimingSnapshot();
     const RuntimeTimingSnapshot streamingTiming = voxelStreaming_.getRuntimeTimingSnapshot();
-    runtimeTimingSnapshot_ = gpuTiming;
-    runtimeTimingSnapshot_.sampleWindowSeconds =
-        std::max(runtimeTimingSnapshot_.sampleWindowSeconds, streamingTiming.sampleWindowSeconds);
-    runtimeTimingSnapshot_.mainUpdateWorldStreaming = streamingTiming.mainUpdateWorldStreaming;
-    runtimeTimingSnapshot_.streamWait = streamingTiming.streamWait;
-    runtimeTimingSnapshot_.streamWorldUpdate = streamingTiming.streamWorldUpdate;
-    runtimeTimingSnapshot_.streamMeshUpdate = streamingTiming.streamMeshUpdate;
-    runtimeTimingSnapshot_.streamCopyMeshlets = streamingTiming.streamCopyMeshlets;
-    runtimeTimingSnapshot_.streamPrepareUpload = streamingTiming.streamPrepareUpload;
-    runtimeTimingSnapshot_.streamSkipNoCamera = streamingTiming.streamSkipNoCamera;
-    runtimeTimingSnapshot_.streamSkipUnchanged = streamingTiming.streamSkipUnchanged;
-    runtimeTimingSnapshot_.streamSkipThrottle = streamingTiming.streamSkipThrottle;
-    runtimeTimingSnapshot_.streamSnapshotsPrepared = streamingTiming.streamSnapshotsPrepared;
-    runtimeTimingSnapshot_.worldHasPendingJobs = streamingTiming.worldHasPendingJobs;
-    runtimeTimingSnapshot_.meshHasPendingJobs = streamingTiming.meshHasPendingJobs;
-    runtimeTimingSnapshot_.pendingUploadQueued =
-        streamingTiming.pendingUploadQueued || gpuTiming.pendingUploadQueued;
+    runtimeTimingSnapshot_ = mergeRuntimeTimingSnapshots(gpuTiming, streamingTiming);
 
     gui.renderImGUI(uniforms, frameTimes, camera, frameTime, runtimeTimingSnapshot_);
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
     
     gpu.renderFrame(uniforms);
 
-    // After rendering, perform frame timing
-
-    float frameEndTime = static_cast<float>(glfwGetTime());
-    frameTime = frameEndTime - frameStartTime;
-
-    frameTimes.push_back(frameTime);
-    if (frameTimes.size() > 100) {
-        frameTimes.erase(frameTimes.begin());
-    }
-
-    float averageFrameTime = std::accumulate(frameTimes.begin(), frameTimes.end(), 0.0f) / frameTimes.size();
-    float averageFPS = 1.0f / averageFrameTime;
-
-    static float lastDebugTime = 0.0f;
-    if (currentFrame - lastDebugTime >= 1.0f) {
-        float frameBudgetMs = TARGET_FRAME_TIME * 1000.0f;
-        float currentFrameMs = frameTime * 1000.0f;
-        float averageFrameMs = averageFrameTime * 1000.0f;
-        float frameBudgetUtilization = (averageFrameTime / TARGET_FRAME_TIME) * 100.0f;
-
-        std::cout << "=== Frame Timing Debug ===" << std::endl;
-        std::cout << "Target FPS: " << TARGET_FPS << " (Budget: " << frameBudgetMs << "ms)" << std::endl;
-        std::cout << "Current Frame: " << currentFrameMs << "ms" << std::endl;
-        std::cout << "Average Frame: " << averageFrameMs << "ms (" << averageFPS << " FPS)" << std::endl;
-        std::cout << "Frame Budget Utilization: " << frameBudgetUtilization << "%" << std::endl;
-        std::cout << "=========================" << std::endl;
-
-        lastDebugTime = currentFrame;
-    }
-
-    float timeAfterWork = static_cast<float>(glfwGetTime());
-    float workTime = timeAfterWork - frameStartTime;
-
-    if (workTime < TARGET_FRAME_TIME) {
-        float remainingTime = TARGET_FRAME_TIME - workTime;
-
-        const float SLEEP_BUFFER = 0.0005f;
-
-        if (remainingTime > SLEEP_BUFFER) {
-            float sleepTime = remainingTime - SLEEP_BUFFER;
-            std::this_thread::sleep_for(std::chrono::duration<float>(sleepTime));
-        }
-
-        while (static_cast<float>(glfwGetTime()) - frameStartTime < TARGET_FRAME_TIME) {
-            std::this_thread::yield();
-        }
+    if (framePacer_) {
+        const FramePacingResult pacing = framePacer_->finalizeFrameAndPace(
+            currentFrame,
+            frameStartTime,
+            frameTimes
+        );
+        frameTime = pacing.frameTime;
     }
 }
 

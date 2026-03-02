@@ -3,6 +3,7 @@
 #include "solum_engine/render/pipelines/AbstractRenderPipeline.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 class VoxelPipeline : public AbstractRenderPipeline {
@@ -30,7 +31,7 @@ public:
         wgpu::TextureView targetView,
         wgpu::CommandEncoder encoder,
         const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
-    ) override;
+    );
 private:
     uint32_t meshletVertexCount = 0;
     uint32_t meshletCount = 0;

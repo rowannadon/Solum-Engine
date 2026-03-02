@@ -1,21 +1,8 @@
 #include "solum_engine/render/RuntimeTimingTracker.h"
 
-#include <algorithm>
-
 void RuntimeTimingTracker::record(MainTimingStage stage, uint64_t ns) noexcept {
     const std::size_t stageIndex = static_cast<std::size_t>(stage);
-    TimingAccumulator& accumulator = accumulators_[stageIndex];
-    accumulator.totalNs.fetch_add(ns, std::memory_order_relaxed);
-    accumulator.callCount.fetch_add(1, std::memory_order_relaxed);
-
-    uint64_t observedMax = accumulator.maxNs.load(std::memory_order_relaxed);
-    while (ns > observedMax &&
-           !accumulator.maxNs.compare_exchange_weak(
-               observedMax,
-               ns,
-               std::memory_order_relaxed,
-               std::memory_order_relaxed)) {
-    }
+    recordTimingAccumulator(accumulators_[stageIndex], ns);
 }
 
 void RuntimeTimingTracker::incrementMainUploadsApplied() noexcept {
@@ -24,12 +11,7 @@ void RuntimeTimingTracker::incrementMainUploadsApplied() noexcept {
 
 RuntimeTimingTracker::TimingRawTotals RuntimeTimingTracker::captureRawTotals() const {
     TimingRawTotals totals;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(MainTimingStage::Count); ++i) {
-        const TimingAccumulator& accumulator = accumulators_[i];
-        totals.totalNs[i] = accumulator.totalNs.load(std::memory_order_relaxed);
-        totals.callCount[i] = accumulator.callCount.load(std::memory_order_relaxed);
-        totals.maxNs[i] = accumulator.maxNs.load(std::memory_order_relaxed);
-    }
+    captureTimingAccumulatorArrays(accumulators_, totals.totalNs, totals.callCount, totals.maxNs);
 
     totals.mainUploadsApplied = mainUploadsApplied_.load(std::memory_order_relaxed);
     return totals;
@@ -40,18 +22,14 @@ TimingStageSnapshot RuntimeTimingTracker::makeStageSnapshot(const TimingRawTotal
                                                             MainTimingStage stage,
                                                             double sampleWindowSeconds) {
     const std::size_t i = static_cast<std::size_t>(stage);
-    const uint64_t deltaNs = current.totalNs[i] - previous.totalNs[i];
-    const uint64_t deltaCalls = current.callCount[i] - previous.callCount[i];
-    const double deltaMs = static_cast<double>(deltaNs) / 1'000'000.0;
-    const double window = std::max(sampleWindowSeconds, 1e-6);
-
-    TimingStageSnapshot snapshot;
-    snapshot.averageMs = (deltaCalls > 0) ? (deltaMs / static_cast<double>(deltaCalls)) : 0.0;
-    snapshot.peakMs = static_cast<double>(current.maxNs[i]) / 1'000'000.0;
-    snapshot.totalMsPerSecond = deltaMs / window;
-    snapshot.callsPerSecond = static_cast<double>(deltaCalls) / window;
-    snapshot.totalCalls = current.callCount[i];
-    return snapshot;
+    return makeTimingStageSnapshotFromRaw(
+        current.totalNs[i],
+        current.callCount[i],
+        current.maxNs[i],
+        previous.totalNs[i],
+        previous.callCount[i],
+        sampleWindowSeconds
+    );
 }
 
 RuntimeTimingSnapshot RuntimeTimingTracker::snapshot(bool pendingUploadQueued) {

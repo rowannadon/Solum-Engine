@@ -9,10 +9,14 @@
 using namespace wgpu;
 
 bool WebGPURenderer::initialize() {
-    RenderConfig config;
+    return initialize(Config{});
+}
+
+bool WebGPURenderer::initialize(const Config& config) {
+    RenderConfig renderConfig;
 
     context = std::make_unique<WebGPUContext>();
-    if (!context->initialize(config)) {
+    if (!context->initialize(renderConfig)) {
         return false;
     }
 
@@ -40,7 +44,9 @@ bool WebGPURenderer::initialize() {
         return false;
     }
 
-    if (!meshletBuffers_.initialize(bufferManager.get())) {
+    if (!meshletBuffers_.initialize(
+            bufferManager.get(),
+            MeshletBufferController::Config{config.meshUploadBudgetBytesPerFrame})) {
         std::cerr << "Failed to initialize meshlet buffers." << std::endl;
         return false;
     }
@@ -79,6 +85,51 @@ bool WebGPURenderer::initialize() {
     return true;
 }
 
+bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawConfig) {
+    if (!voxelPipeline_.has_value()) {
+        return false;
+    }
+
+    const MeshletBufferController::ActiveBindings bindings = meshletBuffers_.activeBindings();
+    if (!voxelPipeline_->createBindGroupForMeshBuffers(
+            bindings.meshDataBufferName,
+            bindings.meshMetadataBufferName,
+            bindings.visibleMeshletIndexBufferName)) {
+        return false;
+    }
+
+    if (rebuildDrawConfig) {
+        const uint32_t drawMeshletCount = uploadApplied
+            ? bindings.meshletCount
+            : bindings.effectiveMeshletCountForPasses;
+        voxelPipeline_->setDrawConfig(bindings.verticesPerMeshlet, drawMeshletCount);
+    }
+
+    if (meshletOcclusionPipeline_.has_value() &&
+        !meshletOcclusionPipeline_->refreshMeshBindGroup(meshletBuffers_)) {
+        return false;
+    }
+
+    if (meshletCullingPipeline_.has_value()) {
+        const uint32_t hizMipCount = meshletOcclusionPipeline_.has_value()
+            ? meshletOcclusionPipeline_->hizMipCount()
+            : 1u;
+        const uint32_t drawMeshletCount = uploadApplied
+            ? bindings.meshletCount
+            : bindings.effectiveMeshletCountForPasses;
+        meshletCullingPipeline_->updateCullParams(drawMeshletCount, hizMipCount);
+
+        const char* hizViewName = meshletOcclusionPipeline_.has_value()
+            ? MeshletOcclusionPipeline::kOcclusionHiZViewName
+            : nullptr;
+        if (!meshletCullingPipeline_->refreshBindGroup(meshletBuffers_, hizViewName)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void WebGPURenderer::createRenderingTextures() {
     if (!voxelPipeline_.has_value()) {
         return;
@@ -89,36 +140,13 @@ void WebGPURenderer::createRenderingTextures() {
         return;
     }
 
-    const bool bindOk = meshletBuffers_.hasMeshletManager()
-        ? voxelPipeline_->createBindGroupForMeshBuffers(
-            meshletBuffers_.activeMeshDataBufferName(),
-            meshletBuffers_.activeMeshMetadataBufferName(),
-            meshletBuffers_.activeVisibleMeshletIndexBufferName())
-        : voxelPipeline_->createBindGroup();
-    if (!bindOk) {
-        std::cerr << "Failed to recreate voxel bind group." << std::endl;
-    }
-
     if (meshletOcclusionPipeline_.has_value() &&
         !meshletOcclusionPipeline_->recreateResources(meshletBuffers_)) {
         std::cerr << "Failed to recreate meshlet occlusion depth resources." << std::endl;
     }
 
-    if (meshletCullingPipeline_.has_value()) {
-        const uint32_t hizMipCount = meshletOcclusionPipeline_.has_value()
-            ? meshletOcclusionPipeline_->hizMipCount()
-            : 1u;
-        meshletCullingPipeline_->updateCullParams(
-            meshletBuffers_.effectiveMeshletCountForPasses(),
-            hizMipCount
-        );
-
-        const char* hizViewName = meshletOcclusionPipeline_.has_value()
-            ? MeshletOcclusionPipeline::kOcclusionHiZViewName
-            : nullptr;
-        if (!meshletCullingPipeline_->refreshBindGroup(meshletBuffers_, hizViewName)) {
-            std::cerr << "Failed to refresh meshlet culling bind group." << std::endl;
-        }
+    if (!refreshMeshBindings(false, true)) {
+        std::cerr << "Failed to refresh mesh bindings after resize/resource recreation." << std::endl;
     }
 }
 
@@ -206,61 +234,16 @@ void WebGPURenderer::processPendingMeshUploads() {
 
     const MeshletBufferController::ProcessResult result = meshletBuffers_.processPendingUpload();
 
-    if (result.buffersRecreated) {
-        if (voxelPipeline_.has_value() &&
-            !voxelPipeline_->createBindGroupForMeshBuffers(
-                meshletBuffers_.activeMeshDataBufferName(),
-                meshletBuffers_.activeMeshMetadataBufferName(),
-                meshletBuffers_.activeVisibleMeshletIndexBufferName())) {
-            std::cerr << "Failed to bind resized meshlet buffers." << std::endl;
+    if (result.buffersRecreated || result.uploadApplied) {
+        if (!refreshMeshBindings(result.uploadApplied, result.uploadApplied)) {
+            std::cerr << "Failed to refresh mesh pipeline resources after upload." << std::endl;
             finalizeUploadTiming();
             return;
         }
     }
 
     if (result.uploadApplied) {
-        if (voxelPipeline_.has_value()) {
-            if (!voxelPipeline_->createBindGroupForMeshBuffers(
-                    meshletBuffers_.activeMeshDataBufferName(),
-                    meshletBuffers_.activeMeshMetadataBufferName(),
-                    meshletBuffers_.activeVisibleMeshletIndexBufferName())) {
-                std::cerr << "Failed to bind active meshlet buffers." << std::endl;
-                finalizeUploadTiming();
-                return;
-            }
-            voxelPipeline_->setDrawConfig(
-                meshletBuffers_.verticesPerMeshlet(),
-                meshletBuffers_.meshletCount()
-            );
-        }
         timingTracker_.incrementMainUploadsApplied();
-    }
-
-    if (result.buffersRecreated || result.uploadApplied) {
-        if (meshletOcclusionPipeline_.has_value() &&
-            !meshletOcclusionPipeline_->refreshMeshBindGroup(meshletBuffers_)) {
-            std::cerr << "Failed to bind meshlet depth prepass resources after upload." << std::endl;
-            finalizeUploadTiming();
-            return;
-        }
-
-        if (meshletCullingPipeline_.has_value()) {
-            const uint32_t meshletCount = result.uploadApplied
-                ? meshletBuffers_.meshletCount()
-                : meshletBuffers_.effectiveMeshletCountForPasses();
-            const uint32_t hizMipCount = meshletOcclusionPipeline_.has_value()
-                ? meshletOcclusionPipeline_->hizMipCount()
-                : 1u;
-
-            meshletCullingPipeline_->updateCullParams(meshletCount, hizMipCount);
-            if (!meshletCullingPipeline_->refreshBindGroup(
-                    meshletBuffers_,
-                    MeshletOcclusionPipeline::kOcclusionHiZViewName)) {
-                std::cerr << "Failed to bind meshlet culling resources after upload." << std::endl;
-                finalizeUploadTiming();
-                return;
-            }
-        }
     }
 
     finalizeUploadTiming();

@@ -1,125 +1,12 @@
 #include "solum_engine/voxel/VoxelStreamingSystem.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <vector>
 
+#include "solum_engine/render/MeshUploadAssembler.h"
 #include "solum_engine/voxel/MeshManager.h"
 #include "solum_engine/voxel/World.h"
-
-namespace {
-struct PreparedMeshUploadData {
-    std::vector<MeshletMetadataGPU> metadata;
-    std::vector<uint32_t> quadData;
-    std::vector<MeshletAabbGPU> meshletAabbsGpu;
-    std::vector<MeshletAabb> meshletBounds;
-    uint32_t totalMeshletCount = 0;
-    uint32_t totalQuadCount = 0;
-    uint32_t requiredMeshletCapacity = 64u;
-    uint32_t requiredQuadCapacity = 64u * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
-};
-
-MeshletAabb computeMeshletAabb(const Meshlet& meshlet) {
-    if (meshlet.quadCount == 0u) {
-        const glm::vec3 origin = glm::vec3(meshlet.origin);
-        return MeshletAabb{origin, origin};
-    }
-
-    static const std::array<std::array<glm::vec3, 4>, 6> kFaceCornerOffsets{{
-        {{glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 0.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 0.0f, 1.0f}, glm::vec3{0.0f, 1.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 0.0f}}},
-    }};
-
-    const uint32_t safeFaceDirection = std::min(meshlet.faceDirection, 5u);
-    const float voxelScale = static_cast<float>(std::max(meshlet.voxelScale, 1u));
-
-    bool firstVertex = true;
-    glm::vec3 minCorner{0.0f};
-    glm::vec3 maxCorner{0.0f};
-
-    for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
-        const glm::uvec3 local = unpackMeshletLocalOffset(meshlet.packedQuadLocalOffsets[quadIndex]);
-        const glm::vec3 quadBase = glm::vec3(meshlet.origin) + (glm::vec3(local) * voxelScale);
-        for (const glm::vec3& cornerOffset : kFaceCornerOffsets[safeFaceDirection]) {
-            const glm::vec3 vertex = quadBase + (cornerOffset * voxelScale);
-            if (firstVertex) {
-                minCorner = vertex;
-                maxCorner = vertex;
-                firstVertex = false;
-                continue;
-            }
-            minCorner = glm::min(minCorner, vertex);
-            maxCorner = glm::max(maxCorner, vertex);
-        }
-    }
-
-    return MeshletAabb{minCorner, maxCorner};
-}
-
-MeshletAabbGPU toGpuAabb(const MeshletAabb& aabb) {
-    return MeshletAabbGPU{
-        glm::vec4(aabb.minCorner, 0.0f),
-        glm::vec4(aabb.maxCorner, 0.0f)
-    };
-}
-
-PreparedMeshUploadData prepareMeshUploadData(const std::vector<Meshlet>& meshlets) {
-    PreparedMeshUploadData prepared;
-
-    for (const Meshlet& meshlet : meshlets) {
-        if (meshlet.quadCount == 0) {
-            continue;
-        }
-        ++prepared.totalMeshletCount;
-        prepared.totalQuadCount += meshlet.quadCount * MESHLET_QUAD_DATA_WORD_STRIDE;
-    }
-
-    prepared.metadata.reserve(prepared.totalMeshletCount);
-    prepared.quadData.reserve(prepared.totalQuadCount);
-    prepared.meshletAabbsGpu.reserve(prepared.totalMeshletCount);
-    prepared.meshletBounds.reserve(prepared.totalMeshletCount);
-
-    for (const Meshlet& meshlet : meshlets) {
-        if (meshlet.quadCount == 0) {
-            continue;
-        }
-
-        MeshletMetadataGPU metadata{};
-        metadata.originX = meshlet.origin.x;
-        metadata.originY = meshlet.origin.y;
-        metadata.originZ = meshlet.origin.z;
-        metadata.quadCount = meshlet.quadCount;
-        metadata.faceDirection = meshlet.faceDirection;
-        metadata.dataOffset = static_cast<uint32_t>(prepared.quadData.size());
-        metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
-        prepared.metadata.push_back(metadata);
-        const MeshletAabb meshletBounds = computeMeshletAabb(meshlet);
-        prepared.meshletAabbsGpu.push_back(toGpuAabb(meshletBounds));
-        prepared.meshletBounds.push_back(meshletBounds);
-
-        for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
-            prepared.quadData.push_back(packMeshletQuadData(
-                meshlet.packedQuadLocalOffsets[i],
-                meshlet.quadMaterialIds[i]
-            ));
-            prepared.quadData.push_back(static_cast<uint32_t>(meshlet.quadAoData[i]));
-        }
-    }
-
-    prepared.requiredMeshletCapacity = std::max(prepared.totalMeshletCount + 16u, 64u);
-    prepared.requiredQuadCapacity = std::max(
-        prepared.totalQuadCount + (1024u * MESHLET_QUAD_DATA_WORD_STRIDE),
-        prepared.requiredMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE
-    );
-
-    return prepared;
-}
-}  // namespace
 
 VoxelStreamingSystem::VoxelStreamingSystem() = default;
 
@@ -174,7 +61,7 @@ void VoxelStreamingSystem::start(const glm::vec3& initialCameraPosition, uint64_
         hasLatestStreamingCamera_ = true;
         latestStreamingCamera_ = initialCameraPosition;
         latestStreamingSseProjectionScale_ = 390.0f;
-        pendingMeshUpload_.reset();
+        uploadMailbox_.clear();
         streamerLastPreparedRevision_ = initialUploadedMeshRevision;
         streamerLastPreparedCenter_ = initialCenterColumn;
         streamerHasLastPreparedCenter_ = true;
@@ -202,7 +89,7 @@ void VoxelStreamingSystem::stop() {
     {
         std::lock_guard<std::mutex> lock(streamingMutex_);
         streamingStopRequested_ = false;
-        pendingMeshUpload_.reset();
+        uploadMailbox_.clear();
         streamerLastSnapshotTime_.reset();
     }
     mainUploadInProgress_.store(false, std::memory_order_relaxed);
@@ -222,14 +109,8 @@ void VoxelStreamingSystem::updateCamera(const glm::vec3& cameraPosition, float s
     streamingCv_.notify_one();
 }
 
-std::optional<StreamingMeshUpload> VoxelStreamingSystem::consumePendingMeshUpload() {
-    std::lock_guard<std::mutex> lock(streamingMutex_);
-    if (!pendingMeshUpload_.has_value()) {
-        return std::nullopt;
-    }
-    std::optional<StreamingMeshUpload> upload = std::move(pendingMeshUpload_);
-    pendingMeshUpload_.reset();
-    return upload;
+std::optional<StreamingMeshUpload> VoxelStreamingSystem::tryConsumePreparedUpload() {
+    return uploadMailbox_.tryConsume();
 }
 
 void VoxelStreamingSystem::recordMainUpdateDurationNs(uint64_t ns) noexcept {
@@ -319,12 +200,9 @@ void VoxelStreamingSystem::streamingThreadMain() {
             streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
-        {
-            std::lock_guard<std::mutex> lock(streamingMutex_);
-            if (pendingMeshUpload_.has_value()) {
-                streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
-                continue;
-            }
+        if (uploadMailbox_.hasPending()) {
+            streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
+            continue;
         }
 
         const bool pendingJobs = world_->hasPendingJobs() || meshManager_->hasPendingJobs();
@@ -354,7 +232,11 @@ void VoxelStreamingSystem::streamingThreadMain() {
         );
 
         const auto prepareStart = std::chrono::steady_clock::now();
-        PreparedMeshUploadData prepared = prepareMeshUploadData(meshlets);
+        StreamingMeshUpload preparedUpload = MeshUploadAssembler::assemble(
+            meshlets,
+            currentRevision,
+            centerColumn
+        );
         recordTimingNs(
             TimingStage::StreamPrepareUpload,
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -367,19 +249,8 @@ void VoxelStreamingSystem::streamingThreadMain() {
             if (streamingStopRequested_) {
                 return;
             }
-            pendingMeshUpload_ = StreamingMeshUpload{
-                std::move(prepared.metadata),
-                std::move(prepared.quadData),
-                std::move(prepared.meshletAabbsGpu),
-                std::move(prepared.meshletBounds),
-                prepared.totalMeshletCount,
-                prepared.totalQuadCount,
-                prepared.requiredMeshletCapacity,
-                prepared.requiredQuadCapacity,
-                currentRevision,
-                centerColumn
-            };
         }
+        uploadMailbox_.pushLatest(std::move(preparedUpload));
 
         streamerLastPreparedRevision_ = currentRevision;
         streamerLastPreparedCenter_ = centerColumn;
@@ -391,28 +262,12 @@ void VoxelStreamingSystem::streamingThreadMain() {
 
 void VoxelStreamingSystem::recordTimingNs(TimingStage stage, uint64_t ns) noexcept {
     const std::size_t stageIndex = static_cast<std::size_t>(stage);
-    TimingAccumulator& accumulator = timingAccumulators_[stageIndex];
-    accumulator.totalNs.fetch_add(ns, std::memory_order_relaxed);
-    accumulator.callCount.fetch_add(1, std::memory_order_relaxed);
-
-    uint64_t observedMax = accumulator.maxNs.load(std::memory_order_relaxed);
-    while (ns > observedMax &&
-           !accumulator.maxNs.compare_exchange_weak(
-               observedMax,
-               ns,
-               std::memory_order_relaxed,
-               std::memory_order_relaxed)) {
-    }
+    recordTimingAccumulator(timingAccumulators_[stageIndex], ns);
 }
 
 VoxelStreamingSystem::TimingRawTotals VoxelStreamingSystem::captureTimingRawTotals() const {
     TimingRawTotals totals;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(TimingStage::Count); ++i) {
-        const TimingAccumulator& accumulator = timingAccumulators_[i];
-        totals.totalNs[i] = accumulator.totalNs.load(std::memory_order_relaxed);
-        totals.callCount[i] = accumulator.callCount.load(std::memory_order_relaxed);
-        totals.maxNs[i] = accumulator.maxNs.load(std::memory_order_relaxed);
-    }
+    captureTimingAccumulatorArrays(timingAccumulators_, totals.totalNs, totals.callCount, totals.maxNs);
 
     totals.streamSkipNoCamera = streamSkipNoCamera_.load(std::memory_order_relaxed);
     totals.streamSkipUnchanged = streamSkipUnchanged_.load(std::memory_order_relaxed);
@@ -426,18 +281,14 @@ TimingStageSnapshot VoxelStreamingSystem::makeStageSnapshot(const TimingRawTotal
                                                             TimingStage stage,
                                                             double sampleWindowSeconds) {
     const std::size_t i = static_cast<std::size_t>(stage);
-    const uint64_t deltaNs = current.totalNs[i] - previous.totalNs[i];
-    const uint64_t deltaCalls = current.callCount[i] - previous.callCount[i];
-    const double deltaMs = static_cast<double>(deltaNs) / 1'000'000.0;
-    const double window = std::max(sampleWindowSeconds, 1e-6);
-
-    TimingStageSnapshot snapshot;
-    snapshot.averageMs = (deltaCalls > 0) ? (deltaMs / static_cast<double>(deltaCalls)) : 0.0;
-    snapshot.peakMs = static_cast<double>(current.maxNs[i]) / 1'000'000.0;
-    snapshot.totalMsPerSecond = deltaMs / window;
-    snapshot.callsPerSecond = static_cast<double>(deltaCalls) / window;
-    snapshot.totalCalls = current.callCount[i];
-    return snapshot;
+    return makeTimingStageSnapshotFromRaw(
+        current.totalNs[i],
+        current.callCount[i],
+        current.maxNs[i],
+        previous.totalNs[i],
+        previous.callCount[i],
+        sampleWindowSeconds
+    );
 }
 
 RuntimeTimingSnapshot VoxelStreamingSystem::getRuntimeTimingSnapshot() {
@@ -509,7 +360,7 @@ RuntimeTimingSnapshot VoxelStreamingSystem::getRuntimeTimingSnapshot() {
     {
         std::lock_guard<std::mutex> lock(streamingMutex_);
         snapshot.pendingUploadQueued =
-            pendingMeshUpload_.has_value() ||
+            uploadMailbox_.hasPending() ||
             mainUploadInProgress_.load(std::memory_order_relaxed);
     }
     return snapshot;

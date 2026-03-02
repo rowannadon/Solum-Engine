@@ -241,11 +241,3 @@ void MeshletCullingPipeline::encode(CommandEncoder encoder,
     pass.end();
     pass.release();
 }
-
-bool MeshletCullingPipeline::render(
-    TextureView /* targetView */,
-    CommandEncoder /* encoder */,
-    const std::function<void(RenderPassEncoder&)>& /* overlayCallback */
-) {
-    return false;
-}

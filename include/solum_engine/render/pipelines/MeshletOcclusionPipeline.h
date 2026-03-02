@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 class MeshletOcclusionPipeline : public AbstractRenderPipeline {
 public:
@@ -31,20 +32,19 @@ public:
     void removeResources() override;
     bool createPipeline() override;
     bool createBindGroup() override;
-    bool render(
-        wgpu::TextureView targetView,
-        wgpu::CommandEncoder encoder,
-        const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
-    ) override;
 
 private:
     bool createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
                                        const std::string& metadataBufferName);
+    bool rebuildHierarchyBindings();
     static uint32_t computeMipCount(uint32_t width, uint32_t height);
 
     uint32_t occlusionHiZMipCount_ = 1u;
     uint32_t occlusionDepthWidth_ = 1u;
     uint32_t occlusionDepthHeight_ = 1u;
+    std::vector<wgpu::TextureView> occlusionHiZMipViews_;
+    wgpu::BindGroup hizSeedBindGroup_ = nullptr;
+    std::vector<wgpu::BindGroup> hizDownsampleBindGroups_;
 
     static constexpr const char* kDepthPrepassBglName = "meshlet_depth_prepass_bgl";
     static constexpr const char* kDepthPrepassBgName = "meshlet_depth_prepass_bg";

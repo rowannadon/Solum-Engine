@@ -23,10 +23,12 @@
 #include <thread>
 #include <numeric>
 #include <mutex>
+#include <memory>
 
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/render/WebGPURenderer.h"
+#include "solum_engine/core/FramePacer.h"
 #include "solum_engine/ui/GuiManager.h"
 #include "solum_engine/core/Camera.h"
 #include "solum_engine/voxel/VoxelStreamingSystem.h"
@@ -97,4 +99,5 @@ private:
     RuntimeTimingSnapshot runtimeTimingSnapshot_;
 
     std::vector<float> frameTimes;
+    std::unique_ptr<FramePacer> framePacer_;
 };

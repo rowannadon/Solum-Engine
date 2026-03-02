@@ -28,12 +28,6 @@ public:
     bool createBindGroup() override;
     bool build() override;
 
-    bool render(
-        wgpu::TextureView targetView,
-        wgpu::CommandEncoder encoder,
-        const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
-    ) override;
-
 private:
     bool ensureVertexBufferCapacity(uint64_t requiredBytes);
 

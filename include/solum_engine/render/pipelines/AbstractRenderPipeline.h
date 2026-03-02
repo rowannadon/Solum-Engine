@@ -7,8 +7,6 @@
 
 #include <webgpu/webgpu.hpp>
 
-#include <functional>
-
 struct RenderServices {
     BufferManager& buf;
     TextureManager& tex;
@@ -34,10 +32,4 @@ public:
     virtual bool createPipeline() = 0;
     virtual bool createBindGroup() = 0;
     virtual bool build() = 0;
-
-    virtual bool render(
-        wgpu::TextureView targetView,
-        wgpu::CommandEncoder encoder,
-        const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
-    ) = 0;
 };

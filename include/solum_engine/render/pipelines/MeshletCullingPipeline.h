@@ -28,11 +28,6 @@ public:
     void removeResources() override;
     bool createPipeline() override;
     bool createBindGroup() override;
-    bool render(
-        wgpu::TextureView targetView,
-        wgpu::CommandEncoder encoder,
-        const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
-    ) override;
 
 private:
     bool createBindGroupForMeshBuffers(const std::string& meshletAabbBufferName,

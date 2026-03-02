@@ -36,6 +36,9 @@ bool MeshletOcclusionPipeline::recreateResources(const MeshletBufferController& 
     if (!createResources()) {
         return false;
     }
+    if (!rebuildHierarchyBindings()) {
+        return false;
+    }
     return refreshMeshBindGroup(meshletBuffers);
 }
 
@@ -51,6 +54,23 @@ bool MeshletOcclusionPipeline::refreshMeshBindGroup(const MeshletBufferControlle
 }
 
 bool MeshletOcclusionPipeline::createResources() {
+    if (hizSeedBindGroup_) {
+        hizSeedBindGroup_.release();
+        hizSeedBindGroup_ = nullptr;
+    }
+    for (BindGroup& bindGroup : hizDownsampleBindGroups_) {
+        if (bindGroup) {
+            bindGroup.release();
+        }
+    }
+    hizDownsampleBindGroups_.clear();
+    for (TextureView& view : occlusionHiZMipViews_) {
+        if (view) {
+            view.release();
+        }
+    }
+    occlusionHiZMipViews_.clear();
+
     r_.tex.removeTextureView(kOcclusionHiZViewName);
     r_.tex.removeTexture(kOcclusionHiZTextureName);
     r_.tex.removeTextureView(kOcclusionDepthViewName);
@@ -127,6 +147,23 @@ void MeshletOcclusionPipeline::removeResources() {
     r_.tex.removeTexture(kOcclusionHiZTextureName);
     r_.tex.removeTextureView(kOcclusionDepthViewName);
     r_.tex.removeTexture(kOcclusionDepthTextureName);
+
+    if (hizSeedBindGroup_) {
+        hizSeedBindGroup_.release();
+        hizSeedBindGroup_ = nullptr;
+    }
+    for (BindGroup& bindGroup : hizDownsampleBindGroups_) {
+        if (bindGroup) {
+            bindGroup.release();
+        }
+    }
+    hizDownsampleBindGroups_.clear();
+    for (TextureView& view : occlusionHiZMipViews_) {
+        if (view) {
+            view.release();
+        }
+    }
+    occlusionHiZMipViews_.clear();
 
     occlusionHiZMipCount_ = 1u;
     occlusionDepthWidth_ = 1u;
@@ -220,7 +257,7 @@ bool MeshletOcclusionPipeline::createPipeline() {
         return false;
     }
 
-    return true;
+    return rebuildHierarchyBindings();
 }
 
 bool MeshletOcclusionPipeline::createBindGroup() {
@@ -257,6 +294,98 @@ bool MeshletOcclusionPipeline::createBindGroupForMeshBuffers(const std::string& 
 
     r_.pip.deleteBindGroup(kDepthPrepassBgName);
     return r_.pip.createBindGroup(kDepthPrepassBgName, kDepthPrepassBglName, entries) != nullptr;
+}
+
+bool MeshletOcclusionPipeline::rebuildHierarchyBindings() {
+    TextureView depthView = r_.tex.getTextureView(kOcclusionDepthViewName);
+    Texture hizTexture = r_.tex.getTexture(kOcclusionHiZTextureName);
+    BindGroupLayout seedBgl = r_.pip.getBindGroupLayout(kHiZSeedBglName);
+    BindGroupLayout downsampleBgl = r_.pip.getBindGroupLayout(kHiZDownsampleBglName);
+    if (!depthView || !hizTexture || !seedBgl || !downsampleBgl) {
+        return false;
+    }
+
+    if (hizSeedBindGroup_) {
+        hizSeedBindGroup_.release();
+        hizSeedBindGroup_ = nullptr;
+    }
+    for (BindGroup& bindGroup : hizDownsampleBindGroups_) {
+        if (bindGroup) {
+            bindGroup.release();
+        }
+    }
+    hizDownsampleBindGroups_.clear();
+    for (TextureView& view : occlusionHiZMipViews_) {
+        if (view) {
+            view.release();
+        }
+    }
+    occlusionHiZMipViews_.clear();
+
+    const uint32_t mipCount = std::max(occlusionHiZMipCount_, 1u);
+    occlusionHiZMipViews_.reserve(mipCount);
+
+    for (uint32_t mipLevel = 0u; mipLevel < mipCount; ++mipLevel) {
+        TextureViewDescriptor viewDesc = Default;
+        viewDesc.aspect = TextureAspect::All;
+        viewDesc.baseArrayLayer = 0;
+        viewDesc.arrayLayerCount = 1;
+        viewDesc.baseMipLevel = mipLevel;
+        viewDesc.mipLevelCount = 1;
+        viewDesc.dimension = TextureViewDimension::_2D;
+        viewDesc.format = TextureFormat::R32Float;
+        TextureView view = hizTexture.createView(viewDesc);
+        if (!view) {
+            return false;
+        }
+        occlusionHiZMipViews_.push_back(view);
+    }
+
+    std::array<BindGroupEntry, 2> seedEntries{};
+    seedEntries[0] = Default;
+    seedEntries[0].binding = 0;
+    seedEntries[0].textureView = depthView;
+    seedEntries[1] = Default;
+    seedEntries[1].binding = 1;
+    seedEntries[1].textureView = occlusionHiZMipViews_[0];
+
+    BindGroupDescriptor seedBgDesc = Default;
+    seedBgDesc.label = StringView("meshlet hiz seed bg");
+    seedBgDesc.layout = seedBgl;
+    seedBgDesc.entryCount = static_cast<uint32_t>(seedEntries.size());
+    seedBgDesc.entries = seedEntries.data();
+    hizSeedBindGroup_ = r_.ctx.getDevice().createBindGroup(seedBgDesc);
+    if (!hizSeedBindGroup_) {
+        return false;
+    }
+
+    if (mipCount <= 1u) {
+        return true;
+    }
+
+    hizDownsampleBindGroups_.reserve(mipCount - 1u);
+    for (uint32_t mip = 1u; mip < mipCount; ++mip) {
+        std::array<BindGroupEntry, 2> entries{};
+        entries[0] = Default;
+        entries[0].binding = 0;
+        entries[0].textureView = occlusionHiZMipViews_[mip - 1u];
+        entries[1] = Default;
+        entries[1].binding = 1;
+        entries[1].textureView = occlusionHiZMipViews_[mip];
+
+        BindGroupDescriptor bgDesc = Default;
+        bgDesc.label = StringView("meshlet hiz downsample bg");
+        bgDesc.layout = downsampleBgl;
+        bgDesc.entryCount = static_cast<uint32_t>(entries.size());
+        bgDesc.entries = entries.data();
+        BindGroup bindGroup = r_.ctx.getDevice().createBindGroup(bgDesc);
+        if (!bindGroup) {
+            return false;
+        }
+        hizDownsampleBindGroups_.push_back(bindGroup);
+    }
+
+    return true;
 }
 
 void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
@@ -305,122 +434,42 @@ void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
 void MeshletOcclusionPipeline::encodeHierarchyPass(CommandEncoder encoder) {
     ComputePipeline seedPipeline = r_.pip.getComputePipeline(kHiZSeedPipelineName);
     ComputePipeline downsamplePipeline = r_.pip.getComputePipeline(kHiZDownsamplePipelineName);
-    BindGroupLayout seedBgl = r_.pip.getBindGroupLayout(kHiZSeedBglName);
-    BindGroupLayout downsampleBgl = r_.pip.getBindGroupLayout(kHiZDownsampleBglName);
-    if (!seedPipeline || !downsamplePipeline || !seedBgl || !downsampleBgl) {
+    if (!seedPipeline || !downsamplePipeline) {
         return;
     }
-
-    TextureView depthView = r_.tex.getTextureView(kOcclusionDepthViewName);
-    Texture hizTexture = r_.tex.getTexture(kOcclusionHiZTextureName);
-    if (!depthView || !hizTexture) {
+    if ((hizSeedBindGroup_ == nullptr || occlusionHiZMipViews_.empty()) && !rebuildHierarchyBindings()) {
         return;
     }
 
     const uint32_t mipCount = std::max(occlusionHiZMipCount_, 1u);
-    const Device device = r_.ctx.getDevice();
-
-    auto createHizMipView = [hizTexture](uint32_t mipLevel) -> TextureView {
-        TextureViewDescriptor viewDesc = Default;
-        viewDesc.aspect = TextureAspect::All;
-        viewDesc.baseArrayLayer = 0;
-        viewDesc.arrayLayerCount = 1;
-        viewDesc.baseMipLevel = mipLevel;
-        viewDesc.mipLevelCount = 1;
-        viewDesc.dimension = TextureViewDimension::_2D;
-        viewDesc.format = TextureFormat::R32Float;
-        return hizTexture.createView(viewDesc);
-    };
 
     ComputePassDescriptor passDesc = Default;
     ComputePassEncoder pass = encoder.beginComputePass(passDesc);
 
-    {
-        TextureView dstMip0View = createHizMipView(0u);
-        if (dstMip0View) {
-            std::array<BindGroupEntry, 2> entries{};
-            entries[0] = Default;
-            entries[0].binding = 0;
-            entries[0].textureView = depthView;
-            entries[1] = Default;
-            entries[1].binding = 1;
-            entries[1].textureView = dstMip0View;
-
-            BindGroupDescriptor bgDesc = Default;
-            bgDesc.label = StringView("meshlet hiz seed bg");
-            bgDesc.layout = seedBgl;
-            bgDesc.entryCount = static_cast<uint32_t>(entries.size());
-            bgDesc.entries = entries.data();
-            BindGroup bg = device.createBindGroup(bgDesc);
-
-            if (bg) {
-                pass.setPipeline(seedPipeline);
-                pass.setBindGroup(0, bg, 0, nullptr);
-                const uint32_t gx =
-                    (std::max(occlusionDepthWidth_, 1u) + kOcclusionHiZWorkgroupSize - 1u) /
-                    kOcclusionHiZWorkgroupSize;
-                const uint32_t gy =
-                    (std::max(occlusionDepthHeight_, 1u) + kOcclusionHiZWorkgroupSize - 1u) /
-                    kOcclusionHiZWorkgroupSize;
-                pass.dispatchWorkgroups(gx, gy, 1u);
-                bg.release();
-            }
-
-            dstMip0View.release();
-        }
-    }
+    pass.setPipeline(seedPipeline);
+    pass.setBindGroup(0, hizSeedBindGroup_, 0, nullptr);
+    const uint32_t gx =
+        (std::max(occlusionDepthWidth_, 1u) + kOcclusionHiZWorkgroupSize - 1u) /
+        kOcclusionHiZWorkgroupSize;
+    const uint32_t gy =
+        (std::max(occlusionDepthHeight_, 1u) + kOcclusionHiZWorkgroupSize - 1u) /
+        kOcclusionHiZWorkgroupSize;
+    pass.dispatchWorkgroups(gx, gy, 1u);
 
     for (uint32_t mip = 1u; mip < mipCount; ++mip) {
-        TextureView srcView = createHizMipView(mip - 1u);
-        TextureView dstView = createHizMipView(mip);
-        if (!srcView || !dstView) {
-            if (srcView) {
-                srcView.release();
-            }
-            if (dstView) {
-                dstView.release();
-            }
+        const size_t bindGroupIndex = static_cast<size_t>(mip - 1u);
+        if (bindGroupIndex >= hizDownsampleBindGroups_.size() || !hizDownsampleBindGroups_[bindGroupIndex]) {
             continue;
         }
-
-        std::array<BindGroupEntry, 2> entries{};
-        entries[0] = Default;
-        entries[0].binding = 0;
-        entries[0].textureView = srcView;
-        entries[1] = Default;
-        entries[1].binding = 1;
-        entries[1].textureView = dstView;
-
-        BindGroupDescriptor bgDesc = Default;
-        bgDesc.label = StringView("meshlet hiz downsample bg");
-        bgDesc.layout = downsampleBgl;
-        bgDesc.entryCount = static_cast<uint32_t>(entries.size());
-        bgDesc.entries = entries.data();
-        BindGroup bg = device.createBindGroup(bgDesc);
-
-        if (bg) {
-            const uint32_t mipWidth = std::max(1u, occlusionDepthWidth_ >> mip);
-            const uint32_t mipHeight = std::max(1u, occlusionDepthHeight_ >> mip);
-            const uint32_t gx = (mipWidth + kOcclusionHiZWorkgroupSize - 1u) / kOcclusionHiZWorkgroupSize;
-            const uint32_t gy = (mipHeight + kOcclusionHiZWorkgroupSize - 1u) / kOcclusionHiZWorkgroupSize;
-            pass.setPipeline(downsamplePipeline);
-            pass.setBindGroup(0, bg, 0, nullptr);
-            pass.dispatchWorkgroups(gx, gy, 1u);
-            bg.release();
-        }
-
-        srcView.release();
-        dstView.release();
+        const uint32_t mipWidth = std::max(1u, occlusionDepthWidth_ >> mip);
+        const uint32_t mipHeight = std::max(1u, occlusionDepthHeight_ >> mip);
+        const uint32_t dispatchX = (mipWidth + kOcclusionHiZWorkgroupSize - 1u) / kOcclusionHiZWorkgroupSize;
+        const uint32_t dispatchY = (mipHeight + kOcclusionHiZWorkgroupSize - 1u) / kOcclusionHiZWorkgroupSize;
+        pass.setPipeline(downsamplePipeline);
+        pass.setBindGroup(0, hizDownsampleBindGroups_[bindGroupIndex], 0, nullptr);
+        pass.dispatchWorkgroups(dispatchX, dispatchY, 1u);
     }
 
     pass.end();
     pass.release();
-}
-
-bool MeshletOcclusionPipeline::render(
-    TextureView /* targetView */,
-    CommandEncoder /* encoder */,
-    const std::function<void(RenderPassEncoder&)>& /* overlayCallback */
-) {
-    return false;
 }

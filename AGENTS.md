@@ -51,7 +51,7 @@ Chunks are meshed into **Meshlets** — face-direction-aligned quad groups (max 
 - `MeshletMetadataGPU` (32B): origin XYZ, quad count, face direction, data offset, voxel scale
 - `MeshletAabbGPU` (32B): min/max corners (vec4f aligned)
 
-**MeshletBufferController**: double-buffered GPU upload, streamed in 1 MB/frame chunks.
+**MeshletBufferController**: double-buffered GPU upload with configurable streaming budget (default 2 MB/frame).
 
 ### Mesh LOD
 
@@ -114,6 +114,6 @@ shaders/            WGSL shaders (voxel, meshlet_*, debug_bounds, uniforms)
 
 - **GPU-driven rendering**: compute shader culling writes indirect draw args; no CPU readback
 - **Double-buffered meshlets**: two GPU buffer sets swap to avoid CPU/GPU sync stalls
-- **Streaming budget**: 1 MB/frame GPU upload cap prevents frame hitches
+- **Streaming budget**: configurable GPU upload cap (default 2 MB/frame) prevents frame hitches
 - **Type-safe coordinates**: tagged `GridCoord` types with explicit converters and hash specializations
 - **Named resource registry**: managers key resources by string name for flexible pipeline composition

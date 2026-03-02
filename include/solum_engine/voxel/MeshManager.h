@@ -139,7 +139,6 @@ public:
 
     void updatePlayerPosition(const glm::vec3& playerWorldPosition, float sseProjectionScale);
 
-    std::vector<Meshlet> copyMeshlets() const;
     std::vector<Meshlet> copyMeshletsAround(const ColumnCoord& centerColumn, int32_t columnRadius) const;
     uint64_t meshRevision() const noexcept;
     bool hasPendingJobs() const;
@@ -161,7 +160,11 @@ private:
         int8_t renderedLod = -1;
     };
 
-    struct MeshGenerationResult;
+    struct MeshGenerationResult {
+        TileLodCellCoord coord;
+        std::vector<Meshlet> meshlets;
+        bool meshed = false;
+    };
 
     void scheduleTilesAround(const ChunkCoord& centerChunk,
                              const glm::vec3& playerWorldPosition,
