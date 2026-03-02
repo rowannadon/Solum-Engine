@@ -95,7 +95,7 @@ fn is_occluded(aabb: MeshletAabb, clipFromLocal: mat4x4f) -> bool {
 
     let minCorner = aabb.minCorner.xyz;
     let maxCorner = aabb.maxCorner.xyz;
-    let cameraPosition = frameUniforms.inverseViewMatrix[3].xyz;
+    let cameraPosition = frameUniforms.inverseCullingViewMatrix[3].xyz;
     let nearSkipDistance = max(frameUniforms.occlusionParams.z, 0.0);
     let nearSkipDistanceSq = nearSkipDistance * nearSkipDistance;
     let closestPoint = clamp(cameraPosition, minCorner, maxCorner);
@@ -176,7 +176,7 @@ fn cs_main(
     @builtin(local_invocation_index) localIndex: u32
 ) {
     if (localIndex == 0u) {
-        clipFromLocalWg = clip_from_local_matrix();
+        clipFromLocalWg = cull_clip_from_local_matrix();
     }
     workgroupBarrier();
 

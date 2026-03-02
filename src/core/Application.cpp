@@ -33,6 +33,8 @@ bool Application::Initialize() {
     uniforms.inverseProjectionMatrix = glm::mat4x4(1.0);
     uniforms.viewMatrix = glm::mat4x4(1.0);
     uniforms.inverseViewMatrix = glm::mat4x4(1.0);
+    uniforms.cullingViewMatrix = glm::mat4x4(1.0);
+    uniforms.inverseCullingViewMatrix = glm::mat4x4(1.0);
     uniforms.renderFlags[0] =
         kRenderFlagBoundsChunks |
         kRenderFlagBoundsColumns |
@@ -49,6 +51,10 @@ bool Application::Initialize() {
     camera.updateCameraVectors();
     updateProjectionMatrix(camera.zoom);
     updateViewMatrix();
+    cullingViewMatrix_ = uniforms.viewMatrix;
+    inverseCullingViewMatrix_ = uniforms.inverseViewMatrix;
+    uniforms.cullingViewMatrix = cullingViewMatrix_;
+    uniforms.inverseCullingViewMatrix = inverseCullingViewMatrix_;
     gpu.setDebugWorld(voxelStreaming_.world());
     voxelStreaming_.start(camera.position, gpu.uploadedMeshRevision());
 
@@ -105,6 +111,8 @@ void Application::MainLoop() {
     const glm::mat4 viewGPU = glm::lookAt(camera.position, camera.position + camera.front, camera.up);
     uniforms.viewMatrix = viewGPU;
     uniforms.inverseViewMatrix = glm::inverse(viewGPU);
+    const bool freezeCullingBeforeUi = gui.isCullingCameraFrozen();
+    updateCullingCameraMatrices(viewGPU, freezeCullingBeforeUi);
 
     const auto streamUpdateStart = std::chrono::steady_clock::now();
     const float projectionYScale = std::abs(uniforms.projectionMatrix[1][1]);
@@ -130,6 +138,8 @@ void Application::MainLoop() {
     runtimeTimingSnapshot_ = mergeRuntimeTimingSnapshots(gpuTiming, streamingTiming);
 
     gui.renderImGUI(uniforms, frameTimes, camera, frameTime, runtimeTimingSnapshot_);
+    const bool freezeCullingAfterUi = gui.isCullingCameraFrozen();
+    updateCullingCameraMatrices(viewGPU, freezeCullingAfterUi);
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
     
     gpu.renderFrame(uniforms);
@@ -220,6 +230,16 @@ void Application::updateViewMatrix() {
     uniforms.viewMatrix = glm::lookAt(camera.position, camera.position + camera.front, camera.up);
     uniforms.inverseViewMatrix = glm::inverse(uniforms.viewMatrix);
     buf->writeBuffer("uniform_buffer", offsetof(FrameUniforms, viewMatrix), &uniforms.viewMatrix, sizeof(FrameUniforms::viewMatrix));
+}
+
+void Application::updateCullingCameraMatrices(const glm::mat4& renderViewMatrix, bool freezeCullingCamera) {
+    if (!freezeCullingCamera) {
+        cullingViewMatrix_ = renderViewMatrix;
+        inverseCullingViewMatrix_ = glm::inverse(renderViewMatrix);
+    }
+
+    uniforms.cullingViewMatrix = cullingViewMatrix_;
+    uniforms.inverseCullingViewMatrix = inverseCullingViewMatrix_;
 }
 
 void Application::onMouseMove(double xpos, double ypos) {

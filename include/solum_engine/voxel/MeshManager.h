@@ -120,8 +120,10 @@ struct hash<TileLodCellCoord> {
 class MeshManager {
 public:
     struct Config {
-        std::vector<int32_t> lodChunkRadii{4, 8, 16};
-        float lodSseTargetPixels = 4.0f;
+        int32_t lodLevelCount = 4;
+        int32_t meshTileSizeChunks = 8;
+        int32_t activeChunkRadius = 128;
+        float lodSseTargetPixels = 8.0f;
         float lodSseHysteresisPixels = 0.25f;
         float lodSseMinDepthBlocks = 4.0f;
         float lodSseFallbackProjectionScale = 390.0f;
@@ -220,7 +222,7 @@ private:
 
     int32_t maxConfiguredRadius() const;
 
-    static uint8_t chunkSpanForLod(uint8_t lodLevel);
+    static int32_t chunkSpanForLod(uint8_t lodLevel);
     static int32_t chunkZCountForLod(uint8_t lodLevel);
     static jobsystem::Priority priorityFromLodLevel(uint8_t lodLevel);
     static void sanitizeConfig(Config& config);

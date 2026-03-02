@@ -54,6 +54,7 @@ private:
     void updateProjectionMatrix(int zoom);
     void updateViewMatrix();
     void processInput();
+    void updateCullingCameraMatrices(const glm::mat4& renderViewMatrix, bool freezeCullingCamera);
 
 private:
     // Mouse state for first person look
@@ -97,6 +98,8 @@ private:
 
     FrameUniforms uniforms;
     RuntimeTimingSnapshot runtimeTimingSnapshot_;
+    glm::mat4 cullingViewMatrix_ = glm::mat4x4(1.0f);
+    glm::mat4 inverseCullingViewMatrix_ = glm::mat4x4(1.0f);
 
     std::vector<float> frameTimes;
     std::unique_ptr<FramePacer> framePacer_;

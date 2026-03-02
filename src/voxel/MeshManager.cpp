@@ -20,6 +20,7 @@ constexpr int kPaddedChunkExtent = cfg::CHUNK_SIZE + 2;
 constexpr int kPaddedChunkArea = kPaddedChunkExtent * kPaddedChunkExtent;
 constexpr int kPaddedChunkVoxelCount = kPaddedChunkExtent * kPaddedChunkExtent * kPaddedChunkExtent;
 constexpr int kMinPrefetchChunks = 4;
+constexpr int kMaxLodShift = 30;
 
 BlockMaterial airBlock() {
     static const BlockMaterial kAir = UnpackedBlockMaterial{}.pack();
@@ -105,6 +106,36 @@ FootprintDistanceRange footprintDistanceRangeForCell(int32_t cellX,
     };
 }
 
+bool isPowerOfTwo(int32_t value) {
+    return value > 0 && (value & (value - 1)) == 0;
+}
+
+int32_t floorPowerOfTwo(int32_t value) {
+    if (value <= 1) {
+        return 1;
+    }
+
+    int32_t floored = 1;
+    while (floored <= (value / 2)) {
+        floored <<= 1;
+    }
+    return floored;
+}
+
+int32_t integerLog2(int32_t value) {
+    int32_t result = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++result;
+    }
+    return result;
+}
+
+int32_t pow2ClampedShift(int32_t shift) {
+    const int32_t clampedShift = std::clamp(shift, 0, kMaxLodShift);
+    return (1 << clampedShift);
+}
+
 }  // namespace
 
 MeshManager::MeshManager(const World& world)
@@ -115,8 +146,7 @@ MeshManager::MeshManager(const World& world, Config config)
       config_(std::move(config)),
       jobs_(config_.jobConfig) {
     sanitizeConfig(config_);
-    const uint8_t maxConfiguredLod = static_cast<uint8_t>(config_.lodChunkRadii.size() - 1);
-    meshTileSizeChunks_ = std::max(1, static_cast<int32_t>(chunkSpanForLod(maxConfiguredLod)));
+    meshTileSizeChunks_ = std::max(1, config_.meshTileSizeChunks);
     processedWorldGenerationRevision_.store(world_.generationRevision(), std::memory_order_release);
 }
 
@@ -194,6 +224,16 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
             nullptr,
             meshTileSizeChunks_ * 4
         );
+    } else {
+        // Continuously re-evaluate a budgeted subset of tiles so LOD can respond to
+        // camera motion within the same chunk and runtime tuning of SSE parameters.
+        scheduleTilesAround(
+            centerChunk,
+            playerWorldPosition,
+            safeSseProjectionScale,
+            &centerChunk,
+            0
+        );
     }
 
     const uint64_t worldRevision = world_.generationRevision();
@@ -208,53 +248,48 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
 
 std::vector<Meshlet> MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const {
     const uint8_t mipLevel = std::min<uint8_t>(lodLevel, Chunk::MAX_MIP_LEVEL);
-    const uint8_t voxelScale = static_cast<uint8_t>(1u << mipLevel);
+    const int32_t extraLodShift = std::max(
+        0,
+        static_cast<int32_t>(lodLevel) - static_cast<int32_t>(Chunk::MAX_MIP_LEVEL)
+    );
+    const int32_t sampleStrideMip = pow2ClampedShift(extraLodShift);
+    const uint32_t baseVoxelScale = static_cast<uint32_t>(1u << mipLevel);
+    const uint32_t voxelScale = baseVoxelScale * static_cast<uint32_t>(sampleStrideMip);
 
     ChunkMesher mesher;
-    const BlockCoord sectionOriginMip{
+    const BlockCoord sectionOriginSample{
         cellCoord.v.x * cfg::CHUNK_SIZE,
         cellCoord.v.y * cfg::CHUNK_SIZE,
         cellCoord.v.z * cfg::CHUNK_SIZE
     };
-    const BlockCoord paddedOriginMip{
-        sectionOriginMip.v.x - 1,
-        sectionOriginMip.v.y - 1,
-        sectionOriginMip.v.z - 1
+    const BlockCoord paddedOriginSample{
+        sectionOriginSample.v.x - 1,
+        sectionOriginSample.v.y - 1,
+        sectionOriginSample.v.z - 1
     };
 
     PaddedChunkBlockSource snapshot;
-    snapshot.origin = paddedOriginMip;
+    snapshot.origin = paddedOriginSample;
     snapshot.blocks.fill(airBlock());
 
-    const glm::ivec3 paddedExtent{
-        kPaddedChunkExtent,
-        kPaddedChunkExtent,
-        kPaddedChunkExtent
-    };
-    WorldSection worldSection = world_.createSection(paddedOriginMip, paddedExtent, mipLevel);
-    std::vector<WorldSection::Sample> sectionSamples;
-    worldSection.copySamples(sectionSamples);
-
     const int32_t worldHeightAtMip = cfg::COLUMN_HEIGHT_BLOCKS >> mipLevel;
-    const size_t paddedYZArea =
-        static_cast<size_t>(kPaddedChunkExtent) * static_cast<size_t>(kPaddedChunkExtent);
 
     for (int x = 0; x < kPaddedChunkExtent; ++x) {
         for (int y = 0; y < kPaddedChunkExtent; ++y) {
             for (int z = 0; z < kPaddedChunkExtent; ++z) {
-                const size_t sampleIndex =
-                    (static_cast<size_t>(x) * paddedYZArea) +
-                    (static_cast<size_t>(y) * static_cast<size_t>(kPaddedChunkExtent)) +
-                    static_cast<size_t>(z);
-                const WorldSection::Sample& sample = sectionSamples[sampleIndex];
+                const BlockCoord sampleCoord{
+                    paddedOriginSample.v.x + x,
+                    paddedOriginSample.v.y + y,
+                    paddedOriginSample.v.z + z
+                };
                 const BlockCoord coordToCopy{
-                    paddedOriginMip.v.x + x,
-                    paddedOriginMip.v.y + y,
-                    paddedOriginMip.v.z + z
+                    sampleCoord.v.x * sampleStrideMip,
+                    sampleCoord.v.y * sampleStrideMip,
+                    sampleCoord.v.z * sampleStrideMip
                 };
 
-                BlockMaterial block = sample.block;
-                if (!sample.known) {
+                BlockMaterial block = airBlock();
+                if (!world_.tryGetBlock(coordToCopy, block, mipLevel)) {
                     if (coordToCopy.v.z >= 0 && coordToCopy.v.z < worldHeightAtMip) {
                         block = unknownCullingBlock();
                     } else {
@@ -268,13 +303,13 @@ std::vector<Meshlet> MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8
 
     const glm::ivec3 sectionExtent{kChunkExtent, kChunkExtent, kChunkExtent};
     const glm::ivec3 meshletOrigin{
-        sectionOriginMip.v.x * voxelScale,
-        sectionOriginMip.v.y * voxelScale,
-        sectionOriginMip.v.z * voxelScale
+        sectionOriginSample.v.x * static_cast<int32_t>(voxelScale),
+        sectionOriginSample.v.y * static_cast<int32_t>(voxelScale),
+        sectionOriginSample.v.z * static_cast<int32_t>(voxelScale)
     };
     return mesher.mesh(
         snapshot,
-        sectionOriginMip,
+        sectionOriginSample,
         sectionExtent,
         meshletOrigin,
         voxelScale
@@ -527,7 +562,7 @@ int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileState& state)
         return state.renderedLod;
     }
 
-    const int32_t lodCount = static_cast<int32_t>(config_.lodChunkRadii.size());
+    const int32_t lodCount = config_.lodLevelCount;
     if (state.desiredLod >= 0) {
         for (int32_t lod = static_cast<int32_t>(state.desiredLod) + 1; lod < lodCount; ++lod) {
             if (hasMesh(lod)) {
@@ -595,15 +630,11 @@ bool MeshManager::tileInBounds(const MeshTileCoord& tileCoord,
 }
 
 int32_t MeshManager::maxConfiguredRadius() const {
-    if (config_.lodChunkRadii.empty()) {
-        return 0;
-    }
-    return config_.lodChunkRadii.back();
+    return std::max(0, config_.activeChunkRadius);
 }
 
-uint8_t MeshManager::chunkSpanForLod(uint8_t lodLevel) {
-    const uint8_t clamped = std::min<uint8_t>(lodLevel, Chunk::MAX_MIP_LEVEL);
-    return static_cast<uint8_t>(1u << clamped);
+int32_t MeshManager::chunkSpanForLod(uint8_t lodLevel) {
+    return pow2ClampedShift(static_cast<int32_t>(lodLevel));
 }
 
 int32_t MeshManager::chunkZCountForLod(uint8_t lodLevel) {
@@ -625,27 +656,25 @@ jobsystem::Priority MeshManager::priorityFromLodLevel(uint8_t lodLevel) {
 }
 
 void MeshManager::sanitizeConfig(Config& config) {
-    config.lodChunkRadii.erase(
-        std::remove_if(config.lodChunkRadii.begin(), config.lodChunkRadii.end(), [](int32_t radius) {
-            return radius <= 0;
-        }),
-        config.lodChunkRadii.end()
+    config.meshTileSizeChunks = std::max(1, config.meshTileSizeChunks);
+    if (!isPowerOfTwo(config.meshTileSizeChunks)) {
+        config.meshTileSizeChunks = floorPowerOfTwo(config.meshTileSizeChunks);
+    }
+    const int32_t tileSizeLog2 = integerLog2(config.meshTileSizeChunks);
+
+    config.lodLevelCount = std::max(1, config.lodLevelCount);
+    // Limit generated LODs so the coarsest voxel at that LOD does not exceed one tile width.
+    // Additional LODs (excluding LOD0) cap at 4 + log2(tileSizeChunks): 1->4, 2->5, 4->6, etc.
+    const int32_t maxAdditionalLods = static_cast<int32_t>(Chunk::MAX_MIP_LEVEL) + tileSizeLog2;
+    const int32_t maxLodLevelCountForTile = maxAdditionalLods + 1;
+    const int32_t maxLodLevelCountBySpan = kMaxLodShift + 1;
+    config.lodLevelCount = std::clamp(
+        config.lodLevelCount,
+        1,
+        std::min(maxLodLevelCountForTile, maxLodLevelCountBySpan)
     );
 
-    if (config.lodChunkRadii.empty()) {
-        config.lodChunkRadii.push_back(4);
-    }
-
-    std::sort(config.lodChunkRadii.begin(), config.lodChunkRadii.end());
-    config.lodChunkRadii.erase(
-        std::unique(config.lodChunkRadii.begin(), config.lodChunkRadii.end()),
-        config.lodChunkRadii.end()
-    );
-
-    const size_t maxLodLevels = static_cast<size_t>(Chunk::MAX_MIP_LEVEL) + 1;
-    if (config.lodChunkRadii.size() > maxLodLevels) {
-        config.lodChunkRadii.resize(maxLodLevels);
-    }
+    config.activeChunkRadius = std::max(0, config.activeChunkRadius);
 
     if (!std::isfinite(config.lodSseTargetPixels) || config.lodSseTargetPixels <= 0.0f) {
         config.lodSseTargetPixels = 1.0f;

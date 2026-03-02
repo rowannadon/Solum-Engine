@@ -36,6 +36,7 @@ class GuiManager {
 
         // Debug controls
         bool showDebugControls = true;
+        bool freezeCullingCamera = false;
     };
 
     ImGUIState imguiState;  // Add ImGUI state
@@ -47,6 +48,7 @@ public:
                      FirstPersonCamera& camera,
                      float frameTime,
                      const RuntimeTimingSnapshot& runtimeTiming);
+    bool isCullingCameraFrozen() const noexcept { return imguiState.freezeCullingCamera; }
     void terminateImGUI();
     void updateImGUIFrame();
 };

@@ -81,7 +81,7 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
     const int32_t clampedCenterShift = std::min(centerShiftChunks, 2);
     const int32_t prefetchChunks = std::max(kMinPrefetchChunks, clampedCenterShift * meshTileSizeChunks_);
     const int32_t scheduleOuterRadiusChunks = maxRadiusChunks + prefetchChunks;
-    const int8_t maxLod = static_cast<int8_t>(config_.lodChunkRadii.size() - 1);
+    const int8_t maxLod = static_cast<int8_t>(config_.lodLevelCount - 1);
 
     auto computeTileBounds = [this, scheduleOuterRadiusChunks](const ChunkCoord& chunkCoord) {
         const int32_t minTileX = floor_div(
@@ -435,7 +435,7 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
         }
     }
 
-    const int8_t maxLod = static_cast<int8_t>(config_.lodChunkRadii.size() - 1);
+    const int8_t maxLod = static_cast<int8_t>(config_.lodLevelCount - 1);
     for (const MeshTileCoord& tileCoord : tilesToRemesh) {
         const int8_t visibleDesired = desiredLodForTile(
             tileCoord,

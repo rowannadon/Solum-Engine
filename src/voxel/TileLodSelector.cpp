@@ -76,7 +76,7 @@ int8_t MeshManager::desiredLodForTile(const MeshTileCoord& tileCoord,
     }
 
     const float depthBlocks = tileDepthEstimateBlocks(tileCoord, playerWorldPosition, extraChunks);
-    for (int32_t lodIndex = static_cast<int32_t>(config_.lodChunkRadii.size()) - 1; lodIndex >= 0; --lodIndex) {
+    for (int32_t lodIndex = config_.lodLevelCount - 1; lodIndex >= 0; --lodIndex) {
         const float ssePixels = projectedSsePixels(
             static_cast<uint8_t>(lodIndex),
             depthBlocks,
@@ -128,7 +128,7 @@ int8_t MeshManager::applyLodHysteresis(const MeshTileCoord& tileCoord,
         return candidateLod;
     }
 
-    const int32_t maxLod = static_cast<int32_t>(config_.lodChunkRadii.size()) - 1;
+    const int32_t maxLod = config_.lodLevelCount - 1;
     if (previousLod > maxLod) {
         return candidateLod;
     }

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <vector>
 
 #include "solum_engine/render/MeshUploadAssembler.h"
 #include "solum_engine/voxel/MeshManager.h"
@@ -16,30 +15,22 @@ VoxelStreamingSystem::~VoxelStreamingSystem() {
 
 bool VoxelStreamingSystem::initialize() {
     World::Config worldConfig;
-    worldConfig.columnLoadRadius = 512;
+    worldConfig.columnLoadRadius = 256;
     worldConfig.jobConfig.worker_threads = 4;
 
     MeshManager::Config meshConfig;
-    meshConfig.lodChunkRadii = {16, 48, 96, 128};
+    meshConfig.meshTileSizeChunks = 4;
+    meshConfig.lodLevelCount = 2;
+    meshConfig.activeChunkRadius = 128;
     meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
     const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
-    for (int32_t& lodRadius : meshConfig.lodChunkRadii) {
-        lodRadius = std::min(lodRadius, clampedWorldRadius);
-    }
-    std::sort(meshConfig.lodChunkRadii.begin(), meshConfig.lodChunkRadii.end());
-    meshConfig.lodChunkRadii.erase(
-        std::unique(meshConfig.lodChunkRadii.begin(), meshConfig.lodChunkRadii.end()),
-        meshConfig.lodChunkRadii.end()
-    );
-    if (meshConfig.lodChunkRadii.empty()) {
-        meshConfig.lodChunkRadii.push_back(clampedWorldRadius);
-    }
+    meshConfig.activeChunkRadius = std::min(meshConfig.activeChunkRadius, clampedWorldRadius);
 
     world_ = std::make_unique<World>(worldConfig);
     meshManager_ = std::make_unique<MeshManager>(*world_, meshConfig);
     uploadColumnRadius_ = std::min(
         clampedWorldRadius,
-        std::max(1, meshConfig.lodChunkRadii.back() + 1)
+        std::max(1, meshConfig.activeChunkRadius + 1)
     );
 
     return world_ && meshManager_;

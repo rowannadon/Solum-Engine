@@ -29,6 +29,6 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     let sample = sample_meshlet_quad_vertex(meshlet, quadIdx, triangleVertex);
     let worldSpacePosition = local_to_world_position(sample.worldPosition);
-    out.position = world_to_clip_position(worldSpacePosition);
+    out.position = world_to_cull_clip_position(worldSpacePosition);
     return out;
 }

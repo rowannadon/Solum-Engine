@@ -22,6 +22,9 @@ struct FrameUniforms {
 
     glm::mat4 inverseProjectionMatrix;
     glm::mat4 inverseViewMatrix;
+    // Culling pass camera matrices. These can be frozen for culling debug while render view keeps moving.
+    glm::mat4 cullingViewMatrix;
+    glm::mat4 inverseCullingViewMatrix;
 
     // renderFlags[0] bit 0: meshlet debug view
     // renderFlags[0] bit 1: bounds debug master view

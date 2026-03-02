@@ -206,6 +206,8 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
 
             ImGui::Separator();
             ImGui::Text("Occlusion Culling");
+            ImGui::Checkbox("Freeze Culling Camera", &imguiState.freezeCullingCamera);
+            ImGui::TextDisabled("Freezes frustum/occlusion camera while free camera keeps moving.");
             bool occlusionEnabled = uniforms.occlusionParams[0] >= 0.5f;
             if (ImGui::Checkbox("Enable Occlusion", &occlusionEnabled)) {
                 uniforms.occlusionParams[0] = occlusionEnabled ? 1.0f : 0.0f;
