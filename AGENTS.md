@@ -1,27 +1,119 @@
-This is an in progress project for a flexible, high performance voxel game engine built using WebGPU (Dawn) and C++. The engine is designed to render simple, minecraft style graphics and blocks.
+This is an in progress project, features may not be complete.
 
 Testing: Testing will be performed manually, do NOT attempt any build or verification steps after making changes.
 
-Directory structure:
-/include/solum_engine - header files (directory structure mirrors src)
+# Solum Engine
 
-/shaders - WGSL shaders
+A C++20 WebGPU (Dawn) voxel renderer with GPU-driven meshlet culling, streaming LOD, and procedural terrain generation.
 
-/src/core - main application code
-/src/platform - platform specific initialization for WebGPU
-/src/render - render related code
-/src/render/pipelines - render pipelines
-/src/ui - ui related code (ImGui)
-/src/voxel - voxel world related code
+## Build
 
-Architecture:
-The storage of the world data in memory is organized hierarchically into Chunks (16x16x16 blocks). These are palette compressed. The uncompressed size of a single voxel is 4 bytes and this is the BlockMaterial type. Each chunk stores a mip chain of downscaled data which is used for LOD generation.
+CMake project. Dependencies: GLFW3, WebGPU, glfw3webgpu, FastNoise2, ImGui, GLM, stb, lodepng, nlohmann_json, ogt_vox.
 
-Chunks are organized into 32 tall Columns, representing a single column that is the height of the world. 
+## Architecture Overview
 
-Columns are organized into Regions, which hold 32x32 Columns.
+### Threading Model
 
-The engine uses a SSOT principle for the voxel data, the World class manages the generation of the world and stores it in the underlying data format. It provides an interface for getting block data, and this is used by anything that accesses the data such as meshing. Separating meshing from the underlying data simplifies the generation of LOD meshes.
+Two threads: **main** (render) and **streaming** (world/mesh generation).
 
+```
+Main Thread                     Streaming Thread
+──────────────────────────────  ──────────────────────────────
+Application loop                World (column generation jobs)
+└─ WebGPURenderer.renderFrame() MeshManager (tile LOD meshing)
+   ├─ processPendingMeshUploads  └─ StreamingMeshUpload queue
+   ├─ Hi-Z depth prepass              ↑
+   ├─ Hi-Z pyramid build         consumed by main thread
+   ├─ Meshlet cull (compute)
+   └─ Voxel render (indirect)
+```
 
-The MeshManager is responsible for reading sections of the world using the World interface and generating meshes, it operates on a 4x4 column MeshTile unit. This class is also responsible for generating LOD meshes. The rendering occurs by breaking up each mesh into fixed size 128 quad meshlets, which are then drawn using drawInstanced.
+### Voxel World Hierarchy
+
+Four coordinate spaces (type-safe tagged types prevent mixing):
+
+```
+Region (32×32 columns, 512×512 blocks)
+  └─ Column (1 column wide, 32 chunks tall)
+     └─ Chunk (16³ voxels, palette-compressed, 5-level mipmaps)
+        └─ BlockMaterial (32-bit packed: material ID, water level, direction, rotation)
+```
+
+- **Z-up coordinate system**: X/Y horizontal, Z vertical
+- **World**: procedural terrain via FastNoise2, distance-prioritized streaming
+- **Chunk**: palette compression with dynamic bit packing; mip levels 16→8→4→2→1
+
+### Meshlet System (Core Rendering Primitive)
+
+Chunks are meshed into **Meshlets** — face-direction-aligned quad groups (max 128 quads each).
+
+- `Meshlet` (CPU): origin, faceDirection, quadCount, voxelScale, packed quad data
+- `MeshletMetadataGPU` (32B): origin XYZ, quad count, face direction, data offset, voxel scale
+- `MeshletAabbGPU` (32B): min/max corners (vec4f aligned)
+
+**MeshletBufferController**: double-buffered GPU upload, streamed in 1 MB/frame chunks.
+
+### Mesh LOD
+
+**MeshManager** organizes meshes into hierarchical tiles:
+
+- Screen-space error (SSE) drives LOD selection
+- Hysteresis prevents thrashing at LOD boundaries
+- Distance-based priority scheduling
+- Tiles store multiple LOD variants; `TileLodCoord` / `TileLodCellCoord` address them
+
+**ChunkMesher**: greedy quad merging for all 6 face directions, outputs Meshlet arrays.
+
+### GPU Render Pipeline (per frame)
+
+| Pass | Shader | Purpose |
+|------|--------|---------|
+| Meshlet depth prepass | `meshlet_depth_prepass.wgsl` | Render AABB occluders to depth |
+| Hi-Z seed | `meshlet_hiz_seed.wgsl` | 2× downsample to start pyramid |
+| Hi-Z downsample | `meshlet_hiz_downsample.wgsl` | Build full mip pyramid (8×8 workgroups) |
+| Meshlet cull | `meshlet_cull.wgsl` | Frustum + Hi-Z occlusion, writes indirect args (128-thread workgroups) |
+| Main voxel render | `voxel.wgsl` | Indirect draw, quad expansion, texture atlas, AO |
+| Debug bounds | `debug_bounds.wgsl` | Optional AABB visualization |
+
+`uniforms.wgsl` is a shared include (frame matrices, occlusion params).
+
+### Key Managers
+
+| Class | Responsibility |
+|-------|---------------|
+| `WebGPURenderer` | Central render orchestrator; owns all GPU resources and passes |
+| `PipelineManager` | Loads WGSL shaders, creates/caches render & compute pipelines |
+| `BufferManager` | Named GPU buffer registry |
+| `TextureManager` | GPU textures, views, samplers |
+| `MaterialManager` | Material ID → texture array index mappings |
+| `MeshletBufferController` | Double-buffered meshlet GPU uploads |
+
+### Performance Infrastructure
+
+- **Runtime timing**: atomic per-stage counters (totalNs, callCount, maxNs); thread-safe snapshots
+- Tracked stages: Upload, UpdateBounds, EncodeCmds, Submit, Present, StreamWait, WorldUpdate, MeshUpdate, etc.
+- Skip reasons logged: NoCamera, Unchanged, Throttled
+
+## Key Files
+
+```
+include/solum_engine/
+  core/             Application, FirstPersonCamera
+  platform/         WebGPUContext
+  render/           WebGPURenderer, MeshletBufferController
+  render/pipelines/ VoxelPipeline, BoundsDebugPipeline, occlusion pipelines
+  voxel/            World, Region, Column, Chunk, BlockMaterial
+                    MeshManager, ChunkMesher, VoxelStreamingSystem
+  resources/        Constants, coordinate type tags
+  ui/               GuiManager (ImGui)
+src/                Implementation (.cpp) files
+shaders/            WGSL shaders (voxel, meshlet_*, debug_bounds, uniforms)
+```
+
+## Design Patterns
+
+- **GPU-driven rendering**: compute shader culling writes indirect draw args; no CPU readback
+- **Double-buffered meshlets**: two GPU buffer sets swap to avoid CPU/GPU sync stalls
+- **Streaming budget**: 1 MB/frame GPU upload cap prevents frame hitches
+- **Type-safe coordinates**: tagged `GridCoord` types with explicit converters and hash specializations
+- **Named resource registry**: managers key resources by string name for flexible pipeline composition
