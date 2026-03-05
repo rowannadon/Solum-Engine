@@ -418,6 +418,7 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
         int32_t frontierDepth = std::numeric_limits<int32_t>::max();
         int32_t distanceSq = 0;
         uint8_t tier = 1u;
+        bool forceRemesh = false;
         jobsystem::Priority priority = jobsystem::Priority::Low;
     };
 
@@ -595,12 +596,37 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                 primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
             const jobsystem::Priority secondaryPriority = demotePriority(primaryPriority);
 
+            bool desiredNeedsRepair = false;
+            const auto desiredLodIt = tileState.lodStates.find(static_cast<uint8_t>(desired));
+            if (desiredLodIt != tileState.lodStates.end() &&
+                desiredLodIt->second.resident &&
+                desiredLodIt->second.meshlets.empty()) {
+                bool hasNonEmptyAlternateLod = false;
+                for (const auto& [lodLevel, lodState] : tileState.lodStates) {
+                    if (lodLevel == static_cast<uint8_t>(desired)) {
+                        continue;
+                    }
+                    if (lodState.resident && !lodState.meshlets.empty()) {
+                        hasNonEmptyAlternateLod = true;
+                        break;
+                    }
+                }
+
+                if (hasNonEmptyAlternateLod) {
+                    constexpr uint64_t kEmptyLodRepairCooldownRevisions = 32u;
+                    const uint64_t currentRevision = meshRevision_.load(std::memory_order_acquire);
+                    desiredNeedsRepair =
+                        currentRevision >= (desiredLodIt->second.revision + kEmptyLodRepairCooldownRevisions);
+                }
+            }
+
             // Primary job: currently best-fit LOD for this tile.
             jobsToSchedule.push_back(ScheduledTileLod{
                 TileLodCoord{tileCoord, static_cast<uint8_t>(desired)},
                 frontierDepth,
                 distanceSq,
                 0u,
+                desiredNeedsRepair,
                 primaryPriority
             });
 
@@ -632,6 +658,7 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                     frontierDepth,
                     distanceSq,
                     1u,
+                    false,
                     secondaryPriority
                 });
             }
@@ -670,7 +697,7 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
         scheduleTileLodMeshing(
             scheduled.coord,
             scheduled.priority,
-            false,
+            scheduled.forceRemesh,
             prefetchChunks + meshTileSizeChunks_
         );
 
@@ -1184,23 +1211,43 @@ bool MeshManager::isLodCellAllAir(const ChunkCoord& cellCoord,
 }
 
 int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileState& state) const {
-    auto hasMesh = [&state](int32_t lod) {
+    auto hasResidentMesh = [&state](int32_t lod) {
         if (lod < 0) {
             return false;
         }
         const auto lodIt = state.lodStates.find(static_cast<uint8_t>(lod));
         return lodIt != state.lodStates.end() && lodIt->second.resident;
     };
+    auto hasRenderableMesh = [&state](int32_t lod) {
+        if (lod < 0) {
+            return false;
+        }
+        const auto lodIt = state.lodStates.find(static_cast<uint8_t>(lod));
+        return lodIt != state.lodStates.end() &&
+               lodIt->second.resident &&
+               !lodIt->second.meshlets.empty();
+    };
 
     if (state.desiredLod >= 0) {
         // Prefer desired LOD if available, then coarser fallbacks first.
         for (int32_t lod = state.desiredLod; lod < config_.lodLevelCount; ++lod) {
-            if (hasMesh(lod)) {
+            if (hasRenderableMesh(lod)) {
                 return static_cast<int8_t>(lod);
             }
         }
         for (int32_t lod = state.desiredLod - 1; lod >= 0; --lod) {
-            if (hasMesh(lod)) {
+            if (hasRenderableMesh(lod)) {
+                return static_cast<int8_t>(lod);
+            }
+        }
+        // If every resident option is empty, keep the prior resident fallback behavior.
+        for (int32_t lod = state.desiredLod; lod < config_.lodLevelCount; ++lod) {
+            if (hasResidentMesh(lod)) {
+                return static_cast<int8_t>(lod);
+            }
+        }
+        for (int32_t lod = state.desiredLod - 1; lod >= 0; --lod) {
+            if (hasResidentMesh(lod)) {
                 return static_cast<int8_t>(lod);
             }
         }
@@ -1209,7 +1256,12 @@ int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileState& state)
 
     // No desired LOD yet: prefer coarsest available.
     for (int32_t lod = config_.lodLevelCount - 1; lod >= 0; --lod) {
-        if (hasMesh(lod)) {
+        if (hasRenderableMesh(lod)) {
+            return static_cast<int8_t>(lod);
+        }
+    }
+    for (int32_t lod = config_.lodLevelCount - 1; lod >= 0; --lod) {
+        if (hasResidentMesh(lod)) {
             return static_cast<int8_t>(lod);
         }
     }
