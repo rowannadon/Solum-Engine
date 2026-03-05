@@ -38,7 +38,7 @@ bool BoundsDebugPipeline::createPipeline() {
     config.topology = PrimitiveTopology::LineList;
     config.cullMode = CullMode::None;
     config.depthWriteEnabled = false;
-    config.depthCompare = CompareFunction::Always;
+    config.depthCompare = CompareFunction::LessEqual;
     config.fragmentShaderName = "fs_main";
     config.vertexShaderName = "vs_main";
     config.useVertexBuffers = true;

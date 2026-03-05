@@ -14,14 +14,14 @@ VoxelStreamingSystem::~VoxelStreamingSystem() {
 
 bool VoxelStreamingSystem::initialize() {
     World::Config worldConfig;
-    worldConfig.columnLoadRadius = 256;
-    worldConfig.jobConfig.worker_threads = 4;
+    worldConfig.columnLoadRadius = 1024;
+    worldConfig.jobConfig.worker_threads = 2;
 
     MeshManager::Config meshConfig;
-    meshConfig.meshTileSizeChunks = 4;
-    meshConfig.lodLevelCount = 7;
-    meshConfig.activeChunkRadius = 128;
-    meshConfig.lodSseTargetPixels = 3.0f;
+    meshConfig.meshTileSizeChunks = 16;
+    meshConfig.lodLevelCount = 5;
+    meshConfig.activeChunkRadius = 1024;
+    meshConfig.lodSseTargetPixels = 0.75f;
     meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
     const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
     meshConfig.activeChunkRadius = std::min(meshConfig.activeChunkRadius, clampedWorldRadius);
