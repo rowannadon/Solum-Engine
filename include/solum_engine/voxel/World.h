@@ -93,10 +93,9 @@ private:
     };
     friend class WorldSection;
 
-    void scheduleColumnsAround(const ColumnCoord& centerColumn);
-    void scheduleColumnsDelta(const ColumnCoord& previousCenter, const ColumnCoord& newCenter);
     void enqueueColumnGenerationLocked(const ColumnCoord& coord);
-    void enqueueColumnGenerationBatch(const std::vector<ColumnCoord>& coords);
+    void refillQueuedColumnsLocked();
+    std::size_t desiredQueuedColumnCountLocked() const;
     void pruneQueuedColumnsOutsideActiveWindowLocked();
     void collectColumnJobsToScheduleLocked(std::vector<ScheduledColumnJob>& outJobs);
     void dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsToSchedule);

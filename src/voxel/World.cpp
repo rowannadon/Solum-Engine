@@ -282,12 +282,10 @@ void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
     };
     const ColumnCoord centerColumn = chunk_to_column(block_to_chunk(playerBlock));
 
-    ColumnCoord previousCenter{};
-    bool hadPreviousCenter = false;
-
-    // Fast path for unchanged center without taking the write lock. Worker mesh jobs
-    // hold shared locks frequently; avoiding a per-frame writer lock reduces stalls.
+    std::vector<ScheduledColumnJob> jobsToSchedule;
     {
+        // Fast path for unchanged center without taking the write lock. Worker mesh jobs
+        // hold shared locks frequently; avoiding a per-frame writer lock reduces stalls.
         std::shared_lock<std::shared_mutex> lock(worldMutex_);
         if (hasLastScheduledCenter_ && centerColumn == lastScheduledCenter_) {
             return;
@@ -300,74 +298,20 @@ void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
             return;
         }
 
-        hadPreviousCenter = hasLastScheduledCenter_;
-        previousCenter = lastScheduledCenter_;
         lastScheduledCenter_ = centerColumn;
         hasLastScheduledCenter_ = true;
         ++queueCenterVersion_;
+
+        // Discard unscheduled work from an old center so movement can immediately
+        // shift generation focus to the newest player position.
+        queuedColumnJobs_.clear();
+        queuedColumnHeap_ = decltype(queuedColumnHeap_){};
+
+        refillQueuedColumnsLocked();
+        pruneQueuedColumnsOutsideActiveWindowLocked();
+        collectColumnJobsToScheduleLocked(jobsToSchedule);
     }
-
-    if (!hadPreviousCenter) {
-        scheduleColumnsAround(centerColumn);
-        return;
-    }
-
-    scheduleColumnsDelta(previousCenter, centerColumn);
-}
-
-void World::scheduleColumnsAround(const ColumnCoord& centerColumn) {
-    const int32_t radius = std::max(0, config_.columnLoadRadius);
-    const int32_t diameter = (radius * 2) + 1;
-    std::vector<ColumnCoord> columns;
-    columns.reserve(static_cast<size_t>(diameter * diameter));
-
-    for (int32_t dy = -radius; dy <= radius; ++dy) {
-        for (int32_t dx = -radius; dx <= radius; ++dx) {
-            columns.push_back(ColumnCoord{
-                centerColumn.v.x + dx,
-                centerColumn.v.y + dy
-            });
-        }
-    }
-
-    enqueueColumnGenerationBatch(columns);
-}
-
-void World::scheduleColumnsDelta(const ColumnCoord& previousCenter, const ColumnCoord& newCenter) {
-    const int32_t radius = std::max(0, config_.columnLoadRadius);
-    const int32_t previousMinX = previousCenter.v.x - radius;
-    const int32_t previousMaxX = previousCenter.v.x + radius;
-    const int32_t previousMinY = previousCenter.v.y - radius;
-    const int32_t previousMaxY = previousCenter.v.y + radius;
-
-    const int32_t newMinX = newCenter.v.x - radius;
-    const int32_t newMaxX = newCenter.v.x + radius;
-    const int32_t newMinY = newCenter.v.y - radius;
-    const int32_t newMaxY = newCenter.v.y + radius;
-
-    const bool noOverlap =
-        newMaxX < previousMinX || newMinX > previousMaxX ||
-        newMaxY < previousMinY || newMinY > previousMaxY;
-    if (noOverlap) {
-        scheduleColumnsAround(newCenter);
-        return;
-    }
-
-    std::vector<ColumnCoord> columnsToSchedule;
-    columnsToSchedule.reserve(static_cast<size_t>((radius * 8) + 4));
-
-    for (int32_t y = newMinY; y <= newMaxY; ++y) {
-        for (int32_t x = newMinX; x <= newMaxX; ++x) {
-            if (x >= previousMinX && x <= previousMaxX &&
-                y >= previousMinY && y <= previousMaxY) {
-                continue;
-            }
-
-            columnsToSchedule.push_back(ColumnCoord{x, y});
-        }
-    }
-
-    enqueueColumnGenerationBatch(columnsToSchedule);
+    dispatchScheduledColumnJobs(std::move(jobsToSchedule));
 }
 
 void World::enqueueColumnGenerationLocked(const ColumnCoord& coord) {
@@ -395,16 +339,73 @@ void World::enqueueColumnGenerationLocked(const ColumnCoord& coord) {
     });
 }
 
-void World::enqueueColumnGenerationBatch(const std::vector<ColumnCoord>& coords) {
-    std::vector<ScheduledColumnJob> jobsToSchedule;
-    {
-        std::unique_lock<std::shared_mutex> lock(worldMutex_);
-        for (const ColumnCoord& coord : coords) {
-            enqueueColumnGenerationLocked(coord);
-        }
-        collectColumnJobsToScheduleLocked(jobsToSchedule);
+std::size_t World::desiredQueuedColumnCountLocked() const {
+    const int32_t radius = std::max(0, config_.columnLoadRadius);
+    const uint64_t diameter = (static_cast<uint64_t>(radius) * 2u) + 1u;
+    const uint64_t maxWindowColumns64 = diameter * diameter;
+    const std::size_t maxWindowColumns = static_cast<std::size_t>(
+        std::min<uint64_t>(maxWindowColumns64, std::numeric_limits<std::size_t>::max())
+    );
+
+    // Keep a short look-ahead backlog to reduce idle worker time, but cap queue
+    // growth so center shifts can be reflected immediately.
+    constexpr std::size_t kQueueLookAheadMultiplier = 4;
+    const std::size_t lookAheadOutstanding =
+        (maxInFlightColumnJobs_ > (std::numeric_limits<std::size_t>::max() / kQueueLookAheadMultiplier))
+            ? std::numeric_limits<std::size_t>::max()
+            : (maxInFlightColumnJobs_ * kQueueLookAheadMultiplier);
+    const std::size_t desiredOutstanding = std::max(maxInFlightColumnJobs_, lookAheadOutstanding);
+
+    const std::size_t pendingCount = pendingColumnJobs_.size();
+    const std::size_t desiredQueued =
+        (desiredOutstanding > pendingCount) ? (desiredOutstanding - pendingCount) : 0;
+    return std::min(desiredQueued, maxWindowColumns);
+}
+
+void World::refillQueuedColumnsLocked() {
+    if (!hasLastScheduledCenter_) {
+        return;
     }
-    dispatchScheduledColumnJobs(std::move(jobsToSchedule));
+
+    const std::size_t desiredQueued = desiredQueuedColumnCountLocked();
+    if (queuedColumnJobs_.size() >= desiredQueued) {
+        return;
+    }
+
+    std::size_t remainingToQueue = desiredQueued - queuedColumnJobs_.size();
+    const int32_t radius = std::max(0, config_.columnLoadRadius);
+    const ColumnCoord center = lastScheduledCenter_;
+
+    auto tryEnqueue = [&](int32_t x, int32_t y) {
+        if (remainingToQueue == 0) {
+            return;
+        }
+        const std::size_t queuedBefore = queuedColumnJobs_.size();
+        enqueueColumnGenerationLocked(ColumnCoord{x, y});
+        if (queuedColumnJobs_.size() > queuedBefore) {
+            --remainingToQueue;
+        }
+    };
+
+    if (remainingToQueue > 0) {
+        tryEnqueue(center.v.x, center.v.y);
+    }
+
+    for (int32_t ring = 1; ring <= radius && remainingToQueue > 0; ++ring) {
+        const int32_t minX = center.v.x - ring;
+        const int32_t maxX = center.v.x + ring;
+        const int32_t minY = center.v.y - ring;
+        const int32_t maxY = center.v.y + ring;
+
+        for (int32_t x = minX; x <= maxX && remainingToQueue > 0; ++x) {
+            tryEnqueue(x, minY);
+            tryEnqueue(x, maxY);
+        }
+        for (int32_t y = minY + 1; y <= maxY - 1 && remainingToQueue > 0; ++y) {
+            tryEnqueue(minX, y);
+            tryEnqueue(maxX, y);
+        }
+    }
 }
 
 void World::pruneQueuedColumnsOutsideActiveWindowLocked() {
@@ -568,6 +569,7 @@ void World::pumpColumnGenerationQueue() {
     {
         std::unique_lock<std::shared_mutex> lock(worldMutex_);
         pruneQueuedColumnsOutsideActiveWindowLocked();
+        refillQueuedColumnsLocked();
         collectColumnJobsToScheduleLocked(jobsToSchedule);
     }
     dispatchScheduledColumnJobs(std::move(jobsToSchedule));
