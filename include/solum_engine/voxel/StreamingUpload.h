@@ -1,20 +1,58 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 #include "solum_engine/render/MeshletTypes.h"
-#include "solum_engine/resources/Coords.h"
+#include "solum_engine/voxel/MeshTileTypes.h"
 
-struct StreamingMeshUpload {
-    std::vector<MeshletMetadataGPU> metadata;
-    std::vector<uint32_t> quadData;
-    std::vector<MeshletAabbGPU> meshletAabbsGpu;
-    std::vector<MeshletAabb> meshletBounds;
-    uint32_t totalMeshletCount = 0;
-    uint32_t totalQuadCount = 0;
-    uint32_t requiredMeshletCapacity = 0;
-    uint32_t requiredQuadCapacity = 0;
-    uint64_t meshRevision = 0;
-    ColumnCoord centerColumn{0, 0};
+struct MeshTileLodKey {
+    MeshTileCoord tile{};
+    uint8_t lod = 0u;
+
+    friend bool operator==(const MeshTileLodKey& a, const MeshTileLodKey& b) {
+        return a.tile == b.tile && a.lod == b.lod;
+    }
+
+    friend bool operator<(const MeshTileLodKey& a, const MeshTileLodKey& b) {
+        if (a.tile == b.tile) {
+            return a.lod < b.lod;
+        }
+        return a.tile < b.tile;
+    }
 };
+
+struct MeshTileLodUpload {
+    MeshTileLodKey key{};
+    std::vector<Meshlet> meshlets;
+    uint64_t revision = 0u;
+};
+
+struct MeshTileSelectionEntry {
+    MeshTileCoord tile{};
+    int8_t selectedLod = -1;
+};
+
+struct MeshStreamingDelta {
+    std::vector<MeshTileLodUpload> upserts;
+    std::vector<MeshTileLodKey> removals;
+    std::vector<MeshTileSelectionEntry> selectionSnapshot;
+    uint64_t revision = 0u;
+};
+
+namespace std {
+template <>
+struct hash<MeshTileLodKey> {
+    size_t operator()(const MeshTileLodKey& key) const noexcept {
+#if SIZE_MAX > UINT32_MAX
+        constexpr size_t kGoldenRatio = 0x9e3779b97f4a7c15ull;
+#else
+        constexpr size_t kGoldenRatio = 0x9e3779b9u;
+#endif
+        size_t seed = hash<MeshTileCoord>{}(key.tile);
+        seed ^= hash<uint8_t>{}(key.lod) + kGoldenRatio + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
+}  // namespace std

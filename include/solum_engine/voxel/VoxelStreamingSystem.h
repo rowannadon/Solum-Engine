@@ -46,7 +46,6 @@ private:
 
     std::unique_ptr<World> world_;
     std::unique_ptr<MeshManager> meshManager_;
-    int32_t uploadColumnRadius_ = 1;
 
     std::thread streamingThread_;
     mutable std::mutex streamingMutex_;
@@ -56,23 +55,17 @@ private:
     glm::vec3 latestStreamingCamera_{0.0f, 0.0f, 0.0f};
     float latestStreamingSseProjectionScale_ = 390.0f;
     UploadMailbox uploadMailbox_{};
-    uint64_t streamerLastPreparedRevision_ = 0;
-    ColumnCoord streamerLastPreparedCenter_{0, 0};
-    bool streamerHasLastPreparedCenter_ = false;
-    std::optional<std::chrono::steady_clock::time_point> streamerLastSnapshotTime_;
-    std::atomic<bool> mainUploadInProgress_{false};
+    uint64_t streamerLastDeltaRevision_ = 0;
 
     std::array<TimingAccumulator, static_cast<std::size_t>(TimingStage::Count)> timingAccumulators_{};
     std::atomic<uint64_t> streamSkipNoCamera_{0};
     std::atomic<uint64_t> streamSkipUnchanged_{0};
-    std::atomic<uint64_t> streamSkipThrottle_{0};
     std::atomic<uint64_t> streamSnapshotsPrepared_{0};
     std::mutex timingSnapshotMutex_;
     TimingRawTotals lastTimingRawTotals_{};
     std::optional<std::chrono::steady_clock::time_point> lastTimingSampleTime_;
 
     void streamingThreadMain();
-    static int32_t cameraColumnChebyshevDistance(const ColumnCoord& a, const ColumnCoord& b);
 
     void recordTimingNs(TimingStage stage, uint64_t ns) noexcept;
     TimingRawTotals captureTimingRawTotals() const;
@@ -89,9 +82,8 @@ public:
     void start(const glm::vec3& initialCameraPosition, uint64_t initialUploadedMeshRevision);
     void stop();
 
-    void setMainUploadInProgress(bool inProgress) noexcept;
     void updateCamera(const glm::vec3& cameraPosition, float sseProjectionScale);
-    std::optional<StreamingMeshUpload> tryConsumePreparedUpload();
+    std::optional<MeshStreamingDelta> tryConsumePreparedDelta();
     void recordMainUpdateDurationNs(uint64_t ns) noexcept;
 
     RuntimeTimingSnapshot getRuntimeTimingSnapshot();

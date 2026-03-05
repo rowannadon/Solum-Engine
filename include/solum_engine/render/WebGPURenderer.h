@@ -30,9 +30,7 @@ class World;
 
 class WebGPURenderer {
 public:
-    struct Config {
-        size_t meshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
-    };
+    struct Config {};
 
 private:
     std::unique_ptr<WebGPUContext> context;
@@ -53,6 +51,7 @@ private:
     RuntimeTimingTracker timingTracker_;
 
     bool resizePending = false;
+    std::optional<MeshStreamingDelta> pendingMeshDelta_;
 
     static constexpr uint32_t kMaxFramesInFlight = 2u;
     std::atomic<uint32_t> framesInFlight_{0};
@@ -82,7 +81,7 @@ public:
     RuntimeTimingSnapshot getRuntimeTimingSnapshot();
 
     void setDebugWorld(const World* world);
-    void queueMeshUpload(StreamingMeshUpload&& upload);
+    void queueMeshDelta(MeshStreamingDelta&& delta);
     bool isMeshUploadInProgress() const noexcept;
     uint64_t uploadedMeshRevision() const noexcept;
 

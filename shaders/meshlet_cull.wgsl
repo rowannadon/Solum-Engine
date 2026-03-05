@@ -5,10 +5,17 @@ struct MeshletAabb {
     maxCorner: vec4f,
 };
 
+struct ActiveMeshletRange {
+    meshletOffset: u32,
+    meshletCount: u32,
+    prefixEnd: u32,
+    pad: u32,
+};
+
 struct CullParams {
     meshletCount: u32,
     hizMipCount: u32,
-    pad1: u32,
+    activeRangeCount: u32,
     pad2: u32,
 };
 
@@ -18,6 +25,7 @@ struct CullParams {
 @group(0) @binding(3) var<storage, read_write> drawArgsWords: array<atomic<u32>, 4>;
 @group(0) @binding(4) var<uniform> cullParams: CullParams;
 @group(0) @binding(5) var occlusionHiZTex: texture_2d<f32>;
+@group(0) @binding(6) var<storage, read> activeRanges: array<ActiveMeshletRange>;
 
 const kCullEpsilon: f32 = 0.0001;
 var<workgroup> clipFromLocalWg: mat4x4f;
@@ -33,6 +41,36 @@ fn corner_position(minCorner: vec3f, maxCorner: vec3f, index: u32) -> vec3f {
         case 6u: { return vec3f(maxCorner.x, maxCorner.y, maxCorner.z); }
         default: { return vec3f(minCorner.x, maxCorner.y, maxCorner.z); }
     }
+}
+
+fn resolve_meshlet_index(activeIndex: u32) -> u32 {
+    if (cullParams.activeRangeCount == 0u) {
+        return 0xffffffffu;
+    }
+
+    var left: u32 = 0u;
+    var right: u32 = cullParams.activeRangeCount;
+    while (left < right) {
+        let mid = (left + right) / 2u;
+        let prefix = activeRanges[mid].prefixEnd;
+        if (activeIndex < prefix) {
+            right = mid;
+        } else {
+            left = mid + 1u;
+        }
+    }
+
+    if (left >= cullParams.activeRangeCount) {
+        return 0xffffffffu;
+    }
+
+    let range = activeRanges[left];
+    let rangeStart = range.prefixEnd - range.meshletCount;
+    if (activeIndex < rangeStart || activeIndex >= range.prefixEnd) {
+        return 0xffffffffu;
+    }
+
+    return range.meshletOffset + (activeIndex - rangeStart);
 }
 
 fn is_visible(aabb: MeshletAabb, clipFromLocal: mat4x4f) -> bool {
@@ -117,11 +155,9 @@ fn is_occluded(aabb: MeshletAabb, clipFromLocal: mat4x4f) -> bool {
         }
 
         let ndc = clip.xyz / clip.w;
-        // NDC Y is up, depth texture coordinates are top-left origin.
         let uv = vec2f(ndc.x * 0.5 + 0.5, (-ndc.y) * 0.5 + 0.5);
         minUv = min(minUv, uv);
         maxUv = max(maxUv, uv);
-        // Keep this conservative across both ZO and NO projection conventions.
         let depthZo = ndc.z;
         let depthNo = ndc.z * 0.5 + 0.5;
         nearestDepth = min(nearestDepth, clamp(min(depthZo, depthNo), 0.0, 1.0));
@@ -137,7 +173,6 @@ fn is_occluded(aabb: MeshletAabb, clipFromLocal: mat4x4f) -> bool {
     let uvSpanPx = (uvMax - uvMin) * vec2f(f32(dims.x), f32(dims.y));
     let minSpanPx = max(frameUniforms.occlusionParams.w, 0.0);
 
-    // Tiny projected boxes are prone to false occlusion in low-res depth.
     if (uvSpanPx.x <= minSpanPx || uvSpanPx.y <= minSpanPx) {
         return false;
     }
@@ -180,8 +215,13 @@ fn cs_main(
     }
     workgroupBarrier();
 
-    let meshletIndex = gid.x;
-    if (meshletIndex >= cullParams.meshletCount) {
+    let activeMeshletIndex = gid.x;
+    if (activeMeshletIndex >= cullParams.meshletCount) {
+        return;
+    }
+
+    let meshletIndex = resolve_meshlet_index(activeMeshletIndex);
+    if (meshletIndex == 0xffffffffu) {
         return;
     }
 

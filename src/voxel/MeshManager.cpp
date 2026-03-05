@@ -6,21 +6,22 @@
 #include <cstdlib>
 #include <exception>
 #include <iterator>
+#include <limits>
 #include <mutex>
+#include <queue>
 #include <utility>
 
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/voxel/ChunkMesher.h"
 #include "solum_engine/voxel/World.h"
-#include "solum_engine/voxel/mesh_stream/MeshSnapshotBuilder.h"
 
 namespace {
 constexpr int kChunkExtent = cfg::CHUNK_SIZE;
 constexpr int kPaddedChunkExtent = cfg::CHUNK_SIZE + 2;
 constexpr int kPaddedChunkArea = kPaddedChunkExtent * kPaddedChunkExtent;
 constexpr int kPaddedChunkVoxelCount = kPaddedChunkExtent * kPaddedChunkExtent * kPaddedChunkExtent;
-constexpr int kMinPrefetchChunks = 4;
 constexpr int kMaxLodShift = 30;
+constexpr std::size_t kWorldRevisionBatch = 2048u;
 
 BlockMaterial airBlock() {
     static const BlockMaterial kAir = UnpackedBlockMaterial{}.pack();
@@ -68,16 +69,6 @@ int32_t minDistanceToInterval(int32_t value, int32_t minValue, int32_t maxValue)
         return value - maxValue;
     }
     return 0;
-}
-
-float minDistanceToInterval(float value, float minValue, float maxValue) {
-    if (value < minValue) {
-        return minValue - value;
-    }
-    if (value > maxValue) {
-        return value - maxValue;
-    }
-    return 0.0f;
 }
 
 int32_t maxDistanceToInterval(int32_t value, int32_t minValue, int32_t maxValue) {
@@ -136,6 +127,128 @@ int32_t pow2ClampedShift(int32_t shift) {
     return (1 << clampedShift);
 }
 
+jobsystem::Priority demotePriority(jobsystem::Priority priority) {
+    switch (priority) {
+    case jobsystem::Priority::Critical:
+        return jobsystem::Priority::High;
+    case jobsystem::Priority::High:
+        return jobsystem::Priority::Normal;
+    case jobsystem::Priority::Normal:
+        return jobsystem::Priority::Low;
+    case jobsystem::Priority::Low:
+    default:
+        return jobsystem::Priority::Low;
+    }
+}
+
+jobsystem::Priority primaryPriorityForDistance(int32_t distanceChunks, int32_t tileSizeChunks) {
+    const int32_t tileDistance = std::max(1, tileSizeChunks);
+    if (distanceChunks <= tileDistance) {
+        return jobsystem::Priority::Critical;
+    }
+    if (distanceChunks <= (tileDistance * 2)) {
+        return jobsystem::Priority::High;
+    }
+    return jobsystem::Priority::Normal;
+}
+
+std::size_t maxPendingMeshJobs(std::size_t workerCount) {
+    const std::size_t clampedWorkers = std::max<std::size_t>(workerCount, 1u);
+    return std::max<std::size_t>(24u, clampedWorkers * 3u);
+}
+
+void appendSkirtQuad(std::vector<Meshlet>& skirtMeshlets,
+                     uint32_t faceDirection,
+                     const glm::ivec3& origin,
+                     uint32_t voxelScale,
+                     uint16_t materialId) {
+    Meshlet skirt{};
+    skirt.origin = origin;
+    skirt.faceDirection = faceDirection;
+    skirt.voxelScale = std::max(voxelScale, 1u);
+    skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
+    skirt.quadMaterialIds[0] = materialId;
+    skirt.quadAoData[0] = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
+    skirt.quadCount = 1u;
+    skirtMeshlets.push_back(skirt);
+}
+
+void appendAlwaysOnTileSkirts(std::vector<Meshlet>& meshlets,
+                              const MeshTileCoord& tile,
+                              int32_t meshTileSizeChunks,
+                              uint8_t lodLevel) {
+    if (lodLevel == 0u || meshlets.empty()) {
+        return;
+    }
+
+    std::vector<Meshlet> skirtMeshlets;
+    const int32_t tileMinX = tile.x * meshTileSizeChunks * cfg::CHUNK_SIZE;
+    const int32_t tileMinY = tile.y * meshTileSizeChunks * cfg::CHUNK_SIZE;
+    const int32_t tileMaxX = tileMinX + meshTileSizeChunks * cfg::CHUNK_SIZE;
+    const int32_t tileMaxY = tileMinY + meshTileSizeChunks * cfg::CHUNK_SIZE;
+
+    for (const Meshlet& meshlet : meshlets) {
+        if (meshlet.faceDirection != Direction::PlusZ || meshlet.quadCount == 0u) {
+            continue;
+        }
+
+        const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
+        for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
+            const uint16_t packed = meshlet.packedQuadLocalOffsets[quadIndex];
+            const uint16_t materialId = meshlet.quadMaterialIds[quadIndex];
+            const uint32_t localX = static_cast<uint32_t>(packed & 0x1Fu);
+            const uint32_t localY = static_cast<uint32_t>((packed >> 5u) & 0x1Fu);
+            const uint32_t localZ = static_cast<uint32_t>((packed >> 10u) & 0x1Fu);
+
+            const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(localX * voxelScale);
+            const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(localY * voxelScale);
+            const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(localZ * voxelScale);
+
+            if (worldX == tileMinX) {
+                appendSkirtQuad(
+                    skirtMeshlets,
+                    Direction::MinusX,
+                    glm::ivec3(worldX, worldY, worldZ),
+                    voxelScale,
+                    materialId
+                );
+            }
+            if ((worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
+                appendSkirtQuad(
+                    skirtMeshlets,
+                    Direction::PlusX,
+                    glm::ivec3(worldX, worldY, worldZ),
+                    voxelScale,
+                    materialId
+                );
+            }
+            if (worldY == tileMinY) {
+                appendSkirtQuad(
+                    skirtMeshlets,
+                    Direction::MinusY,
+                    glm::ivec3(worldX, worldY, worldZ),
+                    voxelScale,
+                    materialId
+                );
+            }
+            if ((worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
+                appendSkirtQuad(
+                    skirtMeshlets,
+                    Direction::PlusY,
+                    glm::ivec3(worldX, worldY, worldZ),
+                    voxelScale,
+                    materialId
+                );
+            }
+        }
+    }
+
+    meshlets.insert(
+        meshlets.end(),
+        std::make_move_iterator(skirtMeshlets.begin()),
+        std::make_move_iterator(skirtMeshlets.end())
+    );
+}
 }  // namespace
 
 MeshManager::MeshManager(const World& world)
@@ -177,17 +290,8 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
     ChunkCoord previousCenterChunk{};
     bool hadPreviousCenter = false;
     bool centerChanged = false;
-    bool sseScaleChanged = false;
-    constexpr float kSseScaleChangeAbsoluteThreshold = 0.01f;
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
-        if (hasLastSseProjectionScale_) {
-            const float scaleDelta = std::abs(safeSseProjectionScale - lastSseProjectionScale_);
-            sseScaleChanged = scaleDelta > kSseScaleChangeAbsoluteThreshold;
-        } else {
-            sseScaleChanged = true;
-        }
-
         lastPlayerWorldPosition_ = playerWorldPosition;
         lastSseProjectionScale_ = safeSseProjectionScale;
         hasLastSseProjectionScale_ = true;
@@ -201,49 +305,734 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
         }
     }
 
-    if (centerChanged) {
-        const int32_t centerShiftChunks = hadPreviousCenter
-            ? std::max(
-                  std::abs(centerChunk.v.x - previousCenterChunk.v.x),
-                  std::abs(centerChunk.v.y - previousCenterChunk.v.y))
-            : 0;
-        scheduleTilesAround(
-            centerChunk,
-            playerWorldPosition,
-            safeSseProjectionScale,
-            hadPreviousCenter ? &previousCenterChunk : nullptr,
-            centerShiftChunks
-        );
-    } else if (sseScaleChanged) {
-        // A projection-scale change (e.g. framebuffer resize/FOV change) invalidates
-        // SSE-based LOD selection across the active window, so force a full refresh.
-        scheduleTilesAround(
-            centerChunk,
-            playerWorldPosition,
-            safeSseProjectionScale,
-            nullptr,
-            meshTileSizeChunks_ * 4
-        );
-    } else {
-        // Continuously re-evaluate a budgeted subset of tiles so LOD can respond to
-        // camera motion within the same chunk and runtime tuning of SSE parameters.
-        scheduleTilesAround(
-            centerChunk,
-            playerWorldPosition,
-            safeSseProjectionScale,
-            &centerChunk,
-            0
-        );
-    }
+    const int32_t centerShiftChunks = (centerChanged && hadPreviousCenter)
+        ? std::max(
+            std::abs(centerChunk.v.x - previousCenterChunk.v.x),
+            std::abs(centerChunk.v.y - previousCenterChunk.v.y))
+        : 0;
+
+    scheduleTilesAround(
+        centerChunk,
+        playerWorldPosition,
+        safeSseProjectionScale,
+        hadPreviousCenter ? &previousCenterChunk : nullptr,
+        centerShiftChunks
+    );
 
     const uint64_t worldRevision = world_.generationRevision();
     const uint64_t processedRevision = processedWorldGenerationRevision_.load(std::memory_order_acquire);
     if (worldRevision != processedRevision) {
         scheduleRemeshForNewColumns(centerColumn);
     }
+}
 
-    // Limit integration of completed meshing to one tile per update call.
-    applyCompletedTileResultsBudgeted();
+std::vector<MeshTileLodUpload> MeshManager::consumePendingTileLodUploads(std::size_t maxCount) {
+    std::vector<MeshTileLodUpload> uploads;
+    uploads.reserve(maxCount);
+
+    std::unique_lock<std::shared_mutex> lock(meshMutex_);
+    while (!pendingUploadOrder_.empty() && uploads.size() < maxCount) {
+        const MeshTileLodKey key = pendingUploadOrder_.front();
+        pendingUploadOrder_.pop_front();
+        pendingUploadSet_.erase(key);
+
+        const auto tileIt = meshTiles_.find(key.tile);
+        if (tileIt == meshTiles_.end()) {
+            continue;
+        }
+        const auto lodIt = tileIt->second.lodStates.find(key.lod);
+        if (lodIt == tileIt->second.lodStates.end() || !lodIt->second.resident) {
+            continue;
+        }
+
+        MeshTileLodUpload upload{};
+        upload.key = key;
+        upload.meshlets = lodIt->second.meshlets;
+        upload.revision = lodIt->second.revision;
+        lodIt->second.uploadQueued = false;
+        uploads.push_back(std::move(upload));
+    }
+
+    return uploads;
+}
+
+std::vector<MeshTileLodKey> MeshManager::consumePendingTileLodRemovals(std::size_t maxCount) {
+    std::vector<MeshTileLodKey> removals;
+    removals.reserve(maxCount);
+
+    std::unique_lock<std::shared_mutex> lock(meshMutex_);
+    while (!pendingRemovalOrder_.empty() && removals.size() < maxCount) {
+        const MeshTileLodKey key = pendingRemovalOrder_.front();
+        pendingRemovalOrder_.pop_front();
+        pendingRemovalSet_.erase(key);
+        removals.push_back(key);
+    }
+
+    return removals;
+}
+
+bool MeshManager::consumeSelectionSnapshot(uint64_t& outRevision,
+                                           std::vector<MeshTileSelectionEntry>& outSelection) {
+    std::unique_lock<std::shared_mutex> lock(meshMutex_);
+    if (!selectionSnapshotDirty_) {
+        return false;
+    }
+
+    outSelection.clear();
+    outSelection.reserve(meshTiles_.size());
+    for (const auto& [tileCoord, tileState] : meshTiles_) {
+        if (tileState.selectedLod < 0) {
+            continue;
+        }
+        outSelection.push_back(MeshTileSelectionEntry{tileCoord, tileState.selectedLod});
+    }
+    std::sort(outSelection.begin(), outSelection.end(), [](const MeshTileSelectionEntry& a, const MeshTileSelectionEntry& b) {
+        return a.tile < b.tile;
+    });
+
+    ++selectionRevision_;
+    outRevision = selectionRevision_;
+    selectionSnapshotDirty_ = false;
+    return true;
+}
+
+void MeshManager::queueTileLodUploadLocked(const MeshTileLodKey& key) {
+    if (pendingUploadSet_.insert(key).second) {
+        pendingUploadOrder_.push_back(key);
+    }
+}
+
+void MeshManager::queueTileLodRemovalLocked(const MeshTileLodKey& key) {
+    if (pendingRemovalSet_.insert(key).second) {
+        pendingRemovalOrder_.push_back(key);
+    }
+}
+
+void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
+                                      const glm::vec3& playerWorldPosition,
+                                      float sseProjectionScale,
+                                      const ChunkCoord* previousCenterChunk,
+                                      int32_t centerShiftChunks) {
+    struct ScheduledTileLod {
+        TileLodCoord coord{};
+        int32_t frontierDepth = std::numeric_limits<int32_t>::max();
+        int32_t distanceSq = 0;
+        uint8_t tier = 1u;
+        jobsystem::Priority priority = jobsystem::Priority::Low;
+    };
+
+    const int32_t maxRadiusChunks = std::max(0, maxConfiguredRadius());
+    const int32_t prefetchChunks = std::max(4, std::max(0, centerShiftChunks));
+    const int32_t scheduleOuterRadiusChunks = maxRadiusChunks + prefetchChunks;
+
+    const int32_t minTileX = floor_div(
+        centerChunk.v.x - scheduleOuterRadiusChunks - (meshTileSizeChunks_ - 1),
+        meshTileSizeChunks_
+    );
+    const int32_t maxTileX = floor_div(centerChunk.v.x + scheduleOuterRadiusChunks, meshTileSizeChunks_);
+    const int32_t minTileY = floor_div(
+        centerChunk.v.y - scheduleOuterRadiusChunks - (meshTileSizeChunks_ - 1),
+        meshTileSizeChunks_
+    );
+    const int32_t maxTileY = floor_div(centerChunk.v.y + scheduleOuterRadiusChunks, meshTileSizeChunks_);
+
+    // Build a contiguous generated-tile frontier rooted near the camera so meshing expands
+    // outward cleanly instead of jumping to disconnected generated islands.
+    std::unordered_set<MeshTileCoord> generatedTiles;
+    for (int32_t tileY = minTileY; tileY <= maxTileY; ++tileY) {
+        for (int32_t tileX = minTileX; tileX <= maxTileX; ++tileX) {
+            const MeshTileCoord tileCoord{tileX, tileY};
+            if (isTileFootprintGenerated(tileCoord)) {
+                generatedTiles.insert(tileCoord);
+            }
+        }
+    }
+
+    std::unordered_map<MeshTileCoord, int32_t> reachableTileDepth;
+    if (!generatedTiles.empty()) {
+        const MeshTileCoord centerTile{
+            floor_div(centerChunk.v.x, meshTileSizeChunks_),
+            floor_div(centerChunk.v.y, meshTileSizeChunks_)
+        };
+
+        MeshTileCoord seed = centerTile;
+        if (generatedTiles.find(seed) == generatedTiles.end()) {
+            int32_t bestDistance = std::numeric_limits<int32_t>::max();
+            for (const MeshTileCoord& tile : generatedTiles) {
+                const int32_t dx = std::abs(tile.x - centerTile.x);
+                const int32_t dy = std::abs(tile.y - centerTile.y);
+                const int32_t chebyshev = std::max(dx, dy);
+                if (chebyshev < bestDistance) {
+                    bestDistance = chebyshev;
+                    seed = tile;
+                }
+            }
+        }
+
+        std::queue<std::pair<MeshTileCoord, int32_t>> frontier;
+        frontier.push(std::make_pair(seed, 0));
+        reachableTileDepth.emplace(seed, 0);
+
+        static constexpr std::array<glm::ivec2, 4> kCardinalNeighbors{
+            glm::ivec2{1, 0},
+            glm::ivec2{-1, 0},
+            glm::ivec2{0, 1},
+            glm::ivec2{0, -1}
+        };
+
+        while (!frontier.empty()) {
+            const auto [current, depth] = frontier.front();
+            frontier.pop();
+
+            for (const glm::ivec2& n : kCardinalNeighbors) {
+                const MeshTileCoord neighbor{current.x + n.x, current.y + n.y};
+                if (generatedTiles.find(neighbor) == generatedTiles.end()) {
+                    continue;
+                }
+                if (!reachableTileDepth.emplace(neighbor, depth + 1).second) {
+                    continue;
+                }
+                frontier.push(std::make_pair(neighbor, depth + 1));
+            }
+        }
+    }
+
+    std::vector<ScheduledTileLod> jobsToSchedule;
+    jobsToSchedule.reserve(static_cast<std::size_t>((maxTileX - minTileX + 1) * (maxTileY - minTileY + 1) * config_.lodLevelCount));
+
+    {
+        std::unique_lock<std::shared_mutex> lock(meshMutex_);
+
+        for (auto it = meshTiles_.begin(); it != meshTiles_.end();) {
+            if (tileInBounds(it->first, minTileX, maxTileX, minTileY, maxTileY) &&
+                reachableTileDepth.find(it->first) != reachableTileDepth.end()) {
+                ++it;
+                continue;
+            }
+
+            for (const auto& [lod, lodState] : it->second.lodStates) {
+                if (lodState.resident) {
+                    queueTileLodRemovalLocked(MeshTileLodKey{it->first, lod});
+                }
+            }
+            it = meshTiles_.erase(it);
+            selectionSnapshotDirty_ = true;
+        }
+
+        const MeshTileCoord centerTile{
+            floor_div(centerChunk.v.x, meshTileSizeChunks_),
+            floor_div(centerChunk.v.y, meshTileSizeChunks_)
+        };
+
+        std::vector<MeshTileCoord> reachableOrdered;
+        reachableOrdered.reserve(reachableTileDepth.size());
+        for (const auto& [tileCoord, _] : reachableTileDepth) {
+            reachableOrdered.push_back(tileCoord);
+        }
+        std::sort(reachableOrdered.begin(), reachableOrdered.end(), [&](const MeshTileCoord& a, const MeshTileCoord& b) {
+            const int32_t aFrontierDepth = reachableTileDepth.at(a);
+            const int32_t bFrontierDepth = reachableTileDepth.at(b);
+            if (aFrontierDepth != bFrontierDepth) {
+                return aFrontierDepth < bFrontierDepth;
+            }
+            const int32_t adx = std::abs(a.x - centerTile.x);
+            const int32_t ady = std::abs(a.y - centerTile.y);
+            const int32_t bdx = std::abs(b.x - centerTile.x);
+            const int32_t bdy = std::abs(b.y - centerTile.y);
+            const int32_t aDistance = std::max(adx, ady);
+            const int32_t bDistance = std::max(bdx, bdy);
+            if (aDistance != bDistance) {
+                return aDistance < bDistance;
+            }
+            return a < b;
+        });
+
+        for (const MeshTileCoord& tileCoord : reachableOrdered) {
+            MeshTileState& tileState = meshTiles_[tileCoord];
+            // Drop any stale high LODs that can overlap neighboring tiles.
+            for (auto lodIt = tileState.lodStates.begin(); lodIt != tileState.lodStates.end();) {
+                if (static_cast<int32_t>(lodIt->first) >= config_.lodLevelCount) {
+                    if (lodIt->second.resident) {
+                        queueTileLodRemovalLocked(MeshTileLodKey{tileCoord, lodIt->first});
+                    }
+                    lodIt = tileState.lodStates.erase(lodIt);
+                } else {
+                    ++lodIt;
+                }
+            }
+
+            const int8_t previousDesired = tileState.desiredLod;
+            const int8_t candidateDesired = desiredLodForTile(
+                tileCoord,
+                centerChunk,
+                playerWorldPosition,
+                sseProjectionScale,
+                0
+            );
+            const int8_t desired = applyLodHysteresis(
+                tileCoord,
+                candidateDesired,
+                previousDesired,
+                playerWorldPosition,
+                sseProjectionScale
+            );
+            tileState.desiredLod = desired;
+            if (desired < 0) {
+                continue;
+            }
+
+            const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+                tileCoord.x,
+                tileCoord.y,
+                meshTileSizeChunks_,
+                centerChunk
+            );
+            const int32_t distanceChunks = distances.minDistanceChunks;
+            const int32_t distanceSq = distanceChunks * distanceChunks;
+            const int32_t frontierDepth = reachableTileDepth.at(tileCoord);
+
+            const jobsystem::Priority primaryPriority =
+                primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
+            const jobsystem::Priority secondaryPriority = demotePriority(primaryPriority);
+
+            // Primary job: currently best-fit LOD for this tile.
+            jobsToSchedule.push_back(ScheduledTileLod{
+                TileLodCoord{tileCoord, static_cast<uint8_t>(desired)},
+                frontierDepth,
+                distanceSq,
+                0u,
+                primaryPriority
+            });
+
+            std::vector<int32_t> supplementalLods;
+            supplementalLods.reserve(static_cast<std::size_t>(config_.lodLevelCount - 1));
+            for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
+                if (lod == desired) {
+                    continue;
+                }
+                supplementalLods.push_back(lod);
+            }
+            std::stable_sort(
+                supplementalLods.begin(),
+                supplementalLods.end(),
+                [desired](int32_t a, int32_t b) {
+                    const int32_t ad = std::abs(a - desired);
+                    const int32_t bd = std::abs(b - desired);
+                    if (ad != bd) {
+                        return ad < bd;
+                    }
+                    // Prefer coarser supplemental LODs first.
+                    return a > b;
+                }
+            );
+
+            for (int32_t lod : supplementalLods) {
+                jobsToSchedule.push_back(ScheduledTileLod{
+                    TileLodCoord{tileCoord, static_cast<uint8_t>(lod)},
+                    frontierDepth,
+                    distanceSq,
+                    1u,
+                    secondaryPriority
+                });
+            }
+        }
+
+        if (refreshSelectedLodsLocked()) {
+            selectionSnapshotDirty_ = true;
+        }
+    }
+
+    std::stable_sort(jobsToSchedule.begin(), jobsToSchedule.end(), [&](const ScheduledTileLod& a, const ScheduledTileLod& b) {
+        if (a.frontierDepth != b.frontierDepth) {
+            return a.frontierDepth < b.frontierDepth;
+        }
+        if (a.distanceSq != b.distanceSq) {
+            return a.distanceSq < b.distanceSq;
+        }
+        if (a.tier != b.tier) {
+            return a.tier < b.tier;
+        }
+        if (!(a.coord.tile == b.coord.tile)) {
+            return a.coord.tile < b.coord.tile;
+        }
+        return false;
+    });
+
+    std::size_t pendingCount = 0u;
+    {
+        std::shared_lock<std::shared_mutex> lock(meshMutex_);
+        pendingCount = pendingTileLodJobs_.size();
+    }
+    const std::size_t maxPending = maxPendingMeshJobs(jobs_.worker_count());
+    std::size_t jobIndex = 0u;
+    while (jobIndex < jobsToSchedule.size() && pendingCount < maxPending) {
+        const ScheduledTileLod& scheduled = jobsToSchedule[jobIndex++];
+        scheduleTileLodMeshing(
+            scheduled.coord,
+            scheduled.priority,
+            false,
+            prefetchChunks + meshTileSizeChunks_
+        );
+
+        std::shared_lock<std::shared_mutex> lock(meshMutex_);
+        pendingCount = pendingTileLodJobs_.size();
+    }
+
+    (void)previousCenterChunk;
+}
+
+void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
+    struct ScheduledTileLod {
+        TileLodCoord coord{};
+        int32_t frontierDepth = std::numeric_limits<int32_t>::max();
+        int32_t distanceSq = 0;
+        uint8_t tier = 1u;
+        jobsystem::Priority priority = jobsystem::Priority::Low;
+    };
+
+    const uint64_t processedRevision = processedWorldGenerationRevision_.load(std::memory_order_acquire);
+    std::vector<ColumnCoord> generatedColumns;
+    const uint64_t nextRevision = world_.copyGeneratedColumnsSince(
+        processedRevision,
+        generatedColumns,
+        kWorldRevisionBatch
+    );
+    if (nextRevision == processedRevision) {
+        return;
+    }
+    processedWorldGenerationRevision_.store(nextRevision, std::memory_order_release);
+
+    if (generatedColumns.empty()) {
+        return;
+    }
+
+    std::unordered_set<MeshTileCoord> tilesToRemesh;
+    const int32_t remeshRadius = std::max(0, maxConfiguredRadius() + meshTileSizeChunks_ + 4);
+
+    for (const ColumnCoord& coord : generatedColumns) {
+        const int32_t dx = std::abs(coord.v.x - centerColumn.v.x);
+        const int32_t dy = std::abs(coord.v.y - centerColumn.v.y);
+        if (dx > remeshRadius || dy > remeshRadius) {
+            continue;
+        }
+
+        const int32_t tileX = floor_div(coord.v.x, meshTileSizeChunks_);
+        const int32_t tileY = floor_div(coord.v.y, meshTileSizeChunks_);
+        for (int32_t oy = -1; oy <= 1; ++oy) {
+            for (int32_t ox = -1; ox <= 1; ++ox) {
+                tilesToRemesh.insert(MeshTileCoord{tileX + ox, tileY + oy});
+            }
+        }
+    }
+
+    std::vector<ScheduledTileLod> jobsToSchedule;
+    jobsToSchedule.reserve(tilesToRemesh.size() * static_cast<std::size_t>(config_.lodLevelCount));
+
+    const ChunkCoord centerChunk = hasLastScheduledCenter_
+        ? lastScheduledCenterChunk_
+        : ChunkCoord{centerColumn.v.x, centerColumn.v.y, 0};
+
+    const glm::vec3 playerWorldPosition = lastPlayerWorldPosition_;
+    const float sseProjectionScale = hasLastSseProjectionScale_
+        ? lastSseProjectionScale_
+        : config_.lodSseFallbackProjectionScale;
+
+    std::unordered_map<MeshTileCoord, int32_t> remeshDepth;
+    if (!tilesToRemesh.empty()) {
+        MeshTileCoord seed{};
+        bool hasSeed = false;
+        int32_t bestDistance = std::numeric_limits<int32_t>::max();
+        for (const MeshTileCoord& tile : tilesToRemesh) {
+            const int32_t dx = std::abs(tile.x - floor_div(centerChunk.v.x, meshTileSizeChunks_));
+            const int32_t dy = std::abs(tile.y - floor_div(centerChunk.v.y, meshTileSizeChunks_));
+            const int32_t distance = std::max(dx, dy);
+            if (!hasSeed || distance < bestDistance) {
+                hasSeed = true;
+                bestDistance = distance;
+                seed = tile;
+            }
+        }
+
+        if (hasSeed) {
+            std::queue<std::pair<MeshTileCoord, int32_t>> frontier;
+            frontier.push(std::make_pair(seed, 0));
+            remeshDepth.emplace(seed, 0);
+
+            static constexpr std::array<glm::ivec2, 4> kCardinalNeighbors{
+                glm::ivec2{1, 0},
+                glm::ivec2{-1, 0},
+                glm::ivec2{0, 1},
+                glm::ivec2{0, -1}
+            };
+
+            while (!frontier.empty()) {
+                const auto [current, depth] = frontier.front();
+                frontier.pop();
+
+                for (const glm::ivec2& n : kCardinalNeighbors) {
+                    const MeshTileCoord neighbor{current.x + n.x, current.y + n.y};
+                    if (tilesToRemesh.find(neighbor) == tilesToRemesh.end()) {
+                        continue;
+                    }
+                    if (!remeshDepth.emplace(neighbor, depth + 1).second) {
+                        continue;
+                    }
+                    frontier.push(std::make_pair(neighbor, depth + 1));
+                }
+            }
+        }
+    }
+
+    {
+        std::shared_lock<std::shared_mutex> lock(meshMutex_);
+        for (const MeshTileCoord& tile : tilesToRemesh) {
+            const auto tileIt = meshTiles_.find(tile);
+            if (tileIt == meshTiles_.end()) {
+                continue;
+            }
+
+            const int8_t desired = (tileIt->second.desiredLod >= 0)
+                ? tileIt->second.desiredLod
+                : desiredLodForTile(tile, centerChunk, playerWorldPosition, sseProjectionScale, 0);
+            if (desired < 0) {
+                continue;
+            }
+
+            const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+                tile.x,
+                tile.y,
+                meshTileSizeChunks_,
+                centerChunk
+            );
+            const int32_t distanceChunks = distances.minDistanceChunks;
+            const int32_t distanceSq = distanceChunks * distanceChunks;
+            const int32_t frontierDepth = remeshDepth.contains(tile)
+                ? remeshDepth.at(tile)
+                : std::numeric_limits<int32_t>::max();
+
+            const jobsystem::Priority primaryPriority =
+                primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
+            const jobsystem::Priority secondaryPriority = demotePriority(primaryPriority);
+
+            jobsToSchedule.push_back(ScheduledTileLod{
+                TileLodCoord{tile, static_cast<uint8_t>(desired)},
+                frontierDepth,
+                distanceSq,
+                0u,
+                primaryPriority
+            });
+
+            std::vector<int32_t> supplementalLods;
+            supplementalLods.reserve(static_cast<std::size_t>(config_.lodLevelCount - 1));
+            for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
+                if (lod == desired) {
+                    continue;
+                }
+                supplementalLods.push_back(lod);
+            }
+            std::stable_sort(
+                supplementalLods.begin(),
+                supplementalLods.end(),
+                [desired](int32_t a, int32_t b) {
+                    const int32_t ad = std::abs(a - desired);
+                    const int32_t bd = std::abs(b - desired);
+                    if (ad != bd) {
+                        return ad < bd;
+                    }
+                    return a > b;
+                }
+            );
+
+            for (int32_t lod : supplementalLods) {
+                jobsToSchedule.push_back(ScheduledTileLod{
+                    TileLodCoord{tile, static_cast<uint8_t>(lod)},
+                    frontierDepth,
+                    distanceSq,
+                    1u,
+                    secondaryPriority
+                });
+            }
+        }
+    }
+
+    std::stable_sort(jobsToSchedule.begin(), jobsToSchedule.end(), [](const ScheduledTileLod& a, const ScheduledTileLod& b) {
+        if (a.frontierDepth != b.frontierDepth) {
+            return a.frontierDepth < b.frontierDepth;
+        }
+        if (a.distanceSq != b.distanceSq) {
+            return a.distanceSq < b.distanceSq;
+        }
+        if (a.tier != b.tier) {
+            return a.tier < b.tier;
+        }
+        if (!(a.coord.tile == b.coord.tile)) {
+            return a.coord.tile < b.coord.tile;
+        }
+        return false;
+    });
+
+    std::size_t pendingCount = 0u;
+    {
+        std::shared_lock<std::shared_mutex> lock(meshMutex_);
+        pendingCount = pendingTileLodJobs_.size();
+    }
+    const std::size_t maxPending = maxPendingMeshJobs(jobs_.worker_count());
+    std::size_t jobIndex = 0u;
+    while (jobIndex < jobsToSchedule.size() && pendingCount < maxPending) {
+        const ScheduledTileLod& scheduled = jobsToSchedule[jobIndex++];
+        scheduleTileLodMeshing(
+            scheduled.coord,
+            scheduled.priority,
+            true,
+            meshTileSizeChunks_ + 4
+        );
+
+        std::shared_lock<std::shared_mutex> lock(meshMutex_);
+        pendingCount = pendingTileLodJobs_.size();
+    }
+}
+
+void MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
+                                         jobsystem::Priority priority,
+                                         bool forceRemesh,
+                                         int32_t activeWindowExtraChunks) {
+    if (!isTileFootprintGenerated(coord.tile)) {
+        return;
+    }
+
+    {
+        std::unique_lock<std::shared_mutex> lock(meshMutex_);
+        if (!isTileWithinActiveWindowLocked(coord.tile, activeWindowExtraChunks)) {
+            return;
+        }
+
+        if (pendingTileLodJobs_.find(coord) != pendingTileLodJobs_.end()) {
+            if (forceRemesh) {
+                deferredRemeshTileLods_.insert(coord);
+            }
+            return;
+        }
+
+        MeshTileState& tileState = meshTiles_[coord.tile];
+        auto& lodState = tileState.lodStates[coord.lodLevel];
+        if (lodState.resident && !forceRemesh) {
+            return;
+        }
+
+        pendingTileLodJobs_.insert(coord);
+    }
+
+    try {
+        jobs_.schedule(
+            priority,
+            [this, coord, activeWindowExtraChunks]() -> MeshGenerationResult {
+                {
+                    std::shared_lock<std::shared_mutex> lock(meshMutex_);
+                    if (!isTileWithinActiveWindowLocked(coord.tile, activeWindowExtraChunks)) {
+                        return MeshGenerationResult{coord, {}, false};
+                    }
+                }
+
+                if (!isTileFootprintGenerated(coord.tile)) {
+                    return MeshGenerationResult{coord, {}, false};
+                }
+
+                return MeshGenerationResult{coord, meshTileLod(coord), true};
+            },
+            [this, coord](jobsystem::JobResult<MeshGenerationResult>&& result) {
+                bool rescheduleDeferred = false;
+                {
+                    std::unique_lock<std::shared_mutex> lock(meshMutex_);
+                    pendingTileLodJobs_.erase(coord);
+
+                    if (!result.success() || shuttingDown_.load(std::memory_order_acquire)) {
+                        deferredRemeshTileLods_.erase(coord);
+                        return;
+                    }
+
+                    MeshGenerationResult meshResult = std::move(result).value();
+                    if (!meshResult.meshed) {
+                        deferredRemeshTileLods_.erase(coord);
+                        return;
+                    }
+
+                    auto tileIt = meshTiles_.find(coord.tile);
+                    if (tileIt == meshTiles_.end()) {
+                        deferredRemeshTileLods_.erase(coord);
+                        return;
+                    }
+
+                    MeshTileLodState& lodState = tileIt->second.lodStates[coord.lodLevel];
+                    lodState.meshlets = std::move(meshResult.meshlets);
+                    lodState.resident = true;
+                    lodState.revision = meshRevision_.fetch_add(1, std::memory_order_acq_rel) + 1u;
+                    queueTileLodUploadLocked(MeshTileLodKey{coord.tile, coord.lodLevel});
+                    lodState.uploadQueued = true;
+
+                    if (refreshSelectedLodsLocked()) {
+                        selectionSnapshotDirty_ = true;
+                    }
+
+                    const auto deferredIt = deferredRemeshTileLods_.find(coord);
+                    if (deferredIt != deferredRemeshTileLods_.end()) {
+                        deferredRemeshTileLods_.erase(deferredIt);
+                        rescheduleDeferred = true;
+                    }
+                }
+
+                if (rescheduleDeferred) {
+                    scheduleTileLodMeshing(
+                        coord,
+                        priorityFromLodLevel(coord.lodLevel),
+                        true,
+                        meshTileSizeChunks_ + 4
+                    );
+                }
+            }
+        );
+    } catch (const std::exception&) {
+        std::unique_lock<std::shared_mutex> lock(meshMutex_);
+        pendingTileLodJobs_.erase(coord);
+        deferredRemeshTileLods_.erase(coord);
+    }
+}
+
+std::vector<Meshlet> MeshManager::meshTileLod(const TileLodCoord& coord) const {
+    const uint8_t lodLevel = coord.lodLevel;
+    const int32_t spanChunks = std::max(1, chunkSpanForLod(lodLevel));
+    const int32_t tileOriginChunkX = coord.tile.x * meshTileSizeChunks_;
+    const int32_t tileOriginChunkY = coord.tile.y * meshTileSizeChunks_;
+    const int32_t baseCellX = floor_div(tileOriginChunkX, spanChunks);
+    const int32_t baseCellY = floor_div(tileOriginChunkY, spanChunks);
+    const int32_t cellsPerAxis = cellCountPerAxisForLod(lodLevel);
+    const int32_t zCount = chunkZCountForLod(lodLevel);
+
+    std::vector<Meshlet> meshlets;
+    std::unordered_map<ColumnCoord, uint32_t> emptyMaskCache;
+    emptyMaskCache.reserve(static_cast<size_t>(meshTileSizeChunks_ * meshTileSizeChunks_));
+
+    for (int32_t y = 0; y < cellsPerAxis; ++y) {
+        for (int32_t x = 0; x < cellsPerAxis; ++x) {
+            for (int32_t z = 0; z < zCount; ++z) {
+                const ChunkCoord cellCoord{baseCellX + x, baseCellY + y, z};
+                if (isLodCellAllAir(cellCoord, lodLevel, emptyMaskCache)) {
+                    continue;
+                }
+
+                std::vector<Meshlet> cellMeshlets = meshLodCell(cellCoord, lodLevel);
+                if (!cellMeshlets.empty()) {
+                    meshlets.insert(
+                        meshlets.end(),
+                        std::make_move_iterator(cellMeshlets.begin()),
+                        std::make_move_iterator(cellMeshlets.end())
+                    );
+                }
+            }
+        }
+    }
+
+    appendAlwaysOnTileSkirts(meshlets, coord.tile, meshTileSizeChunks_, lodLevel);
+    return meshlets;
 }
 
 std::vector<Meshlet> MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const {
@@ -314,151 +1103,6 @@ std::vector<Meshlet> MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8
         meshletOrigin,
         voxelScale
     );
-}
-
-void MeshManager::applyCompletedTileResultsBudgeted() {
-    std::vector<CompletedTileCellResult> completedForTile;
-    {
-        std::unique_lock<std::shared_mutex> lock(meshMutex_);
-        while (!completedTileResultOrder_.empty()) {
-            const MeshTileCoord tileCoord = completedTileResultOrder_.front();
-            completedTileResultOrder_.pop_front();
-            completedTileResultQueued_.erase(tileCoord);
-
-            auto completedIt = completedTileResultsByTile_.find(tileCoord);
-            if (completedIt == completedTileResultsByTile_.end() || completedIt->second.empty()) {
-                continue;
-            }
-
-            completedForTile = std::move(completedIt->second);
-            completedTileResultsByTile_.erase(completedIt);
-            break;
-        }
-    }
-
-    if (completedForTile.empty()) {
-        return;
-    }
-
-    std::sort(
-        completedForTile.begin(),
-        completedForTile.end(),
-        [](const CompletedTileCellResult& a, const CompletedTileCellResult& b) {
-            if (a.coord.tileLod.lodLevel != b.coord.tileLod.lodLevel) {
-                return a.coord.tileLod.lodLevel < b.coord.tileLod.lodLevel;
-            }
-            if (a.coord.cellY != b.coord.cellY) {
-                return a.coord.cellY < b.coord.cellY;
-            }
-            return a.coord.cellX < b.coord.cellX;
-        }
-    );
-
-    for (CompletedTileCellResult& completed : completedForTile) {
-        onTileLodCellMeshed(completed.coord, std::move(completed.meshlets));
-    }
-}
-
-void MeshManager::onTileLodCellMeshed(const TileLodCellCoord& coord, std::vector<Meshlet>&& meshlets) {
-    if (shuttingDown_.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    bool needsDeferredRemesh = false;
-    {
-        std::unique_lock<std::shared_mutex> lock(meshMutex_);
-        pendingTileJobs_.erase(coord);
-
-        MeshTileState& tileState = meshTiles_[coord.tileLod.tile];
-        MeshTileLodState& lodState = tileState.lodStates[coord.tileLod.lodLevel];
-        lodState.cellMeshes[packCellKey(coord.cellX, coord.cellY)] = std::move(meshlets);
-        const int32_t cellsPerAxis = cellCountPerAxisForLod(coord.tileLod.lodLevel);
-        lodState.expectedCellCount = cellsPerAxis * cellsPerAxis;
-
-        auto deferredIt = deferredRemeshTileLods_.find(coord);
-        if (deferredIt != deferredRemeshTileLods_.end()) {
-            deferredRemeshTileLods_.erase(deferredIt);
-            needsDeferredRemesh = true;
-        }
-
-        refreshRenderedLodsLocked();
-    }
-
-    meshRevision_.fetch_add(1, std::memory_order_acq_rel);
-
-    if (needsDeferredRemesh) {
-        const int32_t activeWindowExtraChunks = kMinPrefetchChunks + meshTileSizeChunks_;
-        scheduleTileLodCellMeshing(
-            coord,
-            priorityFromLodLevel(coord.tileLod.lodLevel),
-            true,
-            activeWindowExtraChunks
-        );
-    }
-}
-
-std::vector<Meshlet> MeshManager::copyMeshletsAround(const ColumnCoord& centerColumn, int32_t columnRadius) const {
-    std::shared_lock<std::shared_mutex> lock(meshMutex_);
-
-    std::vector<MeshSnapshotTile> selected;
-    selected.reserve(meshTiles_.size());
-
-    const int32_t clampedRadius = std::max(0, columnRadius);
-    const int32_t minColumnX = centerColumn.v.x - clampedRadius;
-    const int32_t maxColumnX = centerColumn.v.x + clampedRadius;
-    const int32_t minColumnY = centerColumn.v.y - clampedRadius;
-    const int32_t maxColumnY = centerColumn.v.y + clampedRadius;
-
-    auto intersectsView = [this, minColumnX, maxColumnX, minColumnY, maxColumnY](const MeshTileCoord& tileCoord) {
-        const int32_t tileMinX = tileCoord.x * meshTileSizeChunks_;
-        const int32_t tileMaxX = tileMinX + meshTileSizeChunks_ - 1;
-        const int32_t tileMinY = tileCoord.y * meshTileSizeChunks_;
-        const int32_t tileMaxY = tileMinY + meshTileSizeChunks_ - 1;
-        return !(tileMaxX < minColumnX || tileMinX > maxColumnX ||
-                 tileMaxY < minColumnY || tileMinY > maxColumnY);
-    };
-
-    for (const auto& [tileCoord, tileState] : meshTiles_) {
-        if (!intersectsView(tileCoord)) {
-            continue;
-        }
-
-        const int8_t chosenLod = chooseRenderableLodForTileLocked(tileState);
-        if (chosenLod < 0) {
-            continue;
-        }
-
-        const auto lodIt = tileState.lodStates.find(static_cast<uint8_t>(chosenLod));
-        if (lodIt == tileState.lodStates.end()) {
-            continue;
-        }
-
-        MeshSnapshotTile snapshotTile{};
-        snapshotTile.tile = tileCoord;
-        snapshotTile.lod = static_cast<uint8_t>(chosenLod);
-        for (const auto& [_, cellMeshlets] : lodIt->second.cellMeshes) {
-            snapshotTile.meshlets.insert(
-                snapshotTile.meshlets.end(),
-                cellMeshlets.begin(),
-                cellMeshlets.end()
-            );
-        }
-        selected.push_back(std::move(snapshotTile));
-    }
-
-    return MeshSnapshotBuilder::build(std::move(selected), meshTileSizeChunks_);
-}
-
-uint64_t MeshManager::meshRevision() const noexcept {
-    return meshRevision_.load(std::memory_order_acquire);
-}
-
-bool MeshManager::hasPendingJobs() const {
-    std::shared_lock<std::shared_mutex> lock(meshMutex_);
-    return !pendingTileJobs_.empty() ||
-           !deferredRemeshTileLods_.empty() ||
-           !completedTileResultsByTile_.empty() ||
-           !completedTileResultOrder_.empty();
 }
 
 bool MeshManager::isTileWithinActiveWindowLocked(const MeshTileCoord& tileCoord, int32_t extraChunks) const {
@@ -545,77 +1189,61 @@ int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileState& state)
             return false;
         }
         const auto lodIt = state.lodStates.find(static_cast<uint8_t>(lod));
-        if (lodIt == state.lodStates.end()) {
-            return false;
-        }
-        if (lodIt->second.expectedCellCount <= 0) {
-            return false;
-        }
-        return static_cast<int32_t>(lodIt->second.cellMeshes.size()) >= lodIt->second.expectedCellCount;
+        return lodIt != state.lodStates.end() && lodIt->second.resident;
     };
 
-    if (state.desiredLod >= 0 && hasMesh(state.desiredLod)) {
-        return state.desiredLod;
-    }
-
-    if (state.renderedLod >= 0 && hasMesh(state.renderedLod)) {
-        return state.renderedLod;
-    }
-
-    const int32_t lodCount = config_.lodLevelCount;
     if (state.desiredLod >= 0) {
-        for (int32_t lod = static_cast<int32_t>(state.desiredLod) + 1; lod < lodCount; ++lod) {
+        // Prefer desired LOD if available, then coarser fallbacks first.
+        for (int32_t lod = state.desiredLod; lod < config_.lodLevelCount; ++lod) {
             if (hasMesh(lod)) {
                 return static_cast<int8_t>(lod);
             }
         }
-        for (int32_t lod = static_cast<int32_t>(state.desiredLod) - 1; lod >= 0; --lod) {
+        for (int32_t lod = state.desiredLod - 1; lod >= 0; --lod) {
             if (hasMesh(lod)) {
                 return static_cast<int8_t>(lod);
             }
         }
+        return -1;
     }
 
-    int8_t coarsest = -1;
-    for (const auto& [lod, lodState] : state.lodStates) {
-        if (lodState.expectedCellCount <= 0) {
-            continue;
-        }
-        if (static_cast<int32_t>(lodState.cellMeshes.size()) < lodState.expectedCellCount) {
-            continue;
-        }
-        if (static_cast<int8_t>(lod) > coarsest) {
-            coarsest = static_cast<int8_t>(lod);
+    // No desired LOD yet: prefer coarsest available.
+    for (int32_t lod = config_.lodLevelCount - 1; lod >= 0; --lod) {
+        if (hasMesh(lod)) {
+            return static_cast<int8_t>(lod);
         }
     }
-    return coarsest;
+    return -1;
 }
 
-void MeshManager::refreshRenderedLodsLocked() {
+bool MeshManager::refreshSelectedLodsLocked() {
+    bool changed = false;
     for (auto& [_, tileState] : meshTiles_) {
-        tileState.renderedLod = chooseRenderableLodForTileLocked(tileState);
+        const int8_t selected = chooseRenderableLodForTileLocked(tileState);
+        if (selected != tileState.selectedLod) {
+            tileState.selectedLod = selected;
+            changed = true;
+        }
     }
-}
-
-int32_t MeshManager::cellSpanChunksForLod(uint8_t lodLevel) const {
-    return (lodLevel == 0u) ? 1 : 2;
-}
-
-int32_t MeshManager::cellSpanLodCellsForLod(uint8_t lodLevel) const {
-    const int32_t spanChunks = static_cast<int32_t>(chunkSpanForLod(lodLevel));
-    const int32_t targetCellSpanChunks = cellSpanChunksForLod(lodLevel);
-    return std::max(1, targetCellSpanChunks / std::max(1, spanChunks));
+    return changed;
 }
 
 int32_t MeshManager::cellCountPerAxisForLod(uint8_t lodLevel) const {
-    const int32_t spanChunks = static_cast<int32_t>(chunkSpanForLod(lodLevel));
-    const int32_t lodCellsPerAxis = std::max(1, meshTileSizeChunks_ / std::max(1, spanChunks));
-    const int32_t cellSpanLodCells = cellSpanLodCellsForLod(lodLevel);
-    return std::max(1, (lodCellsPerAxis + cellSpanLodCells - 1) / cellSpanLodCells);
+    const int32_t spanChunks = std::max(1, chunkSpanForLod(lodLevel));
+    return std::max(1, (meshTileSizeChunks_ + spanChunks - 1) / spanChunks);
 }
 
-uint32_t MeshManager::packCellKey(uint16_t cellX, uint16_t cellY) const {
-    return (static_cast<uint32_t>(cellY) << 16u) | static_cast<uint32_t>(cellX);
+uint64_t MeshManager::meshRevision() const noexcept {
+    return meshRevision_.load(std::memory_order_acquire);
+}
+
+bool MeshManager::hasPendingJobs() const {
+    std::shared_lock<std::shared_mutex> lock(meshMutex_);
+    return !pendingTileLodJobs_.empty() ||
+           !deferredRemeshTileLods_.empty() ||
+           !pendingUploadOrder_.empty() ||
+           !pendingRemovalOrder_.empty() ||
+           selectionSnapshotDirty_;
 }
 
 bool MeshManager::tileInBounds(const MeshTileCoord& tileCoord,
@@ -643,13 +1271,11 @@ int32_t MeshManager::chunkZCountForLod(uint8_t lodLevel) {
 }
 
 jobsystem::Priority MeshManager::priorityFromLodLevel(uint8_t lodLevel) {
-    if (lodLevel == 0) {
-        return jobsystem::Priority::Critical;
-    }
-    if (lodLevel == 1) {
+    // Fallback priority used for deferred remesh retries.
+    if (lodLevel == 0u) {
         return jobsystem::Priority::High;
     }
-    if (lodLevel == 2) {
+    if (lodLevel == 1u) {
         return jobsystem::Priority::Normal;
     }
     return jobsystem::Priority::Low;
@@ -663,10 +1289,9 @@ void MeshManager::sanitizeConfig(Config& config) {
     const int32_t tileSizeLog2 = integerLog2(config.meshTileSizeChunks);
 
     config.lodLevelCount = std::max(1, config.lodLevelCount);
-    // Limit generated LODs so the coarsest voxel at that LOD does not exceed one tile width.
-    // Additional LODs (excluding LOD0) cap at 4 + log2(tileSizeChunks): 1->4, 2->5, 4->6, etc.
-    const int32_t maxAdditionalLods = static_cast<int32_t>(Chunk::MAX_MIP_LEVEL) + tileSizeLog2;
-    const int32_t maxLodLevelCountForTile = maxAdditionalLods + 1;
+    // Cap to non-overlapping tile LODs: once chunk span exceeds tile span, adjacent tiles
+    // map to the same coarse cell and overlap.
+    const int32_t maxLodLevelCountForTile = tileSizeLog2 + 1;
     const int32_t maxLodLevelCountBySpan = kMaxLodShift + 1;
     config.lodLevelCount = std::clamp(
         config.lodLevelCount,

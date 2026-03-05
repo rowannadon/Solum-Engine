@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 
-#include "solum_engine/render/MeshUploadAssembler.h"
 #include "solum_engine/voxel/MeshManager.h"
 #include "solum_engine/voxel/World.h"
 
@@ -20,31 +19,21 @@ bool VoxelStreamingSystem::initialize() {
 
     MeshManager::Config meshConfig;
     meshConfig.meshTileSizeChunks = 4;
-    meshConfig.lodLevelCount = 2;
+    meshConfig.lodLevelCount = 7;
     meshConfig.activeChunkRadius = 128;
+    meshConfig.lodSseTargetPixels = 3.0f;
     meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
     const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
     meshConfig.activeChunkRadius = std::min(meshConfig.activeChunkRadius, clampedWorldRadius);
 
     world_ = std::make_unique<World>(worldConfig);
     meshManager_ = std::make_unique<MeshManager>(*world_, meshConfig);
-    uploadColumnRadius_ = std::min(
-        clampedWorldRadius,
-        std::max(1, meshConfig.activeChunkRadius + 1)
-    );
 
     return world_ && meshManager_;
 }
 
 void VoxelStreamingSystem::start(const glm::vec3& initialCameraPosition, uint64_t initialUploadedMeshRevision) {
     stop();
-
-    const BlockCoord initialBlock{
-        static_cast<int32_t>(std::floor(initialCameraPosition.x)),
-        static_cast<int32_t>(std::floor(initialCameraPosition.y)),
-        static_cast<int32_t>(std::floor(initialCameraPosition.z))
-    };
-    const ColumnCoord initialCenterColumn = chunk_to_column(block_to_chunk(initialBlock));
 
     {
         std::lock_guard<std::mutex> lock(streamingMutex_);
@@ -53,11 +42,7 @@ void VoxelStreamingSystem::start(const glm::vec3& initialCameraPosition, uint64_
         latestStreamingCamera_ = initialCameraPosition;
         latestStreamingSseProjectionScale_ = 390.0f;
         uploadMailbox_.clear();
-        streamerLastPreparedRevision_ = initialUploadedMeshRevision;
-        streamerLastPreparedCenter_ = initialCenterColumn;
-        streamerHasLastPreparedCenter_ = true;
-        streamerLastSnapshotTime_.reset();
-        mainUploadInProgress_.store(false, std::memory_order_relaxed);
+        streamerLastDeltaRevision_ = initialUploadedMeshRevision;
     }
 
     streamingThread_ = std::thread([this] {
@@ -81,13 +66,7 @@ void VoxelStreamingSystem::stop() {
         std::lock_guard<std::mutex> lock(streamingMutex_);
         streamingStopRequested_ = false;
         uploadMailbox_.clear();
-        streamerLastSnapshotTime_.reset();
     }
-    mainUploadInProgress_.store(false, std::memory_order_relaxed);
-}
-
-void VoxelStreamingSystem::setMainUploadInProgress(bool inProgress) noexcept {
-    mainUploadInProgress_.store(inProgress, std::memory_order_relaxed);
 }
 
 void VoxelStreamingSystem::updateCamera(const glm::vec3& cameraPosition, float sseProjectionScale) {
@@ -100,7 +79,7 @@ void VoxelStreamingSystem::updateCamera(const glm::vec3& cameraPosition, float s
     streamingCv_.notify_one();
 }
 
-std::optional<StreamingMeshUpload> VoxelStreamingSystem::tryConsumePreparedUpload() {
+std::optional<MeshStreamingDelta> VoxelStreamingSystem::tryConsumePreparedDelta() {
     return uploadMailbox_.tryConsume();
 }
 
@@ -110,12 +89,6 @@ void VoxelStreamingSystem::recordMainUpdateDurationNs(uint64_t ns) noexcept {
 
 const World* VoxelStreamingSystem::world() const noexcept {
     return world_.get();
-}
-
-int32_t VoxelStreamingSystem::cameraColumnChebyshevDistance(const ColumnCoord& a, const ColumnCoord& b) {
-    const int32_t dx = std::abs(a.v.x - b.v.x);
-    const int32_t dy = std::abs(a.v.y - b.v.y);
-    return std::max(dx, dy);
 }
 
 void VoxelStreamingSystem::streamingThreadMain() {
@@ -168,53 +141,10 @@ void VoxelStreamingSystem::streamingThreadMain() {
             ).count())
         );
 
-        const BlockCoord cameraBlock{
-            static_cast<int32_t>(std::floor(cameraPosition.x)),
-            static_cast<int32_t>(std::floor(cameraPosition.y)),
-            static_cast<int32_t>(std::floor(cameraPosition.z))
-        };
-        const ColumnCoord centerColumn = chunk_to_column(block_to_chunk(cameraBlock));
-        const bool centerChanged = !streamerHasLastPreparedCenter_ || !(centerColumn == streamerLastPreparedCenter_);
-        const int32_t centerShift = streamerHasLastPreparedCenter_
-            ? cameraColumnChebyshevDistance(centerColumn, streamerLastPreparedCenter_)
-            : 0;
-        const int32_t centerUploadStrideChunks = std::max(2, uploadColumnRadius_ / 8);
-
-        const uint64_t currentRevision = meshManager_->meshRevision();
-        if (currentRevision == streamerLastPreparedRevision_ &&
-            (!centerChanged || centerShift < centerUploadStrideChunks)) {
-            streamSkipUnchanged_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-
-        if (mainUploadInProgress_.load(std::memory_order_relaxed)) {
-            streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        if (uploadMailbox_.hasPending()) {
-            streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-
-        const bool pendingJobs = world_->hasPendingJobs() || meshManager_->hasPendingJobs();
-        const double minSnapshotIntervalSeconds =
-            pendingJobs ? 0.0 :
-            (uploadColumnRadius_ >= 8) ? 0.35 :
-            (uploadColumnRadius_ >= 4) ? 0.25 :
-            0.15;
-        const auto now = std::chrono::steady_clock::now();
-        const bool intervalElapsed =
-            !streamerLastSnapshotTime_.has_value() ||
-            std::chrono::duration<double>(now - *streamerLastSnapshotTime_).count() >= minSnapshotIntervalSeconds;
-        const bool forceForCenterChange = centerChanged && centerShift >= centerUploadStrideChunks;
-
-        if (pendingJobs && !intervalElapsed && !forceForCenterChange) {
-            streamSkipThrottle_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-
         const auto copyStart = std::chrono::steady_clock::now();
-        std::vector<Meshlet> meshlets = meshManager_->copyMeshletsAround(centerColumn, uploadColumnRadius_);
+        constexpr std::size_t kMaxDeltaEntriesPerTick = 64u;
+        std::vector<MeshTileLodUpload> upserts = meshManager_->consumePendingTileLodUploads(kMaxDeltaEntriesPerTick);
+        std::vector<MeshTileLodKey> removals = meshManager_->consumePendingTileLodRemovals(kMaxDeltaEntriesPerTick);
         recordTimingNs(
             TimingStage::StreamCopyMeshlets,
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -223,11 +153,32 @@ void VoxelStreamingSystem::streamingThreadMain() {
         );
 
         const auto prepareStart = std::chrono::steady_clock::now();
-        StreamingMeshUpload preparedUpload = MeshUploadAssembler::assemble(
-            meshlets,
-            currentRevision,
-            centerColumn
-        );
+        uint64_t selectionRevision = 0u;
+        std::vector<MeshTileSelectionEntry> selectionSnapshot;
+        const bool hasSelectionSnapshot = meshManager_->consumeSelectionSnapshot(selectionRevision, selectionSnapshot);
+
+        if (upserts.empty() && removals.empty() && !hasSelectionSnapshot) {
+            streamSkipUnchanged_.fetch_add(1, std::memory_order_relaxed);
+            recordTimingNs(
+                TimingStage::StreamPrepareUpload,
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - prepareStart
+                ).count())
+            );
+            continue;
+        }
+
+        MeshStreamingDelta delta{};
+        delta.upserts = std::move(upserts);
+        delta.removals = std::move(removals);
+        if (hasSelectionSnapshot) {
+            delta.selectionSnapshot = std::move(selectionSnapshot);
+            delta.revision = std::max(selectionRevision, streamerLastDeltaRevision_ + 1u);
+        } else {
+            delta.revision = streamerLastDeltaRevision_ + 1u;
+        }
+        const uint64_t deltaRevision = delta.revision;
+
         recordTimingNs(
             TimingStage::StreamPrepareUpload,
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -241,12 +192,9 @@ void VoxelStreamingSystem::streamingThreadMain() {
                 return;
             }
         }
-        uploadMailbox_.pushLatest(std::move(preparedUpload));
 
-        streamerLastPreparedRevision_ = currentRevision;
-        streamerLastPreparedCenter_ = centerColumn;
-        streamerHasLastPreparedCenter_ = true;
-        streamerLastSnapshotTime_ = now;
+        uploadMailbox_.pushLatest(std::move(delta));
+        streamerLastDeltaRevision_ = deltaRevision;
         streamSnapshotsPrepared_.fetch_add(1, std::memory_order_relaxed);
     }
 }
@@ -262,7 +210,7 @@ VoxelStreamingSystem::TimingRawTotals VoxelStreamingSystem::captureTimingRawTota
 
     totals.streamSkipNoCamera = streamSkipNoCamera_.load(std::memory_order_relaxed);
     totals.streamSkipUnchanged = streamSkipUnchanged_.load(std::memory_order_relaxed);
-    totals.streamSkipThrottle = streamSkipThrottle_.load(std::memory_order_relaxed);
+    totals.streamSkipThrottle = 0u;
     totals.streamSnapshotsPrepared = streamSnapshotsPrepared_.load(std::memory_order_relaxed);
     return totals;
 }
@@ -350,9 +298,7 @@ RuntimeTimingSnapshot VoxelStreamingSystem::getRuntimeTimingSnapshot() {
     snapshot.meshHasPendingJobs = meshManager_ && meshManager_->hasPendingJobs();
     {
         std::lock_guard<std::mutex> lock(streamingMutex_);
-        snapshot.pendingUploadQueued =
-            uploadMailbox_.hasPending() ||
-            mainUploadInProgress_.load(std::memory_order_relaxed);
+        snapshot.pendingUploadQueued = uploadMailbox_.hasPending();
     }
     return snapshot;
 }

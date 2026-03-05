@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <vector>
 
-#include "solum_engine/render/MeshletManager.h"
 #include "solum_engine/render/MeshletTypes.h"
 #include "solum_engine/render/Uniforms.h"
 
@@ -20,7 +19,11 @@ bool MeshletCullingPipeline::build(const MeshletBufferController& meshletBuffers
         return false;
     }
 
-    updateCullParams(meshletBuffers.meshletCount(), occlusionHiZMipCount);
+    updateCullParams(
+        meshletBuffers.meshletCount(),
+        occlusionHiZMipCount,
+        meshletBuffers.activeRangeCount()
+    );
     return refreshBindGroup(meshletBuffers, occlusionHiZViewName);
 }
 
@@ -35,6 +38,7 @@ bool MeshletCullingPipeline::refreshBindGroup(const MeshletBufferController& mes
     return createBindGroupForMeshBuffers(
         meshletBuffers.activeMeshAabbBufferName(),
         meshletBuffers.activeVisibleMeshletIndexBufferName(),
+        meshletBuffers.activeMeshletRangeBufferName(),
         activeHiZViewName_.c_str()
     );
 }
@@ -95,7 +99,7 @@ void MeshletCullingPipeline::removeResources() {
 }
 
 bool MeshletCullingPipeline::createPipeline() {
-    std::vector<BindGroupLayoutEntry> cullLayoutEntries(6, Default);
+    std::vector<BindGroupLayoutEntry> cullLayoutEntries(7, Default);
     cullLayoutEntries[0].binding = 0;
     cullLayoutEntries[0].visibility = ShaderStage::Compute;
     cullLayoutEntries[0].buffer.type = BufferBindingType::Uniform;
@@ -123,6 +127,10 @@ bool MeshletCullingPipeline::createPipeline() {
     cullLayoutEntries[5].texture.sampleType = TextureSampleType::UnfilterableFloat;
     cullLayoutEntries[5].texture.viewDimension = TextureViewDimension::_2D;
 
+    cullLayoutEntries[6].binding = 6;
+    cullLayoutEntries[6].visibility = ShaderStage::Compute;
+    cullLayoutEntries[6].buffer.type = BufferBindingType::ReadOnlyStorage;
+
     BindGroupLayout cullBgl = r_.pip.createBindGroupLayout(kCullBglName, cullLayoutEntries);
     if (!cullBgl) {
         return false;
@@ -138,14 +146,16 @@ bool MeshletCullingPipeline::createPipeline() {
 
 bool MeshletCullingPipeline::createBindGroup() {
     return createBindGroupForMeshBuffers(
-        MeshletManager::meshAabbBufferName(0),
-        MeshletManager::visibleMeshletIndexBufferName(0),
+        "meshlet_aabb_buffer",
+        "visible_meshlet_indices_buffer",
+        "active_meshlet_ranges_buffer",
         activeHiZViewName_.c_str()
     );
 }
 
 bool MeshletCullingPipeline::createBindGroupForMeshBuffers(const std::string& meshletAabbBufferName,
                                                            const std::string& visibleIndicesBufferName,
+                                                           const std::string& activeRangeBufferName,
                                                            const char* occlusionHiZViewName) {
     BindGroupLayout cullBgl = r_.pip.getBindGroupLayout(kCullBglName);
     if (!cullBgl) {
@@ -155,18 +165,19 @@ bool MeshletCullingPipeline::createBindGroupForMeshBuffers(const std::string& me
     Buffer uniformBuffer = r_.buf.getBuffer("uniform_buffer");
     Buffer meshletAabbBuffer = r_.buf.getBuffer(meshletAabbBufferName);
     Buffer visibleIndicesBuffer = r_.buf.getBuffer(visibleIndicesBufferName);
+    Buffer activeRangeBuffer = r_.buf.getBuffer(activeRangeBufferName);
     Buffer drawArgsBuffer = r_.buf.getBuffer(kIndirectArgsBufferName);
     Buffer cullParamsBuffer = r_.buf.getBuffer(kCullParamsBufferName);
     TextureView occlusionHiZView = r_.tex.getTextureView(
         (occlusionHiZViewName != nullptr) ? occlusionHiZViewName : kDefaultHiZViewName
     );
 
-    if (!uniformBuffer || !meshletAabbBuffer || !visibleIndicesBuffer ||
+    if (!uniformBuffer || !meshletAabbBuffer || !visibleIndicesBuffer || !activeRangeBuffer ||
         !drawArgsBuffer || !cullParamsBuffer || !occlusionHiZView) {
         return false;
     }
 
-    std::vector<BindGroupEntry> entries(6, Default);
+    std::vector<BindGroupEntry> entries(7, Default);
     entries[0].binding = 0;
     entries[0].buffer = uniformBuffer;
     entries[0].offset = 0;
@@ -195,12 +206,24 @@ bool MeshletCullingPipeline::createBindGroupForMeshBuffers(const std::string& me
     entries[5].binding = 5;
     entries[5].textureView = occlusionHiZView;
 
+    entries[6].binding = 6;
+    entries[6].buffer = activeRangeBuffer;
+    entries[6].offset = 0;
+    entries[6].size = activeRangeBuffer.getSize();
+
     r_.pip.deleteBindGroup(kCullBgName);
     return r_.pip.createBindGroup(kCullBgName, kCullBglName, entries) != nullptr;
 }
 
-void MeshletCullingPipeline::updateCullParams(uint32_t meshletCount, uint32_t occlusionHiZMipCount) {
-    const uint32_t params[4] = {meshletCount, std::max(occlusionHiZMipCount, 1u), 0u, 0u};
+void MeshletCullingPipeline::updateCullParams(uint32_t meshletCount,
+                                              uint32_t occlusionHiZMipCount,
+                                              uint32_t activeRangeCount) {
+    const uint32_t params[4] = {
+        meshletCount,
+        std::max(occlusionHiZMipCount, 1u),
+        activeRangeCount,
+        0u
+    };
     r_.buf.writeBuffer(kCullParamsBufferName, 0u, params, sizeof(params));
 }
 
@@ -226,7 +249,7 @@ void MeshletCullingPipeline::encode(CommandEncoder encoder,
         sizeof(uint32_t) * 4u
     );
 
-    const uint32_t meshletCount = meshletBuffers.effectiveMeshletCountForPasses();
+    const uint32_t meshletCount = meshletBuffers.activeSelectionMeshletCount();
     if (meshletCount == 0u) {
         return;
     }

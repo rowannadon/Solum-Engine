@@ -21,7 +21,7 @@ public:
     bool refreshBindGroup(const MeshletBufferController& meshletBuffers,
                           const char* occlusionHiZViewName);
 
-    void updateCullParams(uint32_t meshletCount, uint32_t occlusionHiZMipCount);
+    void updateCullParams(uint32_t meshletCount, uint32_t occlusionHiZMipCount, uint32_t activeRangeCount);
     void encode(wgpu::CommandEncoder encoder, const MeshletBufferController& meshletBuffers);
 
     bool createResources() override;
@@ -32,6 +32,7 @@ public:
 private:
     bool createBindGroupForMeshBuffers(const std::string& meshletAabbBufferName,
                                        const std::string& visibleIndicesBufferName,
+                                       const std::string& activeRangeBufferName,
                                        const char* occlusionHiZViewName);
 
     static constexpr const char* kCullBglName = "meshlet_cull_bgl";

@@ -11,7 +11,7 @@ class UploadMailbox {
 public:
     static constexpr size_t kCapacity = 2u;
 
-    void pushLatest(StreamingMeshUpload&& upload) {
+    void pushLatest(MeshStreamingDelta&& upload) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (count_ == kCapacity) {
             head_ = (head_ + 1u) % kCapacity;
@@ -23,13 +23,13 @@ public:
         ++count_;
     }
 
-    std::optional<StreamingMeshUpload> tryConsume() {
+    std::optional<MeshStreamingDelta> tryConsume() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (count_ == 0u) {
             return std::nullopt;
         }
 
-        std::optional<StreamingMeshUpload> out = std::move(slots_[head_]);
+        std::optional<MeshStreamingDelta> out = std::move(slots_[head_]);
         slots_[head_].reset();
         head_ = (head_ + 1u) % kCapacity;
         --count_;
@@ -43,7 +43,7 @@ public:
 
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (std::optional<StreamingMeshUpload>& slot : slots_) {
+        for (std::optional<MeshStreamingDelta>& slot : slots_) {
             slot.reset();
         }
         head_ = 0u;
@@ -52,7 +52,7 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::array<std::optional<StreamingMeshUpload>, kCapacity> slots_{};
+    std::array<std::optional<MeshStreamingDelta>, kCapacity> slots_{};
     size_t head_ = 0u;
     size_t count_ = 0u;
 };

@@ -10,7 +10,6 @@
 
 bool Application::Initialize() {
     WebGPURenderer::Config rendererConfig{};
-    rendererConfig.meshUploadBudgetBytesPerFrame = 2u * 1024u * 1024u;
     if (!gpu.initialize(rendererConfig)) return false;
     if (!voxelStreaming_.initialize()) return false;
     buf = gpu.getBufferManager();
@@ -122,10 +121,9 @@ void Application::MainLoop() {
         sseProjectionScale = 390.0f;
     }
 
-    voxelStreaming_.setMainUploadInProgress(gpu.isMeshUploadInProgress());
     voxelStreaming_.updateCamera(camera.position, sseProjectionScale);
-    if (auto upload = voxelStreaming_.tryConsumePreparedUpload()) {
-        gpu.queueMeshUpload(std::move(*upload));
+    if (auto delta = voxelStreaming_.tryConsumePreparedDelta()) {
+        gpu.queueMeshDelta(std::move(*delta));
     }
     voxelStreaming_.recordMainUpdateDurationNs(
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(

@@ -1,7 +1,6 @@
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 
 #include "solum_engine/render/MaterialManager.h"
-#include "solum_engine/render/MeshletManager.h"
 #include "solum_engine/render/Uniforms.h"
 
 using namespace wgpu;
@@ -162,9 +161,9 @@ bool VoxelPipeline::createPipeline() {
 
 bool VoxelPipeline::createBindGroup() {
     return createBindGroupForMeshBuffers(
-        MeshletManager::meshDataBufferName(0),
-        MeshletManager::meshMetadataBufferName(0),
-        MeshletManager::visibleMeshletIndexBufferName(0)
+        "meshlet_data_buffer",
+        "meshlet_metadata_buffer",
+        "visible_meshlet_indices_buffer"
     );
 }
 

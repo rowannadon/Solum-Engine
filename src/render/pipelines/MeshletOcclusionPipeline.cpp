@@ -4,7 +4,6 @@
 #include <array>
 #include <vector>
 
-#include "solum_engine/render/MeshletManager.h"
 #include "solum_engine/render/Uniforms.h"
 
 using namespace wgpu;
@@ -49,7 +48,9 @@ bool MeshletOcclusionPipeline::refreshMeshBindGroup(const MeshletBufferControlle
 
     return createBindGroupForMeshBuffers(
         meshletBuffers.activeMeshDataBufferName(),
-        meshletBuffers.activeMeshMetadataBufferName()
+        meshletBuffers.activeMeshMetadataBufferName(),
+        meshletBuffers.activeMeshletRangeBufferName(),
+        meshletBuffers.activeMeshletRangeParamsBufferName()
     );
 }
 
@@ -171,7 +172,7 @@ void MeshletOcclusionPipeline::removeResources() {
 }
 
 bool MeshletOcclusionPipeline::createPipeline() {
-    std::vector<BindGroupLayoutEntry> prepassLayoutEntries(3, Default);
+    std::vector<BindGroupLayoutEntry> prepassLayoutEntries(5, Default);
     prepassLayoutEntries[0].binding = 0;
     prepassLayoutEntries[0].visibility = ShaderStage::Vertex;
     prepassLayoutEntries[0].buffer.type = BufferBindingType::Uniform;
@@ -184,6 +185,15 @@ bool MeshletOcclusionPipeline::createPipeline() {
     prepassLayoutEntries[2].binding = 2;
     prepassLayoutEntries[2].visibility = ShaderStage::Vertex;
     prepassLayoutEntries[2].buffer.type = BufferBindingType::ReadOnlyStorage;
+
+    prepassLayoutEntries[3].binding = 3;
+    prepassLayoutEntries[3].visibility = ShaderStage::Vertex;
+    prepassLayoutEntries[3].buffer.type = BufferBindingType::ReadOnlyStorage;
+
+    prepassLayoutEntries[4].binding = 4;
+    prepassLayoutEntries[4].visibility = ShaderStage::Vertex;
+    prepassLayoutEntries[4].buffer.type = BufferBindingType::Uniform;
+    prepassLayoutEntries[4].buffer.minBindingSize = 16u;
 
     BindGroupLayout prepassBgl = r_.pip.createBindGroupLayout(kDepthPrepassBglName, prepassLayoutEntries);
     if (!prepassBgl) {
@@ -262,21 +272,27 @@ bool MeshletOcclusionPipeline::createPipeline() {
 
 bool MeshletOcclusionPipeline::createBindGroup() {
     return createBindGroupForMeshBuffers(
-        MeshletManager::meshDataBufferName(0),
-        MeshletManager::meshMetadataBufferName(0)
+        "meshlet_data_buffer",
+        "meshlet_metadata_buffer",
+        "active_meshlet_ranges_buffer",
+        "active_meshlet_ranges_params_buffer"
     );
 }
 
 bool MeshletOcclusionPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
-                                                             const std::string& metadataBufferName) {
+                                                             const std::string& metadataBufferName,
+                                                             const std::string& activeRangeBufferName,
+                                                             const std::string& activeRangeParamsBufferName) {
     Buffer uniformBuffer = r_.buf.getBuffer("uniform_buffer");
     Buffer meshDataBuffer = r_.buf.getBuffer(meshDataBufferName);
     Buffer metadataBuffer = r_.buf.getBuffer(metadataBufferName);
-    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer) {
+    Buffer activeRangeBuffer = r_.buf.getBuffer(activeRangeBufferName);
+    Buffer activeRangeParamsBuffer = r_.buf.getBuffer(activeRangeParamsBufferName);
+    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !activeRangeBuffer || !activeRangeParamsBuffer) {
         return false;
     }
 
-    std::vector<BindGroupEntry> entries(3, Default);
+    std::vector<BindGroupEntry> entries(5, Default);
     entries[0].binding = 0;
     entries[0].buffer = uniformBuffer;
     entries[0].offset = 0;
@@ -291,6 +307,16 @@ bool MeshletOcclusionPipeline::createBindGroupForMeshBuffers(const std::string& 
     entries[2].buffer = metadataBuffer;
     entries[2].offset = 0;
     entries[2].size = metadataBuffer.getSize();
+
+    entries[3].binding = 3;
+    entries[3].buffer = activeRangeBuffer;
+    entries[3].offset = 0;
+    entries[3].size = activeRangeBuffer.getSize();
+
+    entries[4].binding = 4;
+    entries[4].buffer = activeRangeParamsBuffer;
+    entries[4].offset = 0;
+    entries[4].size = 16u;
 
     r_.pip.deleteBindGroup(kDepthPrepassBgName);
     return r_.pip.createBindGroup(kDepthPrepassBgName, kDepthPrepassBglName, entries) != nullptr;
@@ -396,7 +422,7 @@ void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
         return;
     }
 
-    const uint32_t meshletCount = meshletBuffers.effectiveMeshletCountForPasses();
+    const uint32_t meshletCount = meshletBuffers.activeSelectionMeshletCount();
     if (meshletCount == 0u) {
         return;
     }

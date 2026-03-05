@@ -13,6 +13,7 @@ bool WebGPURenderer::initialize() {
 }
 
 bool WebGPURenderer::initialize(const Config& config) {
+    (void)config;
     RenderConfig renderConfig;
 
     context = std::make_unique<WebGPUContext>();
@@ -44,9 +45,7 @@ bool WebGPURenderer::initialize(const Config& config) {
         return false;
     }
 
-    if (!meshletBuffers_.initialize(
-            bufferManager.get(),
-            MeshletBufferController::Config{config.meshUploadBudgetBytesPerFrame})) {
+    if (!meshletBuffers_.initialize(bufferManager.get())) {
         std::cerr << "Failed to initialize meshlet buffers." << std::endl;
         return false;
     }
@@ -86,6 +85,7 @@ bool WebGPURenderer::initialize(const Config& config) {
 }
 
 bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawConfig) {
+    (void)uploadApplied;
     if (!voxelPipeline_.has_value()) {
         return false;
     }
@@ -99,10 +99,7 @@ bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawCon
     }
 
     if (rebuildDrawConfig) {
-        const uint32_t drawMeshletCount = uploadApplied
-            ? bindings.meshletCount
-            : bindings.effectiveMeshletCountForPasses;
-        voxelPipeline_->setDrawConfig(bindings.verticesPerMeshlet, drawMeshletCount);
+        voxelPipeline_->setDrawConfig(bindings.verticesPerMeshlet, bindings.meshletCount);
     }
 
     if (meshletOcclusionPipeline_.has_value() &&
@@ -114,10 +111,11 @@ bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawCon
         const uint32_t hizMipCount = meshletOcclusionPipeline_.has_value()
             ? meshletOcclusionPipeline_->hizMipCount()
             : 1u;
-        const uint32_t drawMeshletCount = uploadApplied
-            ? bindings.meshletCount
-            : bindings.effectiveMeshletCountForPasses;
-        meshletCullingPipeline_->updateCullParams(drawMeshletCount, hizMipCount);
+        meshletCullingPipeline_->updateCullParams(
+            bindings.meshletCount,
+            hizMipCount,
+            bindings.activeRangeCount
+        );
 
         const char* hizViewName = meshletOcclusionPipeline_.has_value()
             ? MeshletOcclusionPipeline::kOcclusionHiZViewName
@@ -198,19 +196,19 @@ BufferManager* WebGPURenderer::getBufferManager() {
 }
 
 RuntimeTimingSnapshot WebGPURenderer::getRuntimeTimingSnapshot() {
-    return timingTracker_.snapshot(meshletBuffers_.hasPendingOrActiveUpload());
+    return timingTracker_.snapshot(pendingMeshDelta_.has_value());
 }
 
 void WebGPURenderer::setDebugWorld(const World* world) {
     debugBoundsManager_.setWorld(world);
 }
 
-void WebGPURenderer::queueMeshUpload(StreamingMeshUpload&& upload) {
-    meshletBuffers_.queueUpload(std::move(upload));
+void WebGPURenderer::queueMeshDelta(MeshStreamingDelta&& delta) {
+    pendingMeshDelta_ = std::move(delta);
 }
 
 bool WebGPURenderer::isMeshUploadInProgress() const noexcept {
-    return meshletBuffers_.isUploadInProgress();
+    return pendingMeshDelta_.has_value();
 }
 
 uint64_t WebGPURenderer::uploadedMeshRevision() const noexcept {
@@ -218,7 +216,7 @@ uint64_t WebGPURenderer::uploadedMeshRevision() const noexcept {
 }
 
 void WebGPURenderer::processPendingMeshUploads() {
-    if (!meshletBuffers_.hasPendingOrActiveUpload()) {
+    if (!pendingMeshDelta_.has_value()) {
         return;
     }
 
@@ -232,17 +230,18 @@ void WebGPURenderer::processPendingMeshUploads() {
         );
     };
 
-    const MeshletBufferController::ProcessResult result = meshletBuffers_.processPendingUpload();
+    const MeshletBufferController::ApplyResult result = meshletBuffers_.applyDelta(*pendingMeshDelta_);
+    pendingMeshDelta_.reset();
 
-    if (result.buffersRecreated || result.uploadApplied) {
-        if (!refreshMeshBindings(result.uploadApplied, result.uploadApplied)) {
+    if (result.buffersRecreated || result.deltaApplied) {
+        if (!refreshMeshBindings(result.deltaApplied, true)) {
             std::cerr << "Failed to refresh mesh pipeline resources after upload." << std::endl;
             finalizeUploadTiming();
             return;
         }
     }
 
-    if (result.uploadApplied) {
+    if (result.deltaApplied) {
         timingTracker_.incrementMainUploadsApplied();
     }
 
@@ -467,7 +466,7 @@ void WebGPURenderer::terminate() {
         voxelPipeline_.reset();
     }
 
-    meshletBuffers_.resetPendingUploads();
+    pendingMeshDelta_.reset();
     debugBoundsManager_.setWorld(nullptr);
     debugBoundsManager_.reset();
 
