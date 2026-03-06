@@ -22,6 +22,7 @@ struct BlockModelLibrary {
     static constexpr uint32_t kMaterialEntryCount = 65536u;
 
     std::array<uint16_t, kMaterialEntryCount> materialToModel{};
+    std::array<uint8_t, kMaterialEntryCount> materialDoubleSided{};
     std::vector<BlockModelDefinition> models{};
     std::vector<BlockModelQuadRef> quadRefs{};
     uint16_t fallbackModelIndex = 0u;
@@ -36,5 +37,9 @@ struct BlockModelLibrary {
     const BlockModelDefinition* modelForMaterial(uint16_t materialId) const {
         const uint16_t modelIndex = materialToModel[materialId];
         return modelByIndex(modelIndex);
+    }
+
+    bool isMaterialDoubleSided(uint16_t materialId) const {
+        return materialDoubleSided[materialId] != 0u;
     }
 };

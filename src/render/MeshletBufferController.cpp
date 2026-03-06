@@ -5,8 +5,29 @@
 #include <cstddef>
 #include <cstdint>
 #include <numeric>
+#include <utility>
 
 using namespace wgpu;
+
+MeshletBufferController::MeshletBufferController()
+    : MeshletBufferController(Config{}) {}
+
+MeshletBufferController::MeshletBufferController(Config config)
+    : namePrefix_(std::move(config.namePrefix)),
+      geometryVariant_(config.geometryVariant),
+      meshDataBufferName_(prefixedName(namePrefix_, "meshlet_data_buffer")),
+      meshMetadataBufferName_(prefixedName(namePrefix_, "meshlet_metadata_buffer")),
+      meshAabbBufferName_(prefixedName(namePrefix_, "meshlet_aabb_buffer")),
+      visibleMeshletIndexBufferName_(prefixedName(namePrefix_, "visible_meshlet_indices_buffer")),
+      activeMeshletRangeBufferName_(prefixedName(namePrefix_, "active_meshlet_ranges_buffer")),
+      activeMeshletRangeParamsBufferName_(prefixedName(namePrefix_, "active_meshlet_ranges_params_buffer")) {}
+
+std::string MeshletBufferController::prefixedName(const std::string& prefix, const char* baseName) {
+    if (prefix.empty()) {
+        return std::string(baseName);
+    }
+    return prefix + "_" + baseName;
+}
 
 MeshletAabb MeshletBufferController::computeMeshletAabb(const Meshlet& meshlet) {
     const float voxelScale = static_cast<float>(std::max(meshlet.voxelScale, 1u));
@@ -206,7 +227,7 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
     metadataDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(MeshletMetadataGPU);
     metadataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     metadataDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(kMeshMetadataBufferName, metadataDesc)) {
+    if (!bufferManager_->createBuffer(meshMetadataBufferName_, metadataDesc)) {
         return false;
     }
 
@@ -215,7 +236,7 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
     meshDataDesc.size = static_cast<uint64_t>(quadWordCapacity) * sizeof(uint32_t);
     meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     meshDataDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(kMeshDataBufferName, meshDataDesc)) {
+    if (!bufferManager_->createBuffer(meshDataBufferName_, meshDataDesc)) {
         return false;
     }
 
@@ -224,7 +245,7 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
     aabbDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(MeshletAabbGPU);
     aabbDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     aabbDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(kMeshAabbBufferName, aabbDesc)) {
+    if (!bufferManager_->createBuffer(meshAabbBufferName_, aabbDesc)) {
         return false;
     }
 
@@ -233,7 +254,7 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
     visibleIndicesDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(uint32_t);
     visibleIndicesDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     visibleIndicesDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(kVisibleMeshletIndexBufferName, visibleIndicesDesc)) {
+    if (!bufferManager_->createBuffer(visibleMeshletIndexBufferName_, visibleIndicesDesc)) {
         return false;
     }
 
@@ -242,7 +263,7 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
     activeRangesDesc.size = static_cast<uint64_t>(rangeCapacity) * sizeof(ActiveMeshletRangeGPU);
     activeRangesDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     activeRangesDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(kActiveMeshletRangeBufferName, activeRangesDesc)) {
+    if (!bufferManager_->createBuffer(activeMeshletRangeBufferName_, activeRangesDesc)) {
         return false;
     }
 
@@ -251,7 +272,7 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
     rangeParamsDesc.size = sizeof(RangeParamsGPU);
     rangeParamsDesc.usage = BufferUsage::CopyDst | BufferUsage::Uniform;
     rangeParamsDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(kActiveMeshletRangeParamsBufferName, rangeParamsDesc)) {
+    if (!bufferManager_->createBuffer(activeMeshletRangeParamsBufferName_, rangeParamsDesc)) {
         return false;
     }
 
@@ -275,14 +296,14 @@ bool MeshletBufferController::writeAllocation(const AllocationRecord& record) {
         }
 
         bufferManager_->writeBuffer(
-            kMeshMetadataBufferName,
+            meshMetadataBufferName_,
             static_cast<uint64_t>(record.meshletOffset) * sizeof(MeshletMetadataGPU),
             metadata.data(),
             metadata.size() * sizeof(MeshletMetadataGPU)
         );
 
         bufferManager_->writeBuffer(
-            kMeshAabbBufferName,
+            meshAabbBufferName_,
             static_cast<uint64_t>(record.meshletOffset) * sizeof(MeshletAabbGPU),
             record.packed.aabbGpu.data(),
             record.packed.aabbGpu.size() * sizeof(MeshletAabbGPU)
@@ -291,7 +312,7 @@ bool MeshletBufferController::writeAllocation(const AllocationRecord& record) {
 
     if (!record.packed.quadData.empty()) {
         bufferManager_->writeBuffer(
-            kMeshDataBufferName,
+            meshDataBufferName_,
             static_cast<uint64_t>(record.quadOffset) * sizeof(uint32_t),
             record.packed.quadData.data(),
             record.packed.quadData.size() * sizeof(uint32_t)
@@ -358,12 +379,12 @@ bool MeshletBufferController::ensureBuffers(uint32_t requiredMeshlets,
         meshletCapacity_ < requiredMeshlets ||
         quadWordCapacity_ < requiredQuadWords ||
         rangeCapacity_ < requiredRanges ||
-        !bufferManager_->getBuffer(kMeshDataBufferName) ||
-        !bufferManager_->getBuffer(kMeshMetadataBufferName) ||
-        !bufferManager_->getBuffer(kMeshAabbBufferName) ||
-        !bufferManager_->getBuffer(kVisibleMeshletIndexBufferName) ||
-        !bufferManager_->getBuffer(kActiveMeshletRangeBufferName) ||
-        !bufferManager_->getBuffer(kActiveMeshletRangeParamsBufferName);
+        !bufferManager_->getBuffer(meshDataBufferName_) ||
+        !bufferManager_->getBuffer(meshMetadataBufferName_) ||
+        !bufferManager_->getBuffer(meshAabbBufferName_) ||
+        !bufferManager_->getBuffer(visibleMeshletIndexBufferName_) ||
+        !bufferManager_->getBuffer(activeMeshletRangeBufferName_) ||
+        !bufferManager_->getBuffer(activeMeshletRangeParamsBufferName_);
 
     if (!needsRecreate) {
         return true;
@@ -411,7 +432,8 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
     }
 
     for (const MeshTileLodUpload& upsert : delta.upserts) {
-        if (upsert.meshlets.empty()) {
+        const std::vector<Meshlet>& meshlets = selectMeshletsForVariant(upsert);
+        if (meshlets.empty()) {
             releaseAllocation(upsert.key);
             result.deltaApplied = true;
             continue;
@@ -419,7 +441,7 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
 
         AllocationRecord record{};
         record.key = upsert.key;
-        record.packed = packTileLodMeshlets(upsert.meshlets);
+        record.packed = packTileLodMeshlets(meshlets);
 
         if (record.packed.metadata.empty()) {
             releaseAllocation(upsert.key);
@@ -563,7 +585,7 @@ bool MeshletBufferController::buildActiveRanges() {
 
     if (!activeRanges_.empty()) {
         bufferManager_->writeBuffer(
-            kActiveMeshletRangeBufferName,
+            activeMeshletRangeBufferName_,
             0u,
             activeRanges_.data(),
             activeRanges_.size() * sizeof(ActiveMeshletRangeGPU)
@@ -577,7 +599,7 @@ bool MeshletBufferController::buildActiveRanges() {
         0u
     };
     bufferManager_->writeBuffer(
-        kActiveMeshletRangeParamsBufferName,
+        activeMeshletRangeParamsBufferName_,
         0u,
         &rangeParams,
         sizeof(rangeParams)
@@ -591,27 +613,27 @@ bool MeshletBufferController::hasMeshletManager() const noexcept {
 }
 
 const char* MeshletBufferController::activeMeshDataBufferName() const noexcept {
-    return kMeshDataBufferName;
+    return meshDataBufferName_.c_str();
 }
 
 const char* MeshletBufferController::activeMeshMetadataBufferName() const noexcept {
-    return kMeshMetadataBufferName;
+    return meshMetadataBufferName_.c_str();
 }
 
 const char* MeshletBufferController::activeMeshAabbBufferName() const noexcept {
-    return kMeshAabbBufferName;
+    return meshAabbBufferName_.c_str();
 }
 
 const char* MeshletBufferController::activeVisibleMeshletIndexBufferName() const noexcept {
-    return kVisibleMeshletIndexBufferName;
+    return visibleMeshletIndexBufferName_.c_str();
 }
 
 const char* MeshletBufferController::activeMeshletRangeBufferName() const noexcept {
-    return kActiveMeshletRangeBufferName;
+    return activeMeshletRangeBufferName_.c_str();
 }
 
 const char* MeshletBufferController::activeMeshletRangeParamsBufferName() const noexcept {
-    return kActiveMeshletRangeParamsBufferName;
+    return activeMeshletRangeParamsBufferName_.c_str();
 }
 
 uint32_t MeshletBufferController::meshletCount() const noexcept {
@@ -650,4 +672,11 @@ MeshletBufferController::ActiveBindings MeshletBufferController::activeBindings(
         activeRangeCount(),
         verticesPerMeshlet()
     };
+}
+
+const std::vector<Meshlet>& MeshletBufferController::selectMeshletsForVariant(const MeshTileLodUpload& upload) const {
+    if (geometryVariant_ == MeshletGeometryVariant::DoubleSided) {
+        return upload.doubleSidedMeshlets;
+    }
+    return upload.culledMeshlets;
 }

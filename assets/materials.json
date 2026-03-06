@@ -1,19 +1,32 @@
 [
   {
     "name": "stone",
-    "texture": "stone.png"
+    "texture": "stone.png",
+    "randomRotation": false,
+    "randomOffsetDirections": "",
+    "randomOffsetAmount": 0.0
   },
   {
     "name": "grass",
-    "texture": "grass.png"
+    "texture": "grass.png",
+    "randomRotation": true,
+    "randomOffsetDirections": "",
+    "randomOffsetAmount": 0.0
   },
   {
     "name": "log",
-    "texture": "log.png"
+    "texture": "log.png",
+    "randomRotation": false,
+    "randomOffsetDirections": "",
+    "randomOffsetAmount": 0.0
   },
   {
     "name": "leaf",
-    "texture": "leaf.png",
-    "model": "bush_model.obj"
+    "texture": "oak_leaves.png",
+    "model": "leaf_model_cube_2x.obj",
+    "doubleSided": true,
+    "randomRotation": false,
+    "randomOffsetDirections": "XYZ",
+    "randomOffsetAmount": 0.2
   }
 ]

@@ -25,7 +25,8 @@ struct MeshTileLodKey {
 
 struct MeshTileLodUpload {
     MeshTileLodKey key{};
-    std::vector<Meshlet> meshlets;
+    std::vector<Meshlet> culledMeshlets;
+    std::vector<Meshlet> doubleSidedMeshlets;
     uint64_t revision = 0u;
 };
 

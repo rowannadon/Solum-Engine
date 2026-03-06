@@ -1,5 +1,6 @@
 #include "solum_engine/render/WebGPURenderer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 
@@ -45,34 +46,74 @@ bool WebGPURenderer::initialize(const Config& config) {
         return false;
     }
 
-    if (!meshletBuffers_.initialize(bufferManager.get())) {
-        std::cerr << "Failed to initialize meshlet buffers." << std::endl;
+    if (!culledMeshletBuffers_.initialize(bufferManager.get())) {
+        std::cerr << "Failed to initialize culled meshlet buffers." << std::endl;
+        return false;
+    }
+    if (!doubleSidedMeshletBuffers_.initialize(bufferManager.get())) {
+        std::cerr << "Failed to initialize double-sided meshlet buffers." << std::endl;
         return false;
     }
 
-    voxelPipeline_.emplace(*services_);
-    voxelPipeline_->setDrawConfig(meshletBuffers_.verticesPerMeshlet(), meshletBuffers_.meshletCount());
-    if (!voxelPipeline_->build()) {
-        std::cerr << "Failed to create voxel pipeline and resources." << std::endl;
+    culledVoxelPipeline_.emplace(*services_, VoxelPipeline::Config{
+        "culled",
+        CullMode::Back,
+        true
+    });
+    culledVoxelPipeline_->setDrawConfig(
+        culledMeshletBuffers_.verticesPerMeshlet(),
+        culledMeshletBuffers_.meshletCount()
+    );
+    if (!culledVoxelPipeline_->build()) {
+        std::cerr << "Failed to create culled voxel pipeline and resources." << std::endl;
+        return false;
+    }
+
+    doubleSidedVoxelPipeline_.emplace(*services_, VoxelPipeline::Config{
+        "double_sided",
+        CullMode::None,
+        false
+    });
+    doubleSidedVoxelPipeline_->setDrawConfig(
+        doubleSidedMeshletBuffers_.verticesPerMeshlet(),
+        doubleSidedMeshletBuffers_.meshletCount()
+    );
+    if (!doubleSidedVoxelPipeline_->build()) {
+        std::cerr << "Failed to create double-sided voxel pipeline resources." << std::endl;
         return false;
     }
 
     meshletOcclusionPipeline_.emplace(*services_);
-    if (!meshletOcclusionPipeline_->build(meshletBuffers_)) {
+    if (!meshletOcclusionPipeline_->build(culledMeshletBuffers_)) {
         std::cerr << "Failed to initialize meshlet occlusion resources." << std::endl;
         return false;
     }
 
-    meshletCullingPipeline_.emplace(*services_);
-    if (!meshletCullingPipeline_->build(
-            meshletBuffers_,
+    culledMeshletCullingPipeline_.emplace(*services_, MeshletCullingPipeline::Config{"culled"});
+    if (!culledMeshletCullingPipeline_->build(
+            culledMeshletBuffers_,
             meshletOcclusionPipeline_->hizMipCount(),
             MeshletOcclusionPipeline::kOcclusionHiZViewName)) {
-        std::cerr << "Failed to initialize meshlet culling resources." << std::endl;
+        std::cerr << "Failed to initialize culled meshlet culling resources." << std::endl;
         return false;
     }
 
-    voxelPipeline_->setIndirectDrawBuffer(MeshletCullingPipeline::kIndirectArgsBufferName, 0u);
+    doubleSidedMeshletCullingPipeline_.emplace(*services_, MeshletCullingPipeline::Config{"double_sided"});
+    if (!doubleSidedMeshletCullingPipeline_->build(
+            doubleSidedMeshletBuffers_,
+            meshletOcclusionPipeline_->hizMipCount(),
+            MeshletOcclusionPipeline::kOcclusionHiZViewName)) {
+        std::cerr << "Failed to initialize double-sided meshlet culling resources." << std::endl;
+        return false;
+    }
+
+    culledVoxelPipeline_->setIndirectDrawBuffer(culledMeshletCullingPipeline_->indirectArgsBufferName(), 0u);
+    doubleSidedVoxelPipeline_->setIndirectDrawBuffer(doubleSidedMeshletCullingPipeline_->indirectArgsBufferName(), 0u);
+
+    if (!refreshMeshBindings(false, true)) {
+        std::cerr << "Failed to refresh mesh bindings during renderer initialization." << std::endl;
+        return false;
+    }
 
     boundsDebugPipeline_.emplace(*services_);
     if (!boundsDebugPipeline_->build()) {
@@ -86,41 +127,71 @@ bool WebGPURenderer::initialize(const Config& config) {
 
 bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawConfig) {
     (void)uploadApplied;
-    if (!voxelPipeline_.has_value()) {
+    if (!culledVoxelPipeline_.has_value() || !doubleSidedVoxelPipeline_.has_value()) {
         return false;
     }
 
-    const MeshletBufferController::ActiveBindings bindings = meshletBuffers_.activeBindings();
-    if (!voxelPipeline_->createBindGroupForMeshBuffers(
-            bindings.meshDataBufferName,
-            bindings.meshMetadataBufferName,
-            bindings.visibleMeshletIndexBufferName)) {
+    const MeshletBufferController::ActiveBindings culledBindings = culledMeshletBuffers_.activeBindings();
+    if (!culledVoxelPipeline_->createBindGroupForMeshBuffers(
+            culledBindings.meshDataBufferName,
+            culledBindings.meshMetadataBufferName,
+            culledBindings.visibleMeshletIndexBufferName)) {
+        return false;
+    }
+
+    const MeshletBufferController::ActiveBindings doubleSidedBindings = doubleSidedMeshletBuffers_.activeBindings();
+    if (!doubleSidedVoxelPipeline_->createBindGroupForMeshBuffers(
+            doubleSidedBindings.meshDataBufferName,
+            doubleSidedBindings.meshMetadataBufferName,
+            doubleSidedBindings.visibleMeshletIndexBufferName)) {
         return false;
     }
 
     if (rebuildDrawConfig) {
-        voxelPipeline_->setDrawConfig(bindings.verticesPerMeshlet, bindings.meshletCount);
+        culledVoxelPipeline_->setDrawConfig(culledBindings.verticesPerMeshlet, culledBindings.meshletCount);
+        doubleSidedVoxelPipeline_->setDrawConfig(
+            doubleSidedBindings.verticesPerMeshlet,
+            doubleSidedBindings.meshletCount
+        );
     }
 
     if (meshletOcclusionPipeline_.has_value() &&
-        !meshletOcclusionPipeline_->refreshMeshBindGroup(meshletBuffers_)) {
+        !meshletOcclusionPipeline_->refreshMeshBindGroup(culledMeshletBuffers_)) {
         return false;
     }
 
-    if (meshletCullingPipeline_.has_value()) {
+    if (culledMeshletCullingPipeline_.has_value()) {
         const uint32_t hizMipCount = meshletOcclusionPipeline_.has_value()
             ? meshletOcclusionPipeline_->hizMipCount()
             : 1u;
-        meshletCullingPipeline_->updateCullParams(
-            bindings.meshletCount,
+        culledMeshletCullingPipeline_->updateCullParams(
+            culledBindings.meshletCount,
             hizMipCount,
-            bindings.activeRangeCount
+            culledBindings.activeRangeCount
         );
 
         const char* hizViewName = meshletOcclusionPipeline_.has_value()
             ? MeshletOcclusionPipeline::kOcclusionHiZViewName
             : nullptr;
-        if (!meshletCullingPipeline_->refreshBindGroup(meshletBuffers_, hizViewName)) {
+        if (!culledMeshletCullingPipeline_->refreshBindGroup(culledMeshletBuffers_, hizViewName)) {
+            return false;
+        }
+    }
+
+    if (doubleSidedMeshletCullingPipeline_.has_value()) {
+        const uint32_t hizMipCount = meshletOcclusionPipeline_.has_value()
+            ? meshletOcclusionPipeline_->hizMipCount()
+            : 1u;
+        doubleSidedMeshletCullingPipeline_->updateCullParams(
+            doubleSidedBindings.meshletCount,
+            hizMipCount,
+            doubleSidedBindings.activeRangeCount
+        );
+
+        const char* hizViewName = meshletOcclusionPipeline_.has_value()
+            ? MeshletOcclusionPipeline::kOcclusionHiZViewName
+            : nullptr;
+        if (!doubleSidedMeshletCullingPipeline_->refreshBindGroup(doubleSidedMeshletBuffers_, hizViewName)) {
             return false;
         }
     }
@@ -129,17 +200,17 @@ bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawCon
 }
 
 void WebGPURenderer::createRenderingTextures() {
-    if (!voxelPipeline_.has_value()) {
+    if (!culledVoxelPipeline_.has_value()) {
         return;
     }
 
-    if (!voxelPipeline_->createResources()) {
+    if (!culledVoxelPipeline_->createResources()) {
         std::cerr << "Failed to recreate voxel rendering resources." << std::endl;
         return;
     }
 
     if (meshletOcclusionPipeline_.has_value() &&
-        !meshletOcclusionPipeline_->recreateResources(meshletBuffers_)) {
+        !meshletOcclusionPipeline_->recreateResources(culledMeshletBuffers_)) {
         std::cerr << "Failed to recreate meshlet occlusion depth resources." << std::endl;
     }
 
@@ -149,8 +220,11 @@ void WebGPURenderer::createRenderingTextures() {
 }
 
 void WebGPURenderer::removeRenderingTextures() {
-    if (voxelPipeline_.has_value()) {
-        voxelPipeline_->removeResources();
+    if (doubleSidedVoxelPipeline_.has_value()) {
+        doubleSidedVoxelPipeline_->removeResources();
+    }
+    if (culledVoxelPipeline_.has_value()) {
+        culledVoxelPipeline_->removeResources();
     }
     if (meshletOcclusionPipeline_.has_value()) {
         meshletOcclusionPipeline_->removeResources();
@@ -219,7 +293,10 @@ bool WebGPURenderer::isMeshUploadInProgress() const noexcept {
 }
 
 uint64_t WebGPURenderer::uploadedMeshRevision() const noexcept {
-    return meshletBuffers_.uploadedMeshRevision();
+    return std::max(
+        culledMeshletBuffers_.uploadedMeshRevision(),
+        doubleSidedMeshletBuffers_.uploadedMeshRevision()
+    );
 }
 
 void WebGPURenderer::processPendingMeshUploads() {
@@ -237,18 +314,23 @@ void WebGPURenderer::processPendingMeshUploads() {
         );
     };
 
-    const MeshletBufferController::ApplyResult result = meshletBuffers_.applyDelta(*pendingMeshDelta_);
+    const MeshletBufferController::ApplyResult culledResult =
+        culledMeshletBuffers_.applyDelta(*pendingMeshDelta_);
+    const MeshletBufferController::ApplyResult doubleSidedResult =
+        doubleSidedMeshletBuffers_.applyDelta(*pendingMeshDelta_);
     pendingMeshDelta_.reset();
 
-    if (result.buffersRecreated || result.deltaApplied) {
-        if (!refreshMeshBindings(result.deltaApplied, true)) {
+    const bool buffersRecreated = culledResult.buffersRecreated || doubleSidedResult.buffersRecreated;
+    const bool deltaApplied = culledResult.deltaApplied || doubleSidedResult.deltaApplied;
+    if (buffersRecreated || deltaApplied) {
+        if (!refreshMeshBindings(deltaApplied, true)) {
             std::cerr << "Failed to refresh mesh pipeline resources after upload." << std::endl;
             finalizeUploadTiming();
             return;
         }
     }
 
-    if (result.deltaApplied) {
+    if (deltaApplied) {
         timingTracker_.incrementMainUploadsApplied();
     }
 
@@ -289,7 +371,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 
     const auto debugUpdateStart = std::chrono::steady_clock::now();
     if (boundsDebugPipeline_.has_value()) {
-        debugBoundsManager_.update(uniforms, *boundsDebugPipeline_, meshletBuffers_);
+        debugBoundsManager_.update(uniforms, *boundsDebugPipeline_, culledMeshletBuffers_);
     }
     timingTracker_.record(
         MainTimingStage::UpdateDebugBounds,
@@ -318,22 +400,52 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
     CommandEncoder encoder = context->getDevice().createCommandEncoder(encoderDesc);
 
     if (uniforms.occlusionParams[0] >= 0.5f && meshletOcclusionPipeline_.has_value()) {
-        meshletOcclusionPipeline_->encodeDepthPrepass(encoder, meshletBuffers_);
+        meshletOcclusionPipeline_->encodeDepthPrepass(encoder, culledMeshletBuffers_);
         meshletOcclusionPipeline_->encodeHierarchyPass(encoder);
     }
 
-    if (meshletCullingPipeline_.has_value()) {
-        meshletCullingPipeline_->encode(encoder, meshletBuffers_);
+    if (culledMeshletCullingPipeline_.has_value()) {
+        culledMeshletCullingPipeline_->encode(encoder, culledMeshletBuffers_);
+    }
+    if (doubleSidedMeshletCullingPipeline_.has_value()) {
+        doubleSidedMeshletCullingPipeline_->encode(encoder, doubleSidedMeshletBuffers_);
     }
 
-    if (voxelPipeline_.has_value()) {
-        voxelPipeline_->render(targetView, encoder, [&](RenderPassEncoder& pass) {
-            if (boundsDebugPipeline_.has_value()) {
-                boundsDebugPipeline_->draw(pass);
+    const bool hasDoubleSidedMeshlets = doubleSidedMeshletBuffers_.activeSelectionMeshletCount() > 0u;
+    bool renderedBasePass = false;
+    if (culledVoxelPipeline_.has_value()) {
+        renderedBasePass = true;
+        if (!hasDoubleSidedMeshlets || !doubleSidedVoxelPipeline_.has_value()) {
+            culledVoxelPipeline_->render(
+                targetView,
+                encoder,
+                VoxelPipeline::RenderOptions{true, true},
+                [&](RenderPassEncoder& pass) {
+                    if (boundsDebugPipeline_.has_value()) {
+                        boundsDebugPipeline_->draw(pass);
+                    }
+                    ImGui::Render();
+                    ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
+                }
+            );
+        } else {
+            culledVoxelPipeline_->render(targetView, encoder, VoxelPipeline::RenderOptions{true, true});
+        }
+    }
+
+    if (hasDoubleSidedMeshlets && doubleSidedVoxelPipeline_.has_value()) {
+        doubleSidedVoxelPipeline_->render(
+            targetView,
+            encoder,
+            VoxelPipeline::RenderOptions{!renderedBasePass, !renderedBasePass},
+            [&](RenderPassEncoder& pass) {
+                if (boundsDebugPipeline_.has_value()) {
+                    boundsDebugPipeline_->draw(pass);
+                }
+                ImGui::Render();
+                ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
             }
-            ImGui::Render();
-            ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
-        });
+        );
     }
 
     CommandBufferDescriptor cmdBufferDescriptor = Default;
@@ -458,9 +570,14 @@ void WebGPURenderer::terminate() {
         boundsDebugPipeline_.reset();
     }
 
-    if (meshletCullingPipeline_.has_value()) {
-        meshletCullingPipeline_->removeResources();
-        meshletCullingPipeline_.reset();
+    if (doubleSidedMeshletCullingPipeline_.has_value()) {
+        doubleSidedMeshletCullingPipeline_->removeResources();
+        doubleSidedMeshletCullingPipeline_.reset();
+    }
+
+    if (culledMeshletCullingPipeline_.has_value()) {
+        culledMeshletCullingPipeline_->removeResources();
+        culledMeshletCullingPipeline_.reset();
     }
 
     if (meshletOcclusionPipeline_.has_value()) {
@@ -468,9 +585,13 @@ void WebGPURenderer::terminate() {
         meshletOcclusionPipeline_.reset();
     }
 
-    if (voxelPipeline_.has_value()) {
-        voxelPipeline_->removeResources();
-        voxelPipeline_.reset();
+    if (doubleSidedVoxelPipeline_.has_value()) {
+        doubleSidedVoxelPipeline_->removeResources();
+        doubleSidedVoxelPipeline_.reset();
+    }
+    if (culledVoxelPipeline_.has_value()) {
+        culledVoxelPipeline_->removeResources();
+        culledVoxelPipeline_.reset();
     }
 
     pendingMeshDelta_.reset();

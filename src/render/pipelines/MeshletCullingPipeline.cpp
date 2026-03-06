@@ -8,6 +8,22 @@
 
 using namespace wgpu;
 
+MeshletCullingPipeline::MeshletCullingPipeline(RenderServices& r, Config config)
+    : AbstractRenderPipeline(r),
+      cullParamsBufferName_(prefixedName(config.namePrefix, "meshlet_cull_params_buffer")),
+      indirectArgsBufferName_(prefixedName(config.namePrefix, "meshlet_cull_indirect_args_buffer")),
+      indirectResetBufferName_(prefixedName(config.namePrefix, "meshlet_cull_indirect_reset_buffer")),
+      cullBglName_(prefixedName(config.namePrefix, "meshlet_cull_bgl")),
+      cullBgName_(prefixedName(config.namePrefix, "meshlet_cull_bg")),
+      cullPipelineName_(prefixedName(config.namePrefix, "meshlet_cull_pipeline")) {}
+
+std::string MeshletCullingPipeline::prefixedName(const std::string& prefix, const char* baseName) {
+    if (prefix.empty()) {
+        return std::string(baseName);
+    }
+    return prefix + "_" + baseName;
+}
+
 bool MeshletCullingPipeline::build() {
     return createResources() && createPipeline() && createBindGroup();
 }
@@ -50,7 +66,7 @@ bool MeshletCullingPipeline::createResources() {
         paramsDesc.size = 16u;
         paramsDesc.usage = BufferUsage::Uniform | BufferUsage::CopyDst;
         paramsDesc.mappedAtCreation = false;
-        if (!r_.buf.createBuffer(kCullParamsBufferName, paramsDesc)) {
+        if (!r_.buf.createBuffer(cullParamsBufferName_, paramsDesc)) {
             return false;
         }
     }
@@ -61,12 +77,12 @@ bool MeshletCullingPipeline::createResources() {
         indirectDesc.size = sizeof(uint32_t) * 4u;
         indirectDesc.usage = BufferUsage::Storage | BufferUsage::Indirect | BufferUsage::CopyDst;
         indirectDesc.mappedAtCreation = false;
-        if (!r_.buf.createBuffer(kIndirectArgsBufferName, indirectDesc)) {
+        if (!r_.buf.createBuffer(indirectArgsBufferName_, indirectDesc)) {
             return false;
         }
 
         const uint32_t safeDrawArgs[4] = {MESHLET_VERTEX_CAPACITY, 0u, 0u, 0u};
-        r_.buf.writeBuffer(kIndirectArgsBufferName, 0u, safeDrawArgs, sizeof(safeDrawArgs));
+        r_.buf.writeBuffer(indirectArgsBufferName_, 0u, safeDrawArgs, sizeof(safeDrawArgs));
     }
 
     {
@@ -75,13 +91,13 @@ bool MeshletCullingPipeline::createResources() {
         resetDesc.size = sizeof(uint32_t) * 4u;
         resetDesc.usage = BufferUsage::CopySrc | BufferUsage::CopyDst;
         resetDesc.mappedAtCreation = false;
-        if (!r_.buf.createBuffer(kIndirectResetBufferName, resetDesc)) {
+        if (!r_.buf.createBuffer(indirectResetBufferName_, resetDesc)) {
             return false;
         }
 
         const uint32_t drawArgsReset[4] = {MESHLET_VERTEX_CAPACITY, 0u, 0u, 0u};
         r_.buf.writeBuffer(
-            kIndirectResetBufferName,
+            indirectResetBufferName_,
             0u,
             drawArgsReset,
             sizeof(drawArgsReset)
@@ -92,10 +108,10 @@ bool MeshletCullingPipeline::createResources() {
 }
 
 void MeshletCullingPipeline::removeResources() {
-    r_.pip.deleteBindGroup(kCullBgName);
-    r_.buf.deleteBuffer(kCullParamsBufferName);
-    r_.buf.deleteBuffer(kIndirectArgsBufferName);
-    r_.buf.deleteBuffer(kIndirectResetBufferName);
+    r_.pip.deleteBindGroup(cullBgName_);
+    r_.buf.deleteBuffer(cullParamsBufferName_);
+    r_.buf.deleteBuffer(indirectArgsBufferName_);
+    r_.buf.deleteBuffer(indirectResetBufferName_);
 }
 
 bool MeshletCullingPipeline::createPipeline() {
@@ -131,7 +147,7 @@ bool MeshletCullingPipeline::createPipeline() {
     cullLayoutEntries[6].visibility = ShaderStage::Compute;
     cullLayoutEntries[6].buffer.type = BufferBindingType::ReadOnlyStorage;
 
-    BindGroupLayout cullBgl = r_.pip.createBindGroupLayout(kCullBglName, cullLayoutEntries);
+    BindGroupLayout cullBgl = r_.pip.createBindGroupLayout(cullBglName_, cullLayoutEntries);
     if (!cullBgl) {
         return false;
     }
@@ -141,7 +157,7 @@ bool MeshletCullingPipeline::createPipeline() {
     pipelineConfig.entryPoint = "cs_main";
     pipelineConfig.bindGroupLayouts.push_back(cullBgl);
 
-    return r_.pip.createComputePipeline(kCullPipelineName, pipelineConfig) != nullptr;
+    return r_.pip.createComputePipeline(cullPipelineName_, pipelineConfig) != nullptr;
 }
 
 bool MeshletCullingPipeline::createBindGroup() {
@@ -157,7 +173,7 @@ bool MeshletCullingPipeline::createBindGroupForMeshBuffers(const std::string& me
                                                            const std::string& visibleIndicesBufferName,
                                                            const std::string& activeRangeBufferName,
                                                            const char* occlusionHiZViewName) {
-    BindGroupLayout cullBgl = r_.pip.getBindGroupLayout(kCullBglName);
+    BindGroupLayout cullBgl = r_.pip.getBindGroupLayout(cullBglName_);
     if (!cullBgl) {
         return false;
     }
@@ -166,8 +182,8 @@ bool MeshletCullingPipeline::createBindGroupForMeshBuffers(const std::string& me
     Buffer meshletAabbBuffer = r_.buf.getBuffer(meshletAabbBufferName);
     Buffer visibleIndicesBuffer = r_.buf.getBuffer(visibleIndicesBufferName);
     Buffer activeRangeBuffer = r_.buf.getBuffer(activeRangeBufferName);
-    Buffer drawArgsBuffer = r_.buf.getBuffer(kIndirectArgsBufferName);
-    Buffer cullParamsBuffer = r_.buf.getBuffer(kCullParamsBufferName);
+    Buffer drawArgsBuffer = r_.buf.getBuffer(indirectArgsBufferName_);
+    Buffer cullParamsBuffer = r_.buf.getBuffer(cullParamsBufferName_);
     TextureView occlusionHiZView = r_.tex.getTextureView(
         (occlusionHiZViewName != nullptr) ? occlusionHiZViewName : kDefaultHiZViewName
     );
@@ -211,8 +227,8 @@ bool MeshletCullingPipeline::createBindGroupForMeshBuffers(const std::string& me
     entries[6].offset = 0;
     entries[6].size = activeRangeBuffer.getSize();
 
-    r_.pip.deleteBindGroup(kCullBgName);
-    return r_.pip.createBindGroup(kCullBgName, kCullBglName, entries) != nullptr;
+    r_.pip.deleteBindGroup(cullBgName_);
+    return r_.pip.createBindGroup(cullBgName_, cullBglName_, entries) != nullptr;
 }
 
 void MeshletCullingPipeline::updateCullParams(uint32_t meshletCount,
@@ -224,19 +240,19 @@ void MeshletCullingPipeline::updateCullParams(uint32_t meshletCount,
         activeRangeCount,
         0u
     };
-    r_.buf.writeBuffer(kCullParamsBufferName, 0u, params, sizeof(params));
+    r_.buf.writeBuffer(cullParamsBufferName_, 0u, params, sizeof(params));
 }
 
 void MeshletCullingPipeline::encode(CommandEncoder encoder,
                                     const MeshletBufferController& meshletBuffers) {
-    ComputePipeline cullPipeline = r_.pip.getComputePipeline(kCullPipelineName);
-    BindGroup cullBindGroup = r_.pip.getBindGroup(kCullBgName);
+    ComputePipeline cullPipeline = r_.pip.getComputePipeline(cullPipelineName_);
+    BindGroup cullBindGroup = r_.pip.getBindGroup(cullBgName_);
     if (!cullPipeline || !cullBindGroup) {
         return;
     }
 
-    Buffer resetBuffer = r_.buf.getBuffer(kIndirectResetBufferName);
-    Buffer indirectArgsBuffer = r_.buf.getBuffer(kIndirectArgsBufferName);
+    Buffer resetBuffer = r_.buf.getBuffer(indirectResetBufferName_);
+    Buffer indirectArgsBuffer = r_.buf.getBuffer(indirectArgsBufferName_);
     if (!resetBuffer || !indirectArgsBuffer) {
         return;
     }
@@ -263,4 +279,8 @@ void MeshletCullingPipeline::encode(CommandEncoder encoder,
     pass.dispatchWorkgroups(workgroupCount, 1u, 1u);
     pass.end();
     pass.release();
+}
+
+const std::string& MeshletCullingPipeline::indirectArgsBufferName() const noexcept {
+    return indirectArgsBufferName_;
 }

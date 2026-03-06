@@ -39,12 +39,19 @@ private:
     std::unique_ptr<TextureManager> textureManager;
     std::unique_ptr<MaterialManager> materialManager;
 
-    MeshletBufferController meshletBuffers_;
+    MeshletBufferController culledMeshletBuffers_{
+        MeshletBufferController::Config{"", MeshletGeometryVariant::Culled}
+    };
+    MeshletBufferController doubleSidedMeshletBuffers_{
+        MeshletBufferController::Config{"double_sided", MeshletGeometryVariant::DoubleSided}
+    };
 
     std::optional<RenderServices> services_;
-    std::optional<VoxelPipeline> voxelPipeline_;
+    std::optional<VoxelPipeline> culledVoxelPipeline_;
+    std::optional<VoxelPipeline> doubleSidedVoxelPipeline_;
     std::optional<MeshletOcclusionPipeline> meshletOcclusionPipeline_;
-    std::optional<MeshletCullingPipeline> meshletCullingPipeline_;
+    std::optional<MeshletCullingPipeline> culledMeshletCullingPipeline_;
+    std::optional<MeshletCullingPipeline> doubleSidedMeshletCullingPipeline_;
     std::optional<BoundsDebugPipeline> boundsDebugPipeline_;
 
     DebugBoundsManager debugBoundsManager_;

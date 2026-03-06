@@ -4,7 +4,14 @@
 @group(0) @binding(0) var<uniform> frameUniforms: FrameUniforms;
 @group(0) @binding(1) var<storage, read> meshletDataWords: array<u32>;
 @group(0) @binding(2) var<storage, read> meshletMetadata: array<MeshletMetadata>;
-@group(0) @binding(3) var<storage, read> materialToTexture: array<u32, 65536>;
+struct MaterialMetadata {
+    textureLayer: u32,
+    flags: u32,
+    randomOffsetAmount: f32,
+    pad0: f32,
+};
+
+@group(0) @binding(3) var<storage, read> materialMetadata: array<MaterialMetadata, 65536>;
 @group(0) @binding(4) var<storage, read> visibleMeshletIndices: array<u32>;
 @group(0) @binding(5) var materialTextures: texture_2d_array<f32>;
 @group(0) @binding(6) var<storage, read> modelQuads: array<ModelQuad>;
@@ -22,6 +29,8 @@ struct VertexOutput {
     @location(2) @interpolate(flat) materialId: u32,
     @location(3) debugColor: vec3f,
     @location(4) ao: f32,
+    @location(5) @interpolate(flat) useVoxelAo: u32,
+    @location(6) @interpolate(flat) blockCoord: vec3i,
 };
 
 fn hash_u32(x: u32) -> u32 {
@@ -56,6 +65,53 @@ fn face_uv(face: u32, cornerOffset: vec3f) -> vec2f {
     return vec2f(cornerOffset.x, cornerOffset.y);
 }
 
+fn hash_block_coord(blockCoord: vec3i) -> u32 {
+    let x = bitcast<u32>(blockCoord.x);
+    let y = bitcast<u32>(blockCoord.y);
+    let z = bitcast<u32>(blockCoord.z);
+    let seed = (x * 73856093u) ^ (y * 19349663u) ^ (z * 83492791u);
+    return hash_u32(seed);
+}
+
+fn rotate_uv_local(localUv: vec2f, rotation: u32) -> vec2f {
+    let rot = rotation & 0x3u;
+    if (rot == 1u) {
+        return vec2f(localUv.y, 1.0 - localUv.x);
+    }
+    if (rot == 2u) {
+        return vec2f(1.0 - localUv.x, 1.0 - localUv.y);
+    }
+    if (rot == 3u) {
+        return vec2f(1.0 - localUv.y, localUv.x);
+    }
+    return localUv;
+}
+
+fn hash_to_signed_unit(seed: u32) -> f32 {
+    let h = hash_u32(seed);
+    let normalized = f32(h & 0xffffu) / 65535.0;
+    return (normalized * 2.0) - 1.0;
+}
+
+fn random_offset_for_block(blockCoord: vec3i, axisMask: u32, amount: f32) -> vec3f {
+    if (axisMask == 0u || amount <= 0.0) {
+        return vec3f(0.0, 0.0, 0.0);
+    }
+
+    let baseHash = hash_block_coord(blockCoord);
+    var offset = vec3f(0.0, 0.0, 0.0);
+    if ((axisMask & 0x1u) != 0u) {
+        offset.x = hash_to_signed_unit(baseHash ^ 0x68bc21ebu) * amount;
+    }
+    if ((axisMask & 0x2u) != 0u) {
+        offset.y = hash_to_signed_unit(baseHash ^ 0x02e5be93u) * amount;
+    }
+    if ((axisMask & 0x4u) != 0u) {
+        offset.z = hash_to_signed_unit(baseHash ^ 0x967a889bu) * amount;
+    }
+    return offset;
+}
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -72,12 +128,22 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         out.materialId = 0u;
         out.debugColor = vec3f(0.0, 0.0, 0.0);
         out.ao = 1.0;
+        out.useVoxelAo = 0u;
+        out.blockCoord = vec3i(0, 0, 0);
         return out;
     }
 
     let sample = sample_meshlet_quad_vertex(meshlet, quadIdx, triangleVertex);
 
-    let worldSpacePosition = local_to_world_position(sample.worldPosition);
+    let decodedMaterialId = decode_material_id(sample.quadData);
+    let safeMaterialId = min(decodedMaterialId, 65535u);
+    let material = materialMetadata[safeMaterialId];
+    let flags = material.flags;
+    let directionMask = (flags >> 1u) & 0x7u;
+    let offsetAmount = clamp(material.randomOffsetAmount, 0.0, 1.0);
+    let offset = random_offset_for_block(sample.blockCoord, directionMask, offsetAmount);
+
+    let worldSpacePosition = local_to_world_position(sample.worldPosition + offset);
     out.position = world_to_clip_position(worldSpacePosition);
 
     out.worldPosition = worldSpacePosition.xyz;
@@ -86,12 +152,15 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     } else {
         out.texCoord = sample.texCoord;
     }
-    out.materialId = decode_material_id(sample.quadData);
+    out.materialId = decodedMaterialId;
     if (sample.useVoxelAo) {
         out.ao = f32(decode_vertex_ao(sample.quadAoData, sample.corner)) / 3.0;
+        out.useVoxelAo = 1u;
     } else {
         out.ao = 1.0;
+        out.useVoxelAo = 0u;
     }
+    out.blockCoord = sample.blockCoord;
 
     let meshletColorSeed = (bitcast<u32>(meshlet.originX) * 73856093u) ^
         (bitcast<u32>(meshlet.originY) * 19349663u) ^
@@ -120,8 +189,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         baseColor = in.debugColor;
     } else {
         let safeMaterialId = min(in.materialId, 65535u);
-        let textureLayer = materialToTexture[safeMaterialId];
-        baseColor = textureSample(materialTextures, materialSampler, in.texCoord, i32(textureLayer)).rgb;
+        let material = materialMetadata[safeMaterialId];
+        let flags = material.flags;
+        let textureLayer = material.textureLayer;
+        var sampleUv = in.texCoord;
+        if ((flags & 0x1u) != 0u && in.useVoxelAo != 0u) {
+            let rotation = hash_block_coord(in.blockCoord) & 0x3u;
+            let tileUv = floor(sampleUv);
+            let localUv = fract(sampleUv);
+            sampleUv = tileUv + rotate_uv_local(localUv, rotation);
+        }
+        let albedo = textureSample(materialTextures, materialSampler, sampleUv, i32(textureLayer));
+        if (albedo.a == 0.0) {
+            discard;
+        }
+        baseColor = albedo.rgb;
     }
 
     let linearColor = baseColor * shade;

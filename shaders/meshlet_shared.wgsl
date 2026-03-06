@@ -18,6 +18,7 @@ struct ModelQuad {
 
 struct MeshletQuadVertexSample {
     worldPosition: vec3f,
+    blockCoord: vec3i,
     texCoord: vec2f,
     cornerOffset: vec3f,
     quadData: u32,
@@ -150,7 +151,10 @@ fn sample_meshlet_quad_vertex(
     let corner = corner_from_triangle_vertex(triangleVertex, decode_flip(quadAoData));
     let voxelScale = f32(max(meshlet.voxelScale, 1u));
     let meshletOrigin = vec3f(f32(meshlet.originX), f32(meshlet.originY), f32(meshlet.originZ));
+    let voxelScaleI = i32(max(meshlet.voxelScale, 1u));
+    let meshletBlockOrigin = vec3i(meshlet.originX, meshlet.originY, meshlet.originZ);
     let blockBase = vec3f(f32(blockLocal.x), f32(blockLocal.y), f32(blockLocal.z));
+    let blockCoord = meshletBlockOrigin + (vec3i(blockLocal) * voxelScaleI);
     let useVoxelAo = decode_use_voxel_ao(quadAoData);
     var cornerOffset = vec3f(0.0, 0.0, 0.0);
     var texCoord = vec2f(0.0, 0.0);
@@ -168,6 +172,7 @@ fn sample_meshlet_quad_vertex(
 
     var sample: MeshletQuadVertexSample;
     sample.worldPosition = worldPosition;
+    sample.blockCoord = blockCoord;
     sample.texCoord = texCoord;
     sample.cornerOffset = cornerOffset;
     sample.quadData = quadData;

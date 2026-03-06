@@ -16,6 +16,7 @@
 #include "solum_engine/render/MeshletTypes.h"
 #include "solum_engine/resources/Coords.h"
 #include "solum_engine/voxel/BlockModelLibrary.h"
+#include "solum_engine/voxel/ChunkMesher.h"
 #include "solum_engine/voxel/MeshTileTypes.h"
 #include "solum_engine/voxel/StreamingUpload.h"
 
@@ -55,7 +56,8 @@ public:
 
 private:
     struct MeshTileLodState {
-        std::vector<Meshlet> meshlets;
+        std::vector<Meshlet> culledMeshlets;
+        std::vector<Meshlet> doubleSidedMeshlets;
         bool resident = false;
         bool uploadQueued = false;
         uint64_t revision = 0u;
@@ -69,7 +71,7 @@ private:
 
     struct MeshGenerationResult {
         TileLodCoord coord{};
-        std::vector<Meshlet> meshlets;
+        ChunkMeshOutput meshOutput;
         bool meshed = false;
     };
 
@@ -109,8 +111,8 @@ private:
     int8_t chooseRenderableLodForTileLocked(const MeshTileState& state) const;
     bool refreshSelectedLodsLocked();
 
-    std::vector<Meshlet> meshTileLod(const TileLodCoord& coord) const;
-    std::vector<Meshlet> meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const;
+    ChunkMeshOutput meshTileLod(const TileLodCoord& coord) const;
+    ChunkMeshOutput meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const;
 
     int32_t cellCountPerAxisForLod(uint8_t lodLevel) const;
     int32_t maxConfiguredRadius() const;

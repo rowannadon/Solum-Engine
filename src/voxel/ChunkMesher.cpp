@@ -31,6 +31,13 @@ namespace {
         return model;
     }
 
+    bool isMaterialDoubleSided(const BlockModelLibrary* blockModelLibrary, uint16_t materialId) {
+        if (blockModelLibrary == nullptr) {
+            return false;
+        }
+        return blockModelLibrary->isMaterialDoubleSided(materialId);
+    }
+
     const BlockModelQuadRef* modelQuadRef(const BlockModelLibrary* blockModelLibrary, uint32_t refIndex) {
         if (blockModelLibrary == nullptr || refIndex >= blockModelLibrary->quadRefs.size()) {
             return nullptr;
@@ -149,9 +156,9 @@ namespace {
     }
 }
 
-std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
-                                       const ChunkCoord& coord,
-                                       const std::vector<const Chunk*>& neighbors) const {
+ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
+                                  const ChunkCoord& coord,
+                                  const std::vector<const Chunk*>& neighbors) const {
     // We use a flat array of uint32_t to store the unpacked IDs for cache-friendly access
     std::array<BlockMaterial, kPaddedBlockCount> paddedBlockData;
     UnpackedBlockMaterial air{0, 0, Direction::PlusX, 0};
@@ -205,7 +212,8 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
 
     // 3. Generate Meshlets
     BlockCoord chunkOrigin = chunk_to_block_origin(coord);
-    std::array<std::vector<Meshlet>, 6> meshletsByDirection;
+    std::array<std::vector<Meshlet>, 6> culledMeshletsByDirection;
+    std::array<std::vector<Meshlet>, 6> doubleSidedMeshletsByDirection;
     const BlockModelLibrary* blockModelLibrary = blockModelLibrary_.get();
 
     auto appendQuad = [&](uint32_t dir,
@@ -216,7 +224,10 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
                           uint16_t packedAoData,
                           const BlockModelQuadRef& quadRef,
                           bool useVoxelAo) {
-        auto& dirMeshlets = meshletsByDirection[dir];
+        const bool useDoubleSided = isMaterialDoubleSided(blockModelLibrary, materialId);
+        auto& dirMeshlets = useDoubleSided
+            ? doubleSidedMeshletsByDirection[dir]
+            : culledMeshletsByDirection[dir];
         if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
             Meshlet meshlet{};
             meshlet.origin = chunkOrigin.v;
@@ -345,14 +356,17 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
         }
     }
 
-    return flattenMeshlets(meshletsByDirection);
+    ChunkMeshOutput output{};
+    output.culledMeshlets = flattenMeshlets(culledMeshletsByDirection);
+    output.doubleSidedMeshlets = flattenMeshlets(doubleSidedMeshletsByDirection);
+    return output;
 }
 
-std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
-                                       const BlockCoord& sectionOrigin,
-                                       const glm::ivec3& sectionExtent,
-                                       const glm::ivec3& meshletOrigin,
-                                       uint32_t voxelScale) const {
+ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
+                                  const BlockCoord& sectionOrigin,
+                                  const glm::ivec3& sectionExtent,
+                                  const glm::ivec3& meshletOrigin,
+                                  uint32_t voxelScale) const {
     if (sectionExtent.x <= 0 || sectionExtent.y <= 0 || sectionExtent.z <= 0) {
         return {};
     }
@@ -361,7 +375,8 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
         return {};
     }
 
-    std::array<std::vector<Meshlet>, 6> meshletsByDirection;
+    std::array<std::vector<Meshlet>, 6> culledMeshletsByDirection;
+    std::array<std::vector<Meshlet>, 6> doubleSidedMeshletsByDirection;
     const BlockModelLibrary* blockModelLibrary = blockModelLibrary_.get();
 
     auto appendQuad = [&](uint32_t dir,
@@ -372,7 +387,10 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                           uint16_t packedAoData,
                           const BlockModelQuadRef& quadRef,
                           bool useVoxelAo) {
-        auto& dirMeshlets = meshletsByDirection[dir];
+        const bool useDoubleSided = isMaterialDoubleSided(blockModelLibrary, materialId);
+        auto& dirMeshlets = useDoubleSided
+            ? doubleSidedMeshletsByDirection[dir]
+            : culledMeshletsByDirection[dir];
         if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
             Meshlet meshlet{};
             meshlet.origin = meshletOrigin;
@@ -505,5 +523,8 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
         }
     }
 
-    return flattenMeshlets(meshletsByDirection);
+    ChunkMeshOutput output{};
+    output.culledMeshlets = flattenMeshlets(culledMeshletsByDirection);
+    output.doubleSidedMeshlets = flattenMeshlets(doubleSidedMeshletsByDirection);
+    return output;
 }

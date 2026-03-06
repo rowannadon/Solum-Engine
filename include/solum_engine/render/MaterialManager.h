@@ -20,6 +20,10 @@ struct MaterialDefinition {
     uint32_t textureIndex = 0;
     float roughness = 1.0f;
     float metallic = 0.0f;
+    bool doubleSided = false;
+    bool randomRotation = false;
+    uint8_t randomOffsetDirectionsMask = 0u;
+    float randomOffsetAmount = 0.0f;
 };
 
 class MaterialManager {
@@ -27,7 +31,15 @@ public:
     static constexpr uint32_t kMaxMaterialId = 65535u;
     static constexpr uint32_t kLookupEntryCount = kMaxMaterialId + 1u;
 
-    static constexpr const char* kMaterialLookupBufferName = "material_lookup_buffer";
+    struct MaterialMetadataGPU {
+        uint32_t textureIndex = 0u;
+        uint32_t flags = 0u;
+        float randomOffsetAmount = 0.0f;
+        float pad0 = 0.0f;
+    };
+    static_assert(sizeof(MaterialMetadataGPU) == 16, "Material metadata GPU layout must stay tightly packed.");
+
+    static constexpr const char* kMaterialMetadataBufferName = "material_metadata_buffer";
     static constexpr const char* kMaterialTextureArrayName = "material_texture_array";
     static constexpr const char* kMaterialTextureArrayViewName = "material_texture_array_view";
     static constexpr const char* kMaterialSamplerName = "material_sampler";
@@ -44,6 +56,10 @@ private:
         std::string name;
         std::string texture;
         std::string model;
+        bool doubleSided = false;
+        bool randomRotation = false;
+        uint8_t randomOffsetDirectionsMask = 0u;
+        float randomOffsetAmount = 0.0f;
     };
 
     bool buildDefaultMaterials(BufferManager& bufferManager, TextureManager& textureManager);
@@ -62,7 +78,7 @@ private:
                                        const std::vector<uint8_t>& pixels);
 
     std::unordered_map<uint16_t, MaterialDefinition> materials_;
-    std::vector<uint32_t> materialLookup_;
+    std::vector<MaterialMetadataGPU> materialMetadata_;
     ModelManager modelManager_{};
     std::shared_ptr<BlockModelLibrary> blockModelLibrary_{};
     bool initialized_ = false;

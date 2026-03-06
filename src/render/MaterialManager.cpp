@@ -1,6 +1,7 @@
 #include "solum_engine/render/MaterialManager.h"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -22,12 +23,44 @@ struct LoadedMaterialTexture {
     std::string name;
     std::string textureRelativePath;
     std::string modelRelativePath;
+    bool doubleSided = false;
+    bool randomRotation = false;
+    uint8_t randomOffsetDirectionsMask = 0u;
+    float randomOffsetAmount = 0.0f;
     std::vector<uint8_t> pixels;
     uint32_t width = 0u;
     uint32_t height = 0u;
     uint16_t materialId = 0u;
     uint32_t textureLayer = 0u;
 };
+
+constexpr uint32_t kRandomRotationFlagBit = 1u << 0u;
+constexpr uint32_t kRandomOffsetXFlagBit = 1u << 1u;
+constexpr uint32_t kRandomOffsetYFlagBit = 1u << 2u;
+constexpr uint32_t kRandomOffsetZFlagBit = 1u << 3u;
+
+bool parseDirectionMask(const std::string& value, uint8_t& outMask) {
+    outMask = 0u;
+    for (const char c : value) {
+        if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+            continue;
+        }
+        switch (static_cast<char>(std::toupper(static_cast<unsigned char>(c)))) {
+            case 'X':
+                outMask |= 0x1u;
+                break;
+            case 'Y':
+                outMask |= 0x2u;
+                break;
+            case 'Z':
+                outMask |= 0x4u;
+                break;
+            default:
+                return false;
+        }
+    }
+    return true;
+}
 }  // namespace
 
 bool MaterialManager::initialize(BufferManager& bufferManager, TextureManager& textureManager) {
@@ -35,7 +68,7 @@ bool MaterialManager::initialize(BufferManager& bufferManager, TextureManager& t
         return true;
     }
 
-    materialLookup_.assign(kLookupEntryCount, 0u);
+    materialMetadata_.assign(kLookupEntryCount, MaterialMetadataGPU{});
     materials_.clear();
     blockModelLibrary_.reset();
 
@@ -43,7 +76,7 @@ bool MaterialManager::initialize(BufferManager& bufferManager, TextureManager& t
         modelManager_.terminate(bufferManager);
         blockModelLibrary_.reset();
         materials_.clear();
-        materialLookup_.assign(kLookupEntryCount, 0u);
+        materialMetadata_.assign(kLookupEntryCount, MaterialMetadataGPU{});
         return false;
     }
 
@@ -57,14 +90,14 @@ void MaterialManager::terminate(BufferManager& bufferManager, TextureManager& te
     }
 
     modelManager_.terminate(bufferManager);
-    bufferManager.deleteBuffer(kMaterialLookupBufferName);
+    bufferManager.deleteBuffer(kMaterialMetadataBufferName);
     textureManager.removeTextureView(kMaterialTextureArrayViewName);
     textureManager.removeTexture(kMaterialTextureArrayName);
     textureManager.removeSampler(kMaterialSamplerName);
 
     blockModelLibrary_.reset();
     materials_.clear();
-    materialLookup_.clear();
+    materialMetadata_.clear();
     initialized_ = false;
 }
 
@@ -77,10 +110,10 @@ std::optional<MaterialDefinition> MaterialManager::getMaterial(uint16_t material
 }
 
 uint32_t MaterialManager::textureIndexForMaterial(uint16_t materialId) const {
-    if (materialId >= materialLookup_.size()) {
+    if (materialId >= materialMetadata_.size()) {
         return 0u;
     }
-    return materialLookup_[materialId];
+    return materialMetadata_[materialId].textureIndex;
 }
 
 std::shared_ptr<const BlockModelLibrary> MaterialManager::blockModelLibrary() const {
@@ -116,6 +149,10 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         loaded.name = name;
         loaded.textureRelativePath = textureRelativePath;
         loaded.modelRelativePath = configMaterials[i].model;
+        loaded.doubleSided = configMaterials[i].doubleSided;
+        loaded.randomRotation = configMaterials[i].randomRotation;
+        loaded.randomOffsetDirectionsMask = configMaterials[i].randomOffsetDirectionsMask;
+        loaded.randomOffsetAmount = configMaterials[i].randomOffsetAmount;
         loaded.materialId = static_cast<uint16_t>(kFirstMaterialId + static_cast<uint32_t>(i));
         loaded.textureLayer = static_cast<uint32_t>(i);
 
@@ -156,6 +193,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
 
     auto blockModels = std::make_shared<BlockModelLibrary>();
     blockModels->materialToModel.fill(0u);
+    blockModels->materialDoubleSided.fill(0u);
 
     std::unordered_map<std::string, uint16_t> modelIndexByName;
     auto appendModelToLibrary = [&](const std::string& modelName, uint16_t& outIndex) -> bool {
@@ -215,6 +253,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
     }
     blockModels->fallbackModelIndex = fallbackModelIndex;
     blockModels->materialToModel[0] = fallbackModelIndex;
+    blockModels->materialDoubleSided[0] = 0u;
 
     for (const LoadedMaterialTexture& material : loadedMaterials) {
         const std::string& modelName = material.modelRelativePath.empty()
@@ -225,6 +264,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
             return false;
         }
         blockModels->materialToModel[material.materialId] = modelIndex;
+        blockModels->materialDoubleSided[material.materialId] = material.doubleSided ? 1u : 0u;
     }
     blockModelLibrary_ = std::move(blockModels);
 
@@ -298,7 +338,23 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
     }
 
     for (const LoadedMaterialTexture& material : loadedMaterials) {
-        materialLookup_[material.materialId] = material.textureLayer;
+        uint32_t flags = 0u;
+        if (material.randomRotation) {
+            flags |= kRandomRotationFlagBit;
+        }
+        if ((material.randomOffsetDirectionsMask & 0x1u) != 0u) {
+            flags |= kRandomOffsetXFlagBit;
+        }
+        if ((material.randomOffsetDirectionsMask & 0x2u) != 0u) {
+            flags |= kRandomOffsetYFlagBit;
+        }
+        if ((material.randomOffsetDirectionsMask & 0x4u) != 0u) {
+            flags |= kRandomOffsetZFlagBit;
+        }
+        materialMetadata_[material.materialId].textureIndex = material.textureLayer;
+        materialMetadata_[material.materialId].flags = flags;
+        materialMetadata_[material.materialId].randomOffsetAmount = material.randomOffsetAmount;
+        materialMetadata_[material.materialId].pad0 = 0.0f;
         materials_.emplace(
             material.materialId,
             MaterialDefinition{
@@ -306,27 +362,31 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
                 material.name,
                 material.textureLayer,
                 1.0f,
-                0.0f
+                0.0f,
+                material.doubleSided,
+                material.randomRotation,
+                material.randomOffsetDirectionsMask,
+                material.randomOffsetAmount
             }
         );
     }
 
-    BufferDescriptor lookupBufferDesc = Default;
-    lookupBufferDesc.label = StringView("material lookup buffer");
-    lookupBufferDesc.size = static_cast<uint64_t>(materialLookup_.size()) * sizeof(uint32_t);
-    lookupBufferDesc.usage = BufferUsage::Storage | BufferUsage::CopyDst;
-    lookupBufferDesc.mappedAtCreation = false;
+    BufferDescriptor metadataBufferDesc = Default;
+    metadataBufferDesc.label = StringView("material metadata buffer");
+    metadataBufferDesc.size = static_cast<uint64_t>(materialMetadata_.size()) * sizeof(MaterialMetadataGPU);
+    metadataBufferDesc.usage = BufferUsage::Storage | BufferUsage::CopyDst;
+    metadataBufferDesc.mappedAtCreation = false;
 
-    Buffer lookupBuffer = bufferManager.createBuffer(kMaterialLookupBufferName, lookupBufferDesc);
-    if (!lookupBuffer) {
+    Buffer metadataBuffer = bufferManager.createBuffer(kMaterialMetadataBufferName, metadataBufferDesc);
+    if (!metadataBuffer) {
         return false;
     }
 
     bufferManager.writeBuffer(
-        kMaterialLookupBufferName,
+        kMaterialMetadataBufferName,
         0,
-        materialLookup_.data(),
-        materialLookup_.size() * sizeof(uint32_t)
+        materialMetadata_.data(),
+        materialMetadata_.size() * sizeof(MaterialMetadataGPU)
     );
 
     return true;
@@ -384,8 +444,47 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
             std::cerr << "MaterialManager: materials[" << i << "] field 'model' must be a string when present." << std::endl;
             return false;
         }
+        if (entry.contains("doubleSided") && !entry["doubleSided"].is_boolean()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'doubleSided' must be a boolean when present." << std::endl;
+            return false;
+        }
+        if (entry.contains("randomRotation") && !entry["randomRotation"].is_boolean()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'randomRotation' must be a boolean when present." << std::endl;
+            return false;
+        }
+        if (entry.contains("randomOffsetDirections") && !entry["randomOffsetDirections"].is_string()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'randomOffsetDirections' must be a string when present." << std::endl;
+            return false;
+        }
+        if (entry.contains("randomOffsetAmount") && !entry["randomOffsetAmount"].is_number()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'randomOffsetAmount' must be a number when present." << std::endl;
+            return false;
+        }
         if (entry.contains("model")) {
             material.model = entry["model"].get<std::string>();
+        }
+        if (entry.contains("doubleSided")) {
+            material.doubleSided = entry["doubleSided"].get<bool>();
+        }
+        if (entry.contains("randomRotation")) {
+            material.randomRotation = entry["randomRotation"].get<bool>();
+        }
+        if (entry.contains("randomOffsetDirections")) {
+            const std::string directions = entry["randomOffsetDirections"].get<std::string>();
+            if (!parseDirectionMask(directions, material.randomOffsetDirectionsMask)) {
+                std::cerr << "MaterialManager: materials[" << i
+                          << "] field 'randomOffsetDirections' contains invalid characters. "
+                          << "Use only combinations of X, Y, and Z." << std::endl;
+                return false;
+            }
+        }
+        if (entry.contains("randomOffsetAmount")) {
+            material.randomOffsetAmount = entry["randomOffsetAmount"].get<float>();
+            if (material.randomOffsetAmount < 0.0f || material.randomOffsetAmount > 1.0f) {
+                std::cerr << "MaterialManager: materials[" << i
+                          << "] field 'randomOffsetAmount' must be within [0.0, 1.0]." << std::endl;
+                return false;
+            }
         }
         outMaterials.push_back(std::move(material));
     }

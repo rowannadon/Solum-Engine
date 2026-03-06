@@ -204,7 +204,7 @@ const BlockModelQuadRef* selectModelQuadRef(const BlockModelLibrary* blockModelL
     return nullptr;
 }
 
-void appendSkirtQuad(std::vector<Meshlet>& skirtMeshlets,
+void appendSkirtQuad(std::vector<Meshlet>& targetMeshlets,
                      uint32_t faceDirection,
                      const glm::ivec3& origin,
                      uint32_t voxelScale,
@@ -229,88 +229,105 @@ void appendSkirtQuad(std::vector<Meshlet>& skirtMeshlets,
     }
     skirt.hasCustomBounds = true;
     skirt.quadCount = 1u;
-    skirtMeshlets.push_back(skirt);
+    targetMeshlets.push_back(skirt);
 }
 
-void appendAlwaysOnTileSkirts(std::vector<Meshlet>& meshlets,
+void appendAlwaysOnTileSkirts(ChunkMeshOutput& meshOutput,
                               const MeshTileCoord& tile,
                               int32_t meshTileSizeChunks,
                               uint8_t lodLevel,
                               const BlockModelLibrary* blockModelLibrary) {
-    if (lodLevel == 0u || meshlets.empty()) {
+    if (lodLevel == 0u ||
+        (meshOutput.culledMeshlets.empty() && meshOutput.doubleSidedMeshlets.empty())) {
         return;
     }
 
-    std::vector<Meshlet> skirtMeshlets;
+    std::vector<Meshlet> culledSkirtMeshlets;
+    std::vector<Meshlet> doubleSidedSkirtMeshlets;
     const int32_t tileMinX = tile.x * meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMinY = tile.y * meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMaxX = tileMinX + meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMaxY = tileMinY + meshTileSizeChunks * cfg::CHUNK_SIZE;
 
-    for (const Meshlet& meshlet : meshlets) {
-        if (meshlet.faceDirection != Direction::PlusZ || meshlet.quadCount == 0u) {
-            continue;
+    auto processMeshlets = [&](const std::vector<Meshlet>& meshlets) {
+        for (const Meshlet& meshlet : meshlets) {
+            if (meshlet.faceDirection != Direction::PlusZ || meshlet.quadCount == 0u) {
+                continue;
+            }
+
+            const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
+            for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
+                const uint16_t packed = meshlet.packedQuadLocalOffsets[quadIndex];
+                const uint16_t materialId = meshlet.quadMaterialIds[quadIndex];
+                const uint32_t localX = static_cast<uint32_t>(packed & 0x1Fu);
+                const uint32_t localY = static_cast<uint32_t>((packed >> 5u) & 0x1Fu);
+                const uint32_t localZ = static_cast<uint32_t>((packed >> 10u) & 0x1Fu);
+
+                const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(localX * voxelScale);
+                const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(localY * voxelScale);
+                const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(localZ * voxelScale);
+                const bool materialDoubleSided = (blockModelLibrary != nullptr) &&
+                    blockModelLibrary->isMaterialDoubleSided(materialId);
+                std::vector<Meshlet>& targetMeshlets = materialDoubleSided
+                    ? doubleSidedSkirtMeshlets
+                    : culledSkirtMeshlets;
+
+                if (worldX == tileMinX) {
+                    appendSkirtQuad(
+                        targetMeshlets,
+                        Direction::MinusX,
+                        glm::ivec3(worldX, worldY, worldZ),
+                        voxelScale,
+                        materialId,
+                        blockModelLibrary
+                    );
+                }
+                if ((worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
+                    appendSkirtQuad(
+                        targetMeshlets,
+                        Direction::PlusX,
+                        glm::ivec3(worldX, worldY, worldZ),
+                        voxelScale,
+                        materialId,
+                        blockModelLibrary
+                    );
+                }
+                if (worldY == tileMinY) {
+                    appendSkirtQuad(
+                        targetMeshlets,
+                        Direction::MinusY,
+                        glm::ivec3(worldX, worldY, worldZ),
+                        voxelScale,
+                        materialId,
+                        blockModelLibrary
+                    );
+                }
+                if ((worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
+                    appendSkirtQuad(
+                        targetMeshlets,
+                        Direction::PlusY,
+                        glm::ivec3(worldX, worldY, worldZ),
+                        voxelScale,
+                        materialId,
+                        blockModelLibrary
+                    );
+                }
+            }
         }
+    };
 
-        const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
-        for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
-            const uint16_t packed = meshlet.packedQuadLocalOffsets[quadIndex];
-            const uint16_t materialId = meshlet.quadMaterialIds[quadIndex];
-            const uint32_t localX = static_cast<uint32_t>(packed & 0x1Fu);
-            const uint32_t localY = static_cast<uint32_t>((packed >> 5u) & 0x1Fu);
-            const uint32_t localZ = static_cast<uint32_t>((packed >> 10u) & 0x1Fu);
+    processMeshlets(meshOutput.culledMeshlets);
+    processMeshlets(meshOutput.doubleSidedMeshlets);
 
-            const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(localX * voxelScale);
-            const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(localY * voxelScale);
-            const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(localZ * voxelScale);
-
-            if (worldX == tileMinX) {
-                appendSkirtQuad(
-                    skirtMeshlets,
-                    Direction::MinusX,
-                    glm::ivec3(worldX, worldY, worldZ),
-                    voxelScale,
-                    materialId,
-                    blockModelLibrary
-                );
-            }
-            if ((worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
-                appendSkirtQuad(
-                    skirtMeshlets,
-                    Direction::PlusX,
-                    glm::ivec3(worldX, worldY, worldZ),
-                    voxelScale,
-                    materialId,
-                    blockModelLibrary
-                );
-            }
-            if (worldY == tileMinY) {
-                appendSkirtQuad(
-                    skirtMeshlets,
-                    Direction::MinusY,
-                    glm::ivec3(worldX, worldY, worldZ),
-                    voxelScale,
-                    materialId,
-                    blockModelLibrary
-                );
-            }
-            if ((worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
-                appendSkirtQuad(
-                    skirtMeshlets,
-                    Direction::PlusY,
-                    glm::ivec3(worldX, worldY, worldZ),
-                    voxelScale,
-                    materialId,
-                    blockModelLibrary
-                );
-            }
-        }
-    }
-
-    meshlets.insert(
-        meshlets.end(),
-        std::make_move_iterator(skirtMeshlets.begin()),
-        std::make_move_iterator(skirtMeshlets.end())
+    meshOutput.culledMeshlets.insert(
+        meshOutput.culledMeshlets.end(),
+        std::make_move_iterator(culledSkirtMeshlets.begin()),
+        std::make_move_iterator(culledSkirtMeshlets.end())
+    );
+    meshOutput.doubleSidedMeshlets.insert(
+        meshOutput.doubleSidedMeshlets.end(),
+        std::make_move_iterator(doubleSidedSkirtMeshlets.begin()),
+        std::make_move_iterator(doubleSidedSkirtMeshlets.end())
     );
 }
 }  // namespace
@@ -412,7 +429,8 @@ std::vector<MeshTileLodUpload> MeshManager::consumePendingTileLodUploads(std::si
 
         MeshTileLodUpload upload{};
         upload.key = key;
-        upload.meshlets = lodIt->second.meshlets;
+        upload.culledMeshlets = lodIt->second.culledMeshlets;
+        upload.doubleSidedMeshlets = lodIt->second.doubleSidedMeshlets;
         upload.revision = lodIt->second.revision;
         lodIt->second.uploadQueued = false;
         uploads.push_back(std::move(upload));
@@ -665,13 +683,15 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
             const auto desiredLodIt = tileState.lodStates.find(static_cast<uint8_t>(desired));
             if (desiredLodIt != tileState.lodStates.end() &&
                 desiredLodIt->second.resident &&
-                desiredLodIt->second.meshlets.empty()) {
+                desiredLodIt->second.culledMeshlets.empty() &&
+                desiredLodIt->second.doubleSidedMeshlets.empty()) {
                 bool hasNonEmptyAlternateLod = false;
                 for (const auto& [lodLevel, lodState] : tileState.lodStates) {
                     if (lodLevel == static_cast<uint8_t>(desired)) {
                         continue;
                     }
-                    if (lodState.resident && !lodState.meshlets.empty()) {
+                    if (lodState.resident &&
+                        (!lodState.culledMeshlets.empty() || !lodState.doubleSidedMeshlets.empty())) {
                         hasNonEmptyAlternateLod = true;
                         break;
                     }
@@ -1055,7 +1075,8 @@ void MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                     }
 
                     MeshTileLodState& lodState = tileIt->second.lodStates[coord.lodLevel];
-                    lodState.meshlets = std::move(meshResult.meshlets);
+                    lodState.culledMeshlets = std::move(meshResult.meshOutput.culledMeshlets);
+                    lodState.doubleSidedMeshlets = std::move(meshResult.meshOutput.doubleSidedMeshlets);
                     lodState.resident = true;
                     lodState.revision = meshRevision_.fetch_add(1, std::memory_order_acq_rel) + 1u;
                     queueTileLodUploadLocked(MeshTileLodKey{coord.tile, coord.lodLevel});
@@ -1089,7 +1110,7 @@ void MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
     }
 }
 
-std::vector<Meshlet> MeshManager::meshTileLod(const TileLodCoord& coord) const {
+ChunkMeshOutput MeshManager::meshTileLod(const TileLodCoord& coord) const {
     const uint8_t lodLevel = coord.lodLevel;
     const int32_t spanChunks = std::max(1, chunkSpanForLod(lodLevel));
     const int32_t tileOriginChunkX = coord.tile.x * meshTileSizeChunks_;
@@ -1099,7 +1120,7 @@ std::vector<Meshlet> MeshManager::meshTileLod(const TileLodCoord& coord) const {
     const int32_t cellsPerAxis = cellCountPerAxisForLod(lodLevel);
     const int32_t zCount = chunkZCountForLod(lodLevel);
 
-    std::vector<Meshlet> meshlets;
+    ChunkMeshOutput meshOutput{};
     std::unordered_map<ColumnCoord, uint32_t> emptyMaskCache;
     emptyMaskCache.reserve(static_cast<size_t>(meshTileSizeChunks_ * meshTileSizeChunks_));
 
@@ -1111,23 +1132,30 @@ std::vector<Meshlet> MeshManager::meshTileLod(const TileLodCoord& coord) const {
                     continue;
                 }
 
-                std::vector<Meshlet> cellMeshlets = meshLodCell(cellCoord, lodLevel);
-                if (!cellMeshlets.empty()) {
-                    meshlets.insert(
-                        meshlets.end(),
-                        std::make_move_iterator(cellMeshlets.begin()),
-                        std::make_move_iterator(cellMeshlets.end())
+                ChunkMeshOutput cellMeshOutput = meshLodCell(cellCoord, lodLevel);
+                if (!cellMeshOutput.culledMeshlets.empty()) {
+                    meshOutput.culledMeshlets.insert(
+                        meshOutput.culledMeshlets.end(),
+                        std::make_move_iterator(cellMeshOutput.culledMeshlets.begin()),
+                        std::make_move_iterator(cellMeshOutput.culledMeshlets.end())
+                    );
+                }
+                if (!cellMeshOutput.doubleSidedMeshlets.empty()) {
+                    meshOutput.doubleSidedMeshlets.insert(
+                        meshOutput.doubleSidedMeshlets.end(),
+                        std::make_move_iterator(cellMeshOutput.doubleSidedMeshlets.begin()),
+                        std::make_move_iterator(cellMeshOutput.doubleSidedMeshlets.end())
                     );
                 }
             }
         }
     }
 
-    appendAlwaysOnTileSkirts(meshlets, coord.tile, meshTileSizeChunks_, lodLevel, blockModelLibrary_.get());
-    return meshlets;
+    appendAlwaysOnTileSkirts(meshOutput, coord.tile, meshTileSizeChunks_, lodLevel, blockModelLibrary_.get());
+    return meshOutput;
 }
 
-std::vector<Meshlet> MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const {
+ChunkMeshOutput MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const {
     const uint8_t mipLevel = std::min<uint8_t>(lodLevel, Chunk::MAX_MIP_LEVEL);
     const int32_t extraLodShift = std::max(
         0,
@@ -1290,7 +1318,7 @@ int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileState& state)
         const auto lodIt = state.lodStates.find(static_cast<uint8_t>(lod));
         return lodIt != state.lodStates.end() &&
                lodIt->second.resident &&
-               !lodIt->second.meshlets.empty();
+               (!lodIt->second.culledMeshlets.empty() || !lodIt->second.doubleSidedMeshlets.empty());
     };
 
     if (state.desiredLod >= 0) {

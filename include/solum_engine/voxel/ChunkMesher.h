@@ -18,6 +18,15 @@ public:
     virtual BlockMaterial getBlock(const BlockCoord& coord) const = 0;
 };
 
+struct ChunkMeshOutput {
+    std::vector<Meshlet> culledMeshlets;
+    std::vector<Meshlet> doubleSidedMeshlets;
+
+    bool empty() const {
+        return culledMeshlets.empty() && doubleSidedMeshlets.empty();
+    }
+};
+
 class ChunkMesher {
 public:
     static constexpr uint16_t kCulledSolidBlockId = 255u;
@@ -25,12 +34,12 @@ public:
     explicit ChunkMesher(std::shared_ptr<const BlockModelLibrary> blockModelLibrary = {})
         : blockModelLibrary_(std::move(blockModelLibrary)) {}
 
-    std::vector<Meshlet> mesh(const Chunk& chunk, const ChunkCoord& coord, const std::vector<const Chunk*>& neighbors) const;
-    std::vector<Meshlet> mesh(const IBlockSource& source,
-                              const BlockCoord& sectionOrigin,
-                              const glm::ivec3& sectionExtent,
-                              const glm::ivec3& meshletOrigin,
-                              uint32_t voxelScale = 1u) const;
+    ChunkMeshOutput mesh(const Chunk& chunk, const ChunkCoord& coord, const std::vector<const Chunk*>& neighbors) const;
+    ChunkMeshOutput mesh(const IBlockSource& source,
+                         const BlockCoord& sectionOrigin,
+                         const glm::ivec3& sectionExtent,
+                         const glm::ivec3& meshletOrigin,
+                         uint32_t voxelScale = 1u) const;
 
     static constexpr std::array<glm::ivec3, 6> directionOffsets = {
         glm::ivec3(1, 0, 0),   // PlusX

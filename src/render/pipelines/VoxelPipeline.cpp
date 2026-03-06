@@ -6,6 +6,24 @@
 
 using namespace wgpu;
 
+VoxelPipeline::VoxelPipeline(RenderServices& r)
+    : VoxelPipeline(r, Config{}) {}
+
+VoxelPipeline::VoxelPipeline(RenderServices& r, Config config)
+    : AbstractRenderPipeline(r),
+      pipelineName_(prefixedName(config.namePrefix, "voxel_pipeline")),
+      bindGroupLayoutName_(prefixedName(config.namePrefix, "global_uniforms")),
+      bindGroupName_(prefixedName(config.namePrefix, "global_uniforms_bg")),
+      cullMode_(config.cullMode),
+      manageRenderTargets_(config.manageRenderTargets) {}
+
+std::string VoxelPipeline::prefixedName(const std::string& prefix, const char* baseName) {
+    if (prefix.empty()) {
+        return std::string(baseName);
+    }
+    return prefix + "_" + baseName;
+}
+
 bool VoxelPipeline::build() {
     return createResources() && createPipeline() && createBindGroup();
 }
@@ -28,6 +46,11 @@ void VoxelPipeline::clearIndirectDrawBuffer() {
 }
 
 bool VoxelPipeline::createResources() {
+    if (!manageRenderTargets_) {
+        return r_.tex.getTextureView("multisample_view") != nullptr &&
+               r_.tex.getTextureView("depth_view") != nullptr;
+    }
+
     int width, height;
     glfwGetFramebufferSize(r_.ctx.getWindow(), &width, &height);
     if (width <= 0 || height <= 0) {
@@ -87,13 +110,15 @@ bool VoxelPipeline::createResources() {
 }
 
 void VoxelPipeline::removeResources() {
-    r_.tex.removeTextureView("multisample_view");
-    r_.tex.removeTexture("multisample_texture");
+    if (manageRenderTargets_) {
+        r_.tex.removeTextureView("multisample_view");
+        r_.tex.removeTexture("multisample_texture");
 
-    r_.tex.removeTextureView("depth_view");
-    r_.tex.removeTexture("depth_texture");
+        r_.tex.removeTextureView("depth_view");
+        r_.tex.removeTexture("depth_texture");
+    }
 
-    r_.pip.deleteBindGroup("global_uniforms_bg");
+    r_.pip.deleteBindGroup(bindGroupName_);
 }
 
 bool VoxelPipeline::createPipeline() {
@@ -103,7 +128,7 @@ bool VoxelPipeline::createPipeline() {
     config.colorFormat = r_.ctx.getSurfaceFormat();
     config.depthFormat = TextureFormat::Depth32Float;
     config.sampleCount = 4;
-    config.cullMode = CullMode::Back;
+    config.cullMode = cullMode_;
     config.depthWriteEnabled = true;
     config.depthCompare = CompareFunction::Less;
     config.fragmentShaderName = "fs_main";
@@ -157,10 +182,10 @@ bool VoxelPipeline::createPipeline() {
     globalUniforms[i].sampler.type = SamplerBindingType::Filtering;
 
     config.bindGroupLayouts.push_back(
-        r_.pip.createBindGroupLayout("global_uniforms", globalUniforms)
+        r_.pip.createBindGroupLayout(bindGroupLayoutName_, globalUniforms)
     );
 
-    RenderPipeline pipeline = r_.pip.createRenderPipeline("voxel_pipeline", config);
+    RenderPipeline pipeline = r_.pip.createRenderPipeline(pipelineName_, config);
 
     return pipeline != nullptr;
 }
@@ -180,13 +205,14 @@ bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBuf
     Buffer meshDataBuffer = r_.buf.getBuffer(meshDataBufferName);
     Buffer metadataBuffer = r_.buf.getBuffer(metadataBufferName);
     Buffer visibleIndicesBuffer = r_.buf.getBuffer(visibleIndicesBufferName);
-    Buffer materialLookupBuffer = r_.buf.getBuffer(MaterialManager::kMaterialLookupBufferName);
+    Buffer materialMetadataBuffer = r_.buf.getBuffer(MaterialManager::kMaterialMetadataBufferName);
     Buffer modelQuadBuffer = r_.buf.getBuffer(ModelManager::kModelQuadBufferName);
     TextureView materialTextureArrayView = r_.tex.getTextureView(MaterialManager::kMaterialTextureArrayViewName);
     Sampler materialSampler = r_.tex.getSampler(MaterialManager::kMaterialSamplerName);
 
     if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !visibleIndicesBuffer ||
-        !materialLookupBuffer || !modelQuadBuffer || !materialTextureArrayView || !materialSampler) {
+        !materialMetadataBuffer ||
+        !modelQuadBuffer || !materialTextureArrayView || !materialSampler) {
         return false;
     }
 
@@ -212,9 +238,9 @@ bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBuf
     i++;
 
     bindings[i].binding = i;
-    bindings[i].buffer = materialLookupBuffer;
+    bindings[i].buffer = materialMetadataBuffer;
     bindings[i].offset = 0;
-    bindings[i].size = materialLookupBuffer.getSize();
+    bindings[i].size = materialMetadataBuffer.getSize();
     i++;
 
     bindings[i].binding = i;
@@ -236,8 +262,8 @@ bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBuf
     bindings[i].binding = i;
     bindings[i].sampler = materialSampler;
 
-    r_.pip.deleteBindGroup("global_uniforms_bg");
-    BindGroup bindGroup = r_.pip.createBindGroup("global_uniforms_bg", "global_uniforms", bindings);
+    r_.pip.deleteBindGroup(bindGroupName_);
+    BindGroup bindGroup = r_.pip.createBindGroup(bindGroupName_, bindGroupLayoutName_, bindings);
 
     return bindGroup != nullptr;
 }
@@ -245,13 +271,14 @@ bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBuf
 bool VoxelPipeline::render(
     TextureView targetView,
     CommandEncoder encoder,
+    const RenderOptions& options,
     const std::function<void(RenderPassEncoder&)>& overlayCallback
 ) {
     RenderPassDescriptor renderPassDesc = Default;
     RenderPassColorAttachment renderPassColorAttachment = {};
     renderPassColorAttachment.view = r_.tex.getTextureView("multisample_view");
     renderPassColorAttachment.resolveTarget = targetView;
-    renderPassColorAttachment.loadOp = LoadOp::Clear;
+    renderPassColorAttachment.loadOp = options.clearColor ? LoadOp::Clear : LoadOp::Load;
     renderPassColorAttachment.storeOp = StoreOp::Store;
     renderPassColorAttachment.clearValue = Color{ 0.2, 0.2, 0.3, 1.0 };
 #ifndef WEBGPU_BACKEND_WGPU
@@ -264,7 +291,7 @@ bool VoxelPipeline::render(
     RenderPassDepthStencilAttachment depthStencilAttachment = Default;
     depthStencilAttachment.view = r_.tex.getTextureView("depth_view");
     depthStencilAttachment.depthClearValue = 1.0f;
-    depthStencilAttachment.depthLoadOp = LoadOp::Clear;
+    depthStencilAttachment.depthLoadOp = options.clearDepth ? LoadOp::Clear : LoadOp::Load;
     depthStencilAttachment.depthStoreOp = StoreOp::Store;
     depthStencilAttachment.depthReadOnly = false;
     depthStencilAttachment.stencilClearValue = 0;
@@ -276,9 +303,9 @@ bool VoxelPipeline::render(
     renderPassDesc.timestampWrites = nullptr;
 
     RenderPassEncoder voxelRenderPass = encoder.beginRenderPass(renderPassDesc);
-    voxelRenderPass.setPipeline(r_.pip.getPipeline("voxel_pipeline"));
+    voxelRenderPass.setPipeline(r_.pip.getPipeline(pipelineName_));
 
-    voxelRenderPass.setBindGroup(0, r_.pip.getBindGroup("global_uniforms_bg"), 0, nullptr);
+    voxelRenderPass.setBindGroup(0, r_.pip.getBindGroup(bindGroupName_), 0, nullptr);
 
     if (useIndirectDraw_) {
         Buffer indirectBuffer = r_.buf.getBuffer(indirectDrawBufferName_);

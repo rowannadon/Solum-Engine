@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -16,8 +17,21 @@ struct ActiveMeshletRangeGPU {
     uint32_t pad = 0u;
 };
 
+enum class MeshletGeometryVariant {
+    Culled,
+    DoubleSided
+};
+
 class MeshletBufferController {
 public:
+    struct Config {
+        std::string namePrefix;
+        MeshletGeometryVariant geometryVariant = MeshletGeometryVariant::Culled;
+    };
+
+    MeshletBufferController();
+    explicit MeshletBufferController(Config config);
+
     struct ActiveBindings {
         const char* meshDataBufferName = nullptr;
         const char* meshMetadataBufferName = nullptr;
@@ -85,13 +99,6 @@ private:
         uint32_t pad1 = 0u;
     };
 
-    static constexpr const char* kMeshDataBufferName = "meshlet_data_buffer";
-    static constexpr const char* kMeshMetadataBufferName = "meshlet_metadata_buffer";
-    static constexpr const char* kMeshAabbBufferName = "meshlet_aabb_buffer";
-    static constexpr const char* kVisibleMeshletIndexBufferName = "visible_meshlet_indices_buffer";
-    static constexpr const char* kActiveMeshletRangeBufferName = "active_meshlet_ranges_buffer";
-    static constexpr const char* kActiveMeshletRangeParamsBufferName = "active_meshlet_ranges_params_buffer";
-
     static constexpr uint32_t kInitialMeshletCapacity = 64u;
     static constexpr uint32_t kInitialQuadWordCapacity =
         kInitialMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
@@ -111,7 +118,18 @@ private:
     bool writeAllocation(const AllocationRecord& record);
     void releaseAllocation(const MeshTileLodKey& key);
 
+    const std::vector<Meshlet>& selectMeshletsForVariant(const MeshTileLodUpload& upload) const;
+    static std::string prefixedName(const std::string& prefix, const char* baseName);
+
     BufferManager* bufferManager_ = nullptr;
+    std::string namePrefix_;
+    MeshletGeometryVariant geometryVariant_ = MeshletGeometryVariant::Culled;
+    std::string meshDataBufferName_;
+    std::string meshMetadataBufferName_;
+    std::string meshAabbBufferName_;
+    std::string visibleMeshletIndexBufferName_;
+    std::string activeMeshletRangeBufferName_;
+    std::string activeMeshletRangeParamsBufferName_;
 
     uint32_t meshletCapacity_ = 0u;
     uint32_t quadWordCapacity_ = 0u;

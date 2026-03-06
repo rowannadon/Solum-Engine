@@ -8,11 +8,11 @@
 
 class MeshletCullingPipeline : public AbstractRenderPipeline {
 public:
-    static constexpr const char* kCullParamsBufferName = "meshlet_cull_params_buffer";
-    static constexpr const char* kIndirectArgsBufferName = "meshlet_cull_indirect_args_buffer";
-    static constexpr const char* kIndirectResetBufferName = "meshlet_cull_indirect_reset_buffer";
+    struct Config {
+        std::string namePrefix;
+    };
 
-    explicit MeshletCullingPipeline(RenderServices& r) : AbstractRenderPipeline(r) {}
+    explicit MeshletCullingPipeline(RenderServices& r, Config config = {});
 
     bool build() override;
     bool build(const MeshletBufferController& meshletBuffers,
@@ -20,6 +20,7 @@ public:
                const char* occlusionHiZViewName);
     bool refreshBindGroup(const MeshletBufferController& meshletBuffers,
                           const char* occlusionHiZViewName);
+    const std::string& indirectArgsBufferName() const noexcept;
 
     void updateCullParams(uint32_t meshletCount, uint32_t occlusionHiZMipCount, uint32_t activeRangeCount);
     void encode(wgpu::CommandEncoder encoder, const MeshletBufferController& meshletBuffers);
@@ -35,12 +36,17 @@ private:
                                        const std::string& activeRangeBufferName,
                                        const char* occlusionHiZViewName);
 
-    static constexpr const char* kCullBglName = "meshlet_cull_bgl";
-    static constexpr const char* kCullBgName = "meshlet_cull_bg";
-    static constexpr const char* kCullPipelineName = "meshlet_cull_pipeline";
     static constexpr const char* kDefaultHiZViewName = "meshlet_occlusion_hiz_view";
 
     static constexpr uint32_t kMeshletCullWorkgroupSize = 128u;
 
+    static std::string prefixedName(const std::string& prefix, const char* baseName);
+
+    std::string cullParamsBufferName_;
+    std::string indirectArgsBufferName_;
+    std::string indirectResetBufferName_;
+    std::string cullBglName_;
+    std::string cullBgName_;
+    std::string cullPipelineName_;
     std::string activeHiZViewName_ = kDefaultHiZViewName;
 };

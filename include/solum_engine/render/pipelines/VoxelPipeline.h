@@ -8,7 +8,19 @@
 
 class VoxelPipeline : public AbstractRenderPipeline {
 public:
-    explicit VoxelPipeline(RenderServices& r) : AbstractRenderPipeline(r) {}
+    struct Config {
+        std::string namePrefix;
+        wgpu::CullMode cullMode = wgpu::CullMode::Back;
+        bool manageRenderTargets = true;
+    };
+
+    struct RenderOptions {
+        bool clearColor = true;
+        bool clearDepth = true;
+    };
+
+    explicit VoxelPipeline(RenderServices& r);
+    VoxelPipeline(RenderServices& r, Config config);
 
     void setDrawConfig(uint32_t meshletVertexCount, uint32_t meshletCount);
     void setIndirectDrawBuffer(const std::string& bufferName, uint64_t offset = 0u);
@@ -30,9 +42,18 @@ public:
     bool render(
         wgpu::TextureView targetView,
         wgpu::CommandEncoder encoder,
+        const RenderOptions& options,
         const std::function<void(wgpu::RenderPassEncoder&)>& overlayCallback = {}
     );
 private:
+    static std::string prefixedName(const std::string& prefix, const char* baseName);
+
+    std::string pipelineName_;
+    std::string bindGroupLayoutName_;
+    std::string bindGroupName_;
+    wgpu::CullMode cullMode_ = wgpu::CullMode::Back;
+    bool manageRenderTargets_ = true;
+
     uint32_t meshletVertexCount = 0;
     uint32_t meshletCount = 0;
     bool useIndirectDraw_ = false;
