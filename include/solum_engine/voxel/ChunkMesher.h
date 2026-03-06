@@ -16,6 +16,7 @@ class IBlockSource {
 public:
     virtual ~IBlockSource() = default;
     virtual BlockMaterial getBlock(const BlockCoord& coord) const = 0;
+    virtual uint8_t getPackedLight(const BlockCoord& coord) const = 0;
 };
 
 struct ChunkMeshOutput {

@@ -31,6 +31,7 @@ struct VertexOutput {
     @location(4) ao: f32,
     @location(5) @interpolate(flat) useVoxelAo: u32,
     @location(6) @interpolate(flat) blockCoord: vec3i,
+    @location(7) @interpolate(flat) packedLight: u32,
 };
 
 fn hash_u32(x: u32) -> u32 {
@@ -130,6 +131,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         out.ao = 1.0;
         out.useVoxelAo = 0u;
         out.blockCoord = vec3i(0, 0, 0);
+        out.packedLight = 0u;
         return out;
     }
 
@@ -161,6 +163,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         out.useVoxelAo = 0u;
     }
     out.blockCoord = sample.blockCoord;
+    out.packedLight = sample.packedLightData & 0xffu;
 
     let meshletColorSeed = (bitcast<u32>(meshlet.originX) * 73856093u) ^
         (bitcast<u32>(meshlet.originY) * 19349663u) ^
@@ -206,6 +209,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         baseColor = albedo.rgb;
     }
 
-    let linearColor = baseColor * shade;
+    let skyLight = f32(decode_sky_light(in.packedLight)) / 15.0;
+    let blockLight = f32(decode_block_light(in.packedLight)) / 15.0;
+    let skyLightColor = vec3f(1.0, 1.0, 1.0) * skyLight;
+    let blockLightColor = vec3f(1.0, 0.92, 0.62) * blockLight;
+    let totalLightColor = max(vec3f(0.16, 0.16, 0.16), skyLightColor + blockLightColor);
+    let shaded = max(0.45, shade);
+
+    let linearColor = baseColor * shaded * totalLightColor;
     return vec4f(linearColor, 1.0);
 }

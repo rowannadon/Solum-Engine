@@ -18,9 +18,22 @@ public:
     // High performance getters and setters
     BlockMaterial getBlock(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel = 0) const;
     void setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockID);
+    uint8_t getPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel = 0) const;
+    void setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight);
+    uint8_t getSkyLight(uint8_t x, uint8_t y, uint8_t z) const;
+    uint8_t getBlockLight(uint8_t x, uint8_t y, uint8_t z) const;
     bool isAllAir() const noexcept { return solidVoxelCount_ == 0; }
     static constexpr uint8_t mipSize(uint8_t mipLevel) {
         return (mipLevel > MAX_MIP_LEVEL) ? 1u : static_cast<uint8_t>(SIZE >> mipLevel);
+    }
+    static constexpr uint8_t packLight(uint8_t skyLight, uint8_t blockLight) {
+        return static_cast<uint8_t>(((skyLight & 0x0Fu) << 4u) | (blockLight & 0x0Fu));
+    }
+    static constexpr uint8_t unpackSkyLight(uint8_t packedLight) {
+        return static_cast<uint8_t>((packedLight >> 4u) & 0x0Fu);
+    }
+    static constexpr uint8_t unpackBlockLight(uint8_t packedLight) {
+        return static_cast<uint8_t>(packedLight & 0x0Fu);
     }
 
 private:
@@ -32,6 +45,8 @@ private:
     };
 
     std::array<MipStorage, MAX_MIP_LEVEL + 1> mips_{};
+    std::array<std::vector<uint8_t>, MAX_MIP_LEVEL + 1> lightMips_{};
+    uint8_t defaultPackedLight_ = packLight(0u, 0u);
     uint16_t solidVoxelCount_ = 0;
 
     static uint16_t getVoxelIndex(uint8_t x, uint8_t y, uint8_t z, uint8_t size);
@@ -40,6 +55,11 @@ private:
     static void resizeBitArray(MipStorage& storage, uint8_t newBitsPerBlock);
 
     static bool isSolid(BlockMaterial block);
+    static uint8_t downsamplePackedLightFromChildren(const std::vector<uint8_t>& childLevel,
+                                                     uint8_t childSize,
+                                                     uint8_t px,
+                                                     uint8_t py,
+                                                     uint8_t pz);
     static BlockMaterial airBlock();
     static BlockMaterial downsampleBlockFromChildren(const MipStorage& childLevel, uint8_t px, uint8_t py, uint8_t pz);
 

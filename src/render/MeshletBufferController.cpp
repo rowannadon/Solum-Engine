@@ -127,6 +127,9 @@ MeshletBufferController::PackedTileLodData MeshletBufferController::packTileLodM
                 meshlet.packedQuadLocalOffsets[i],
                 meshlet.quadMaterialIds[i]
             ));
+            packed.quadData.push_back(packMeshletQuadLightData(
+                meshlet.quadLightData[i]
+            ));
             packed.quadData.push_back(packMeshletQuadAuxData(
                 meshlet.quadAoData[i],
                 meshlet.quadModelQuadIndices[i],

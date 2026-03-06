@@ -20,6 +20,11 @@ BlockMaterial airBlock() {
     return kAir;
 }
 
+uint8_t unlitPackedLight() {
+    static constexpr uint8_t kUnlit = Chunk::packLight(0u, 0u);
+    return kUnlit;
+}
+
 int32_t distanceSqToCenter(const ColumnCoord& coord, const ColumnCoord& center) {
     const int64_t dx = static_cast<int64_t>(coord.v.x) - static_cast<int64_t>(center.v.x);
     const int64_t dy = static_cast<int64_t>(coord.v.y) - static_cast<int64_t>(center.v.y);
@@ -50,8 +55,18 @@ BlockMaterial WorldSection::getBlock(const BlockCoord& coord) const {
     return world_.getBlock(coord, mipLevel_);
 }
 
+uint8_t WorldSection::getPackedLight(const BlockCoord& coord) const {
+    uint8_t packedLight = unlitPackedLight();
+    world_.tryGetPackedLight(coord, packedLight, mipLevel_);
+    return packedLight;
+}
+
 bool WorldSection::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const {
     return world_.tryGetBlock(coord, outBlock, mipLevel_);
+}
+
+bool WorldSection::tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const {
+    return world_.tryGetPackedLight(coord, outPackedLight, mipLevel_);
 }
 
 BlockMaterial WorldSection::getLocalBlock(int32_t x, int32_t y, int32_t z) const {
@@ -126,6 +141,12 @@ BlockMaterial World::getBlock(const BlockCoord& coord) const {
     return getBlock(coord, 0);
 }
 
+uint8_t World::getPackedLight(const BlockCoord& coord) const {
+    uint8_t packedLight = unlitPackedLight();
+    tryGetPackedLight(coord, packedLight);
+    return packedLight;
+}
+
 BlockMaterial World::getBlock(const BlockCoord& coord, uint8_t mipLevel) const {
     BlockMaterial block = airBlock();
     tryGetBlock(coord, block, mipLevel);
@@ -139,6 +160,15 @@ bool World::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const 
 bool World::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
     return tryGetBlockLocked(coord, outBlock, mipLevel);
+}
+
+bool World::tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const {
+    return tryGetPackedLight(coord, outPackedLight, 0);
+}
+
+bool World::tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight, uint8_t mipLevel) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    return tryGetPackedLightLocked(coord, outPackedLight, mipLevel);
 }
 
 bool World::isColumnGenerated(const ColumnCoord& coord) const {
@@ -252,6 +282,62 @@ bool World::tryGetBlockLocked(const BlockCoord& coord,
     );
 
     outBlock = column.getChunk(static_cast<uint8_t>(chunkCoord.v.z)).getBlock(
+        static_cast<uint8_t>(localBlock.x),
+        static_cast<uint8_t>(localBlock.y),
+        static_cast<uint8_t>(localBlock.z),
+        clampedMip
+    );
+    return true;
+}
+
+bool World::tryGetPackedLightLocked(const BlockCoord& coord,
+                                    uint8_t& outPackedLight,
+                                    uint8_t mipLevel) const {
+    const uint8_t clampedMip = std::min<uint8_t>(mipLevel, Chunk::MAX_MIP_LEVEL);
+    const int32_t chunkSizeAtMip = static_cast<int32_t>(Chunk::mipSize(clampedMip));
+    const int32_t worldHeightAtMip = cfg::COLUMN_HEIGHT_BLOCKS >> clampedMip;
+
+    if (coord.v.z < 0 || coord.v.z >= worldHeightAtMip) {
+        outPackedLight = unlitPackedLight();
+        return false;
+    }
+
+    const ChunkCoord chunkCoord{
+        floor_div(coord.v.x, chunkSizeAtMip),
+        floor_div(coord.v.y, chunkSizeAtMip),
+        floor_div(coord.v.z, chunkSizeAtMip)
+    };
+    if (chunkCoord.v.z < 0 || chunkCoord.v.z >= cfg::COLUMN_HEIGHT) {
+        outPackedLight = unlitPackedLight();
+        return false;
+    }
+
+    const ColumnCoord columnCoord = chunk_to_column(chunkCoord);
+    const RegionCoord regionCoord = column_to_region(columnCoord);
+
+    if (generatedColumns_.find(columnCoord) == generatedColumns_.end()) {
+        outPackedLight = unlitPackedLight();
+        return false;
+    }
+
+    const auto regionIt = regions_.find(regionCoord);
+    if (regionIt == regions_.end() || regionIt->second == nullptr) {
+        outPackedLight = unlitPackedLight();
+        return false;
+    }
+
+    const glm::ivec2 localColumn = column_local_in_region(columnCoord);
+    const glm::ivec3 localBlock{
+        floor_mod(coord.v.x, chunkSizeAtMip),
+        floor_mod(coord.v.y, chunkSizeAtMip),
+        floor_mod(coord.v.z, chunkSizeAtMip)
+    };
+    const Column& column = regionIt->second->getColumn(
+        static_cast<uint8_t>(localColumn.x),
+        static_cast<uint8_t>(localColumn.y)
+    );
+
+    outPackedLight = column.getChunk(static_cast<uint8_t>(chunkCoord.v.z)).getPackedLight(
         static_cast<uint8_t>(localBlock.x),
         static_cast<uint8_t>(localBlock.y),
         static_cast<uint8_t>(localBlock.z),

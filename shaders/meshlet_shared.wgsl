@@ -22,6 +22,7 @@ struct MeshletQuadVertexSample {
     texCoord: vec2f,
     cornerOffset: vec3f,
     quadData: u32,
+    packedLightData: u32,
     quadAoData: u32,
     corner: u32,
     useVoxelAo: bool,
@@ -59,6 +60,14 @@ fn decode_flip(packedAoData: u32) -> bool {
 fn decode_vertex_ao(packedAoData: u32, corner: u32) -> u32 {
     let shift = corner * 2u;
     return (packedAoData >> shift) & 0x3u;
+}
+
+fn decode_sky_light(packedLightData: u32) -> u32 {
+    return (packedLightData >> 4u) & 0xfu;
+}
+
+fn decode_block_light(packedLightData: u32) -> u32 {
+    return packedLightData & 0xfu;
 }
 
 fn corner_from_triangle_vertex(triangleVertex: u32, flipped: bool) -> u32 {
@@ -143,9 +152,10 @@ fn sample_meshlet_quad_vertex(
     quadIdx: u32,
     triangleVertex: u32
 ) -> MeshletQuadVertexSample {
-    let quadDataOffset = meshlet.dataOffset + (quadIdx * 2u);
+    let quadDataOffset = meshlet.dataOffset + (quadIdx * 3u);
     let quadData = fetch_quad_data(quadDataOffset);
-    let quadAoData = fetch_quad_data(quadDataOffset + 1u);
+    let quadLightData = fetch_quad_data(quadDataOffset + 1u);
+    let quadAoData = fetch_quad_data(quadDataOffset + 2u);
     let modelQuadIndex = decode_model_quad_index(quadAoData);
     let blockLocal = decode_local_offset(quadData);
     let corner = corner_from_triangle_vertex(triangleVertex, decode_flip(quadAoData));
@@ -176,6 +186,7 @@ fn sample_meshlet_quad_vertex(
     sample.texCoord = texCoord;
     sample.cornerOffset = cornerOffset;
     sample.quadData = quadData;
+    sample.packedLightData = quadLightData;
     sample.quadAoData = quadAoData;
     sample.corner = corner;
     sample.useVoxelAo = useVoxelAo;

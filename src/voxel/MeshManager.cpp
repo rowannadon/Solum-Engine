@@ -36,6 +36,7 @@ BlockMaterial unknownCullingBlock() {
 struct PaddedChunkBlockSource final : IBlockSource {
     BlockCoord origin{};
     std::array<BlockMaterial, kPaddedChunkVoxelCount> blocks{};
+    std::array<uint8_t, kPaddedChunkVoxelCount> lights{};
 
     static constexpr int index(int x, int y, int z) {
         return (x * kPaddedChunkArea) + (y * kPaddedChunkExtent) + z;
@@ -53,6 +54,20 @@ struct PaddedChunkBlockSource final : IBlockSource {
         }
 
         return blocks[static_cast<size_t>(index(lx, ly, lz))];
+    }
+
+    uint8_t getPackedLight(const BlockCoord& coord) const override {
+        const int lx = coord.v.x - origin.v.x;
+        const int ly = coord.v.y - origin.v.y;
+        const int lz = coord.v.z - origin.v.z;
+        if (lx < 0 || ly < 0 || lz < 0 ||
+            lx >= kPaddedChunkExtent ||
+            ly >= kPaddedChunkExtent ||
+            lz >= kPaddedChunkExtent) {
+            return Chunk::packLight(0u, 0u);
+        }
+
+        return lights[static_cast<size_t>(index(lx, ly, lz))];
     }
 };
 
@@ -217,6 +232,7 @@ void appendSkirtQuad(std::vector<Meshlet>& targetMeshlets,
     skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
     skirt.quadMaterialIds[0] = materialId;
     skirt.quadAoData[0] = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
+    skirt.quadLightData[0] = Chunk::packLight(15u, 0u);
     const BlockModelQuadRef* quadRef = selectModelQuadRef(blockModelLibrary, materialId, faceDirection);
     skirt.quadModelQuadIndices[0] = (quadRef != nullptr) ? quadRef->gpuQuadIndex : faceDirection;
     skirt.quadUsesVoxelAo[0] = 0u;
@@ -1180,6 +1196,7 @@ ChunkMeshOutput MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lo
     PaddedChunkBlockSource snapshot;
     snapshot.origin = paddedOriginSample;
     snapshot.blocks.fill(airBlock());
+    snapshot.lights.fill(Chunk::packLight(0u, 0u));
 
     const int32_t worldHeightAtMip = cfg::COLUMN_HEIGHT_BLOCKS >> mipLevel;
 
@@ -1198,14 +1215,19 @@ ChunkMeshOutput MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lo
                 };
 
                 BlockMaterial block = airBlock();
+                uint8_t packedLight = Chunk::packLight(0u, 0u);
                 if (!world_.tryGetBlock(coordToCopy, block, mipLevel)) {
                     if (coordToCopy.v.z >= 0 && coordToCopy.v.z < worldHeightAtMip) {
                         block = unknownCullingBlock();
                     } else {
                         block = airBlock();
                     }
+                } else {
+                    world_.tryGetPackedLight(coordToCopy, packedLight, mipLevel);
                 }
-                snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(x, y, z))] = block;
+                const size_t index = static_cast<size_t>(PaddedChunkBlockSource::index(x, y, z));
+                snapshot.blocks[index] = block;
+                snapshot.lights[index] = packedLight;
             }
         }
     }

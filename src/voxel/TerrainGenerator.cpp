@@ -252,6 +252,109 @@ inline bool localInBounds(int x, int y, int z) {
            z < cfg::COLUMN_HEIGHT_BLOCKS;
 }
 
+int levelIndex(int x, int y) {
+    return (y * cfg::CHUNK_SIZE) + x;
+}
+
+void rebuildSimpleColumnLighting(Column& col) {
+    constexpr uint8_t kMaxSkyLight = 15u;
+    constexpr uint8_t kBaseBlockLight = 0u;
+    constexpr int kLevelArea = cfg::CHUNK_SIZE * cfg::CHUNK_SIZE;
+    constexpr std::array<glm::ivec2, 4> kCardinalOffsets = {
+        glm::ivec2{1, 0},
+        glm::ivec2{-1, 0},
+        glm::ivec2{0, 1},
+        glm::ivec2{0, -1},
+    };
+
+    std::array<uint8_t, kLevelArea> skyFromAbove{};
+    std::array<uint8_t, kLevelArea> levelSky{};
+    std::array<uint8_t, kLevelArea> solidMask{};
+    skyFromAbove.fill(kMaxSkyLight);
+
+    std::vector<int> floodQueue;
+    floodQueue.reserve(kLevelArea);
+
+    for (int z = cfg::COLUMN_HEIGHT_BLOCKS - 1; z >= 0; --z) {
+        floodQueue.clear();
+        size_t queueHead = 0u;
+
+        for (int y = 0; y < cfg::CHUNK_SIZE; ++y) {
+            for (int x = 0; x < cfg::CHUNK_SIZE; ++x) {
+                const int idx = levelIndex(x, y);
+                const BlockMaterial block = col.getBlock(
+                    static_cast<uint8_t>(x),
+                    static_cast<uint8_t>(y),
+                    static_cast<uint16_t>(z)
+                );
+                const bool isSolid = block.unpack().id != 0u;
+                solidMask[static_cast<size_t>(idx)] = isSolid ? 1u : 0u;
+
+                if (isSolid) {
+                    levelSky[static_cast<size_t>(idx)] = 0u;
+                    continue;
+                }
+
+                const uint8_t directSky = skyFromAbove[static_cast<size_t>(idx)];
+                levelSky[static_cast<size_t>(idx)] = directSky;
+                if (directSky > 1u) {
+                    floodQueue.push_back(idx);
+                }
+            }
+        }
+
+        while (queueHead < floodQueue.size()) {
+            const int idx = floodQueue[queueHead++];
+            const uint8_t current = levelSky[static_cast<size_t>(idx)];
+            if (current <= 1u) {
+                continue;
+            }
+
+            const uint8_t propagated = static_cast<uint8_t>(current - 1u);
+            const int x = idx % cfg::CHUNK_SIZE;
+            const int y = idx / cfg::CHUNK_SIZE;
+
+            for (const glm::ivec2& offset : kCardinalOffsets) {
+                const int nx = x + offset.x;
+                const int ny = y + offset.y;
+                if (nx < 0 || ny < 0 || nx >= cfg::CHUNK_SIZE || ny >= cfg::CHUNK_SIZE) {
+                    continue;
+                }
+
+                const int neighborIdx = levelIndex(nx, ny);
+                if (solidMask[static_cast<size_t>(neighborIdx)] != 0u) {
+                    continue;
+                }
+
+                uint8_t& neighborSky = levelSky[static_cast<size_t>(neighborIdx)];
+                if (propagated <= neighborSky) {
+                    continue;
+                }
+
+                neighborSky = propagated;
+                floodQueue.push_back(neighborIdx);
+            }
+        }
+
+        for (int y = 0; y < cfg::CHUNK_SIZE; ++y) {
+            for (int x = 0; x < cfg::CHUNK_SIZE; ++x) {
+                const int idx = levelIndex(x, y);
+                const uint8_t sky = (solidMask[static_cast<size_t>(idx)] != 0u)
+                    ? 0u
+                    : levelSky[static_cast<size_t>(idx)];
+
+                col.setPackedLight(
+                    static_cast<uint8_t>(x),
+                    static_cast<uint8_t>(y),
+                    static_cast<uint16_t>(z),
+                    Chunk::packLight(sky, kBaseBlockLight)
+                );
+                skyFromAbove[static_cast<size_t>(idx)] = sky;
+            }
+        }
+    }
+}
+
 template <typename DensityFn, typename HeightFn>
 int findSurfaceForStructure(int worldX, int worldY, const DensityFn& densityAtWorld, const HeightFn& heightAtWorld) {
     constexpr int kColumnHeight = cfg::COLUMN_HEIGHT_BLOCKS;
@@ -422,42 +525,42 @@ void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
     }
 
     const StructureManager& structureManager = getStructureManager();
-    if (!structureManager.hasStructures()) {
-        return;
-    }
-
-    const int32_t placementPadding = std::max(0, structureManager.maxHorizontalReach());
-    const glm::ivec2 placementMin{
-        origin.x - placementPadding,
-        origin.y - placementPadding
-    };
-    const glm::ivec2 placementMax{
-        origin.x + kChunkSize + placementPadding,
-        origin.y + kChunkSize + placementPadding
-    };
-
-    std::vector<StructureManager::PlacementPoint> placementPoints;
-    structureManager.collectPointsForBounds(placementMin, placementMax, placementPoints);
-
-    const glm::ivec3 clipMin{origin.x, origin.y, 0};
-    const glm::ivec3 clipMax{origin.x + kChunkSize, origin.y + kChunkSize, kColumnHeight};
-
-    for (const StructureManager::PlacementPoint& point : placementPoints) {
-        const int32_t surfaceZ = findSurfaceForStructure(
-            point.worldXY.x,
-            point.worldXY.y,
-            densityAtWorld,
-            cachedHeightAtWorld
-        );
-        if (surfaceZ < 0 || (surfaceZ + 1) >= kColumnHeight) {
-            continue;
-        }
-
-        const glm::ivec3 anchorWorld{
-            point.worldXY.x,
-            point.worldXY.y,
-            surfaceZ + 1
+    if (structureManager.hasStructures()) {
+        const int32_t placementPadding = std::max(0, structureManager.maxHorizontalReach());
+        const glm::ivec2 placementMin{
+            origin.x - placementPadding,
+            origin.y - placementPadding
         };
-        structureManager.placeStructureForPoint(point, anchorWorld, clipMin, clipMax, col);
+        const glm::ivec2 placementMax{
+            origin.x + kChunkSize + placementPadding,
+            origin.y + kChunkSize + placementPadding
+        };
+
+        std::vector<StructureManager::PlacementPoint> placementPoints;
+        structureManager.collectPointsForBounds(placementMin, placementMax, placementPoints);
+
+        const glm::ivec3 clipMin{origin.x, origin.y, 0};
+        const glm::ivec3 clipMax{origin.x + kChunkSize, origin.y + kChunkSize, kColumnHeight};
+
+        for (const StructureManager::PlacementPoint& point : placementPoints) {
+            const int32_t surfaceZ = findSurfaceForStructure(
+                point.worldXY.x,
+                point.worldXY.y,
+                densityAtWorld,
+                cachedHeightAtWorld
+            );
+            if (surfaceZ < 0 || (surfaceZ + 1) >= kColumnHeight) {
+                continue;
+            }
+
+            const glm::ivec3 anchorWorld{
+                point.worldXY.x,
+                point.worldXY.y,
+                surfaceZ + 1
+            };
+            structureManager.placeStructureForPoint(point, anchorWorld, clipMin, clipMax, col);
+        }
     }
+
+    rebuildSimpleColumnLighting(col);
 }

@@ -37,7 +37,9 @@ public:
     uint8_t mipLevel() const { return mipLevel_; }
 
     BlockMaterial getBlock(const BlockCoord& coord) const override;
+    uint8_t getPackedLight(const BlockCoord& coord) const override;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const;
+    bool tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const;
     BlockMaterial getLocalBlock(int32_t x, int32_t y, int32_t z) const;
     bool tryGetLocalBlock(int32_t x, int32_t y, int32_t z, BlockMaterial& outBlock) const;
     void copySamples(std::vector<Sample>& outSamples) const;
@@ -69,9 +71,12 @@ public:
     void updatePlayerPosition(const glm::vec3& playerWorldPosition);
 
     BlockMaterial getBlock(const BlockCoord& coord) const override;
+    uint8_t getPackedLight(const BlockCoord& coord) const override;
     BlockMaterial getBlock(const BlockCoord& coord, uint8_t mipLevel) const;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const;
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
+    bool tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const;
+    bool tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight, uint8_t mipLevel) const;
     bool isColumnGenerated(const ColumnCoord& coord) const;
     bool tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const;
     uint64_t generationRevision() const;
@@ -104,6 +109,7 @@ private:
     void onColumnGenerated(const ColumnCoord& coord, Column&& column);
 
     bool tryGetBlockLocked(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
+    bool tryGetPackedLightLocked(const BlockCoord& coord, uint8_t& outPackedLight, uint8_t mipLevel) const;
     bool isColumnGeneratedLocked(const ColumnCoord& coord) const;
     bool isWithinActiveWindowLocked(const ColumnCoord& coord, int32_t extraRadius) const;
     Region* getOrCreateRegionLocked(const RegionCoord& coord);

@@ -52,6 +52,35 @@ public:
         }
     }
 
+    inline uint8_t getPackedLight(uint8_t x, uint8_t y, uint16_t z, uint8_t mipLevel = 0) const {
+        const uint8_t chunkSizeAtMip = Chunk::mipSize(mipLevel);
+        if (x >= chunkSizeAtMip || y >= chunkSizeAtMip) {
+            return Chunk::packLight(0u, 0u);
+        }
+
+        const uint8_t chunk_z = static_cast<uint8_t>(z / chunkSizeAtMip);
+        if (chunk_z >= HEIGHT) {
+            return Chunk::packLight(0u, 0u);
+        }
+
+        const uint8_t local_z = static_cast<uint8_t>(z % chunkSizeAtMip);
+        return chunks_[chunk_z].getPackedLight(x, y, local_z, mipLevel);
+    }
+
+    inline void setPackedLight(uint8_t x, uint8_t y, uint16_t z, uint8_t packedLight) {
+        if (x >= Chunk::SIZE || y >= Chunk::SIZE) {
+            return;
+        }
+
+        const uint8_t chunk_z = static_cast<uint8_t>(z / Chunk::SIZE);
+        if (chunk_z >= HEIGHT) {
+            return;
+        }
+
+        const uint8_t local_z = static_cast<uint8_t>(z % Chunk::SIZE);
+        chunks_[chunk_z].setPackedLight(x, y, local_z, packedLight);
+    }
+
     Chunk& getChunk(uint8_t chunk_z) { return chunks_[chunk_z]; }
     const Chunk& getChunk(uint8_t chunk_z) const { return chunks_[chunk_z]; }
     uint32_t getEmptyChunkMask() const noexcept { return emptyChunkMask_; }

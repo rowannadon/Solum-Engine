@@ -11,12 +11,17 @@ BlockMaterial makeAirBlock() {
 }  // namespace
 
 Chunk::Chunk() {
+    defaultPackedLight_ = packLight(0u, 0u);
     for (uint8_t level = 0; level <= MAX_MIP_LEVEL; ++level) {
         MipStorage& storage = mips_[level];
         storage.bitsPerBlock = 0;
         storage.size = mipSize(level);
         storage.palette.assign(1, airBlock());
         storage.data.clear();
+
+        const uint8_t levelSize = mipSize(level);
+        const size_t levelVolume = static_cast<size_t>(levelSize) * static_cast<size_t>(levelSize) * static_cast<size_t>(levelSize);
+        lightMips_[level].assign(levelVolume, defaultPackedLight_);
     }
     solidVoxelCount_ = 0;
 }
@@ -80,6 +85,73 @@ void Chunk::setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockI
             break;
         }
     }
+}
+
+uint8_t Chunk::getPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel) const {
+    const uint8_t level = std::min<uint8_t>(mipLevel, MAX_MIP_LEVEL);
+    const uint8_t size = mipSize(level);
+    if (x >= size || y >= size || z >= size) {
+        return defaultPackedLight_;
+    }
+
+    const std::vector<uint8_t>& lightLevel = lightMips_[level];
+    if (lightLevel.empty()) {
+        return defaultPackedLight_;
+    }
+    const uint16_t voxelIndex = getVoxelIndex(x, y, z, size);
+    return lightLevel[voxelIndex];
+}
+
+void Chunk::setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight) {
+    if (x >= SIZE || y >= SIZE || z >= SIZE) {
+        return;
+    }
+
+    std::vector<uint8_t>& baseLightLevel = lightMips_[0];
+    if (baseLightLevel.empty()) {
+        return;
+    }
+
+    const uint16_t voxelIndex = getVoxelIndex(x, y, z, static_cast<uint8_t>(SIZE));
+    if (baseLightLevel[voxelIndex] == packedLight) {
+        return;
+    }
+    baseLightLevel[voxelIndex] = packedLight;
+
+    uint8_t px = x;
+    uint8_t py = y;
+    uint8_t pz = z;
+    for (uint8_t level = 1; level <= MAX_MIP_LEVEL; ++level) {
+        px >>= 1;
+        py >>= 1;
+        pz >>= 1;
+
+        std::vector<uint8_t>& parentLevel = lightMips_[level];
+        if (parentLevel.empty()) {
+            break;
+        }
+
+        const uint8_t parentLight = downsamplePackedLightFromChildren(
+            lightMips_[level - 1],
+            mipSize(level - 1),
+            px,
+            py,
+            pz
+        );
+        const uint16_t parentIndex = getVoxelIndex(px, py, pz, mipSize(level));
+        if (parentLevel[parentIndex] == parentLight) {
+            break;
+        }
+        parentLevel[parentIndex] = parentLight;
+    }
+}
+
+uint8_t Chunk::getSkyLight(uint8_t x, uint8_t y, uint8_t z) const {
+    return unpackSkyLight(getPackedLight(x, y, z));
+}
+
+uint8_t Chunk::getBlockLight(uint8_t x, uint8_t y, uint8_t z) const {
+    return unpackBlockLight(getPackedLight(x, y, z));
 }
 
 uint16_t Chunk::getVoxelIndex(uint8_t x, uint8_t y, uint8_t z, uint8_t size) {
@@ -176,6 +248,38 @@ void Chunk::resizeBitArray(MipStorage& storage, uint8_t newBitsPerBlock) {
 
 bool Chunk::isSolid(BlockMaterial block) {
     return block.unpack().id != 0u;
+}
+
+uint8_t Chunk::downsamplePackedLightFromChildren(const std::vector<uint8_t>& childLevel,
+                                                 uint8_t childSize,
+                                                 uint8_t px,
+                                                 uint8_t py,
+                                                 uint8_t pz) {
+    uint8_t maxSky = 0u;
+    uint8_t maxBlock = 0u;
+    const uint8_t cx = static_cast<uint8_t>(px << 1);
+    const uint8_t cy = static_cast<uint8_t>(py << 1);
+    const uint8_t cz = static_cast<uint8_t>(pz << 1);
+
+    for (uint8_t dz = 0; dz < 2; ++dz) {
+        for (uint8_t dy = 0; dy < 2; ++dy) {
+            for (uint8_t dx = 0; dx < 2; ++dx) {
+                const uint8_t x = static_cast<uint8_t>(cx + dx);
+                const uint8_t y = static_cast<uint8_t>(cy + dy);
+                const uint8_t z = static_cast<uint8_t>(cz + dz);
+                const uint16_t childIndex = getVoxelIndex(x, y, z, childSize);
+                if (childIndex >= childLevel.size()) {
+                    continue;
+                }
+
+                const uint8_t packed = childLevel[childIndex];
+                maxSky = std::max(maxSky, unpackSkyLight(packed));
+                maxBlock = std::max(maxBlock, unpackBlockLight(packed));
+            }
+        }
+    }
+
+    return packLight(maxSky, maxBlock);
 }
 
 BlockMaterial Chunk::airBlock() {

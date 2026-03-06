@@ -16,6 +16,13 @@ namespace {
         return blockID.unpack().id != kAirBlockId;
     }
 
+    uint8_t maxPackedLight(uint8_t a, uint8_t b) {
+        return Chunk::packLight(
+            std::max(Chunk::unpackSkyLight(a), Chunk::unpackSkyLight(b)),
+            std::max(Chunk::unpackBlockLight(a), Chunk::unpackBlockLight(b))
+        );
+    }
+
     const BlockModelDefinition* modelDefinitionForMaterial(const BlockModelLibrary* blockModelLibrary,
                                                            uint16_t materialId) {
         if (blockModelLibrary == nullptr || blockModelLibrary->models.empty()) {
@@ -161,8 +168,10 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                                   const std::vector<const Chunk*>& neighbors) const {
     // We use a flat array of uint32_t to store the unpacked IDs for cache-friendly access
     std::array<BlockMaterial, kPaddedBlockCount> paddedBlockData;
+    std::array<uint8_t, kPaddedBlockCount> paddedLightData;
     UnpackedBlockMaterial air{0, 0, Direction::PlusX, 0};
     paddedBlockData.fill(air.pack()); // Fill with air by default
+    paddedLightData.fill(Chunk::packLight(15u, 0u));
 
     // Helper to get 1D index for the 3D padded array
     auto paddedIndex = [&](int x, int y, int z) {
@@ -174,6 +183,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
         for (int y = 0; y < kChunkSize; ++y) {
             for (int z = 0; z < kChunkSize; ++z) {
                 paddedBlockData[paddedIndex(x + 1, y + 1, z + 1)] = chunk.getBlock(x, y, z);
+                paddedLightData[paddedIndex(x + 1, y + 1, z + 1)] = chunk.getPackedLight(x, y, z);
             }
         }
     }
@@ -189,21 +199,27 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                 switch (dir) {
                     case 0: // PlusX: Neighbor's x=0 maps to padded x=17
                         paddedBlockData[paddedIndex(kChunkSize + 1, i + 1, j + 1)] = neighbor->getBlock(0, i, j);
+                        paddedLightData[paddedIndex(kChunkSize + 1, i + 1, j + 1)] = neighbor->getPackedLight(0, i, j);
                         break;
                     case 1: // MinusX: Neighbor's x=15 maps to padded x=0
                         paddedBlockData[paddedIndex(0, i + 1, j + 1)] = neighbor->getBlock(kChunkSize - 1, i, j);
+                        paddedLightData[paddedIndex(0, i + 1, j + 1)] = neighbor->getPackedLight(kChunkSize - 1, i, j);
                         break;
                     case 2: // PlusY: Neighbor's y=0 maps to padded y=17
                         paddedBlockData[paddedIndex(i + 1, kChunkSize + 1, j + 1)] = neighbor->getBlock(i, 0, j);
+                        paddedLightData[paddedIndex(i + 1, kChunkSize + 1, j + 1)] = neighbor->getPackedLight(i, 0, j);
                         break;
                     case 3: // MinusY: Neighbor's y=15 maps to padded y=0
                         paddedBlockData[paddedIndex(i + 1, 0, j + 1)] = neighbor->getBlock(i, kChunkSize - 1, j);
+                        paddedLightData[paddedIndex(i + 1, 0, j + 1)] = neighbor->getPackedLight(i, kChunkSize - 1, j);
                         break;
                     case 4: // PlusZ: Neighbor's z=0 maps to padded z=17
                         paddedBlockData[paddedIndex(i + 1, j + 1, kChunkSize + 1)] = neighbor->getBlock(i, j, 0);
+                        paddedLightData[paddedIndex(i + 1, j + 1, kChunkSize + 1)] = neighbor->getPackedLight(i, j, 0);
                         break;
                     case 5: // MinusZ: Neighbor's z=15 maps to padded z=0
                         paddedBlockData[paddedIndex(i + 1, j + 1, 0)] = neighbor->getBlock(i, j, kChunkSize - 1);
+                        paddedLightData[paddedIndex(i + 1, j + 1, 0)] = neighbor->getPackedLight(i, j, kChunkSize - 1);
                         break;
                 }
             }
@@ -221,6 +237,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                           uint32_t y,
                           uint32_t z,
                           uint16_t materialId,
+                          uint8_t packedLight,
                           uint16_t packedAoData,
                           const BlockModelQuadRef& quadRef,
                           bool useVoxelAo) {
@@ -238,6 +255,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
         Meshlet& activeMeshlet = dirMeshlets.back();
         activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
         activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
+        activeMeshlet.quadLightData[activeMeshlet.quadCount] = packedLight;
         activeMeshlet.quadAoData[activeMeshlet.quadCount] = packedAoData;
         activeMeshlet.quadModelQuadIndices[activeMeshlet.quadCount] = quadRef.gpuQuadIndex;
         activeMeshlet.quadUsesVoxelAo[activeMeshlet.quadCount] = useVoxelAo ? 1u : 0u;
@@ -264,12 +282,14 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                     continue;
                 }
                 std::array<bool, 6> faceVisible{};
+                std::array<uint8_t, 6> faceLight{};
                 for (uint32_t dir = 0; dir < 6; ++dir) {
                     const glm::ivec3& offset = directionOffsets[dir];
                     const int neighborX = paddedX + offset.x;
                     const int neighborY = paddedY + offset.y;
                     const int neighborZ = paddedZ + offset.z;
                     const BlockMaterial neighborBlockID = paddedBlockData[paddedIndex(neighborX, neighborY, neighborZ)];
+                    faceLight[dir] = paddedLightData[paddedIndex(neighborX, neighborY, neighborZ)];
                     faceVisible[dir] = !IsSolidForCulling(neighborBlockID);
                 }
 
@@ -304,6 +324,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                                 static_cast<uint32_t>(y),
                                 static_cast<uint32_t>(z),
                                 materialId,
+                                faceLight[dir],
                                 packedAoData,
                                 *quadRef,
                                 useVoxelAoForModel
@@ -311,6 +332,10 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                         }
                     }
 
+                    uint8_t nonCullableLight = Chunk::packLight(0u, 0u);
+                    for (uint8_t neighborLight : faceLight) {
+                        nonCullableLight = maxPackedLight(nonCullableLight, neighborLight);
+                    }
                     const uint16_t kFullBrightAo = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
                     for (uint32_t quadRefIndex : modelDefinition->nonCullableQuadRefs) {
                         const BlockModelQuadRef* quadRef = modelQuadRef(blockModelLibrary, quadRefIndex);
@@ -323,6 +348,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                             static_cast<uint32_t>(y),
                             static_cast<uint32_t>(z),
                             materialId,
+                            nonCullableLight,
                             kFullBrightAo,
                             *quadRef,
                             false
@@ -347,6 +373,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                         static_cast<uint32_t>(y),
                         static_cast<uint32_t>(z),
                         materialId,
+                        faceLight[dir],
                         packedAoData,
                         fallbackRef,
                         true
@@ -384,6 +411,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                           uint32_t y,
                           uint32_t z,
                           uint16_t materialId,
+                          uint8_t packedLight,
                           uint16_t packedAoData,
                           const BlockModelQuadRef& quadRef,
                           bool useVoxelAo) {
@@ -402,6 +430,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
         Meshlet& activeMeshlet = dirMeshlets.back();
         activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
         activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
+        activeMeshlet.quadLightData[activeMeshlet.quadCount] = packedLight;
         activeMeshlet.quadAoData[activeMeshlet.quadCount] = packedAoData;
         activeMeshlet.quadModelQuadIndices[activeMeshlet.quadCount] = quadRef.gpuQuadIndex;
         activeMeshlet.quadUsesVoxelAo[activeMeshlet.quadCount] = useVoxelAo ? 1u : 0u;
@@ -429,6 +458,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                     continue;
                 }
                 std::array<bool, 6> faceVisible{};
+                std::array<uint8_t, 6> faceLight{};
                 for (uint32_t dir = 0; dir < 6; ++dir) {
                     const glm::ivec3& offset = directionOffsets[dir];
                     const BlockCoord neighborCoord{
@@ -437,6 +467,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                         blockCoord.v.z + offset.z
                     };
                     const BlockMaterial neighborBlockID = source.getBlock(neighborCoord);
+                    faceLight[dir] = source.getPackedLight(neighborCoord);
                     faceVisible[dir] = !IsSolidForCulling(neighborBlockID);
                 }
 
@@ -471,6 +502,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                                 static_cast<uint32_t>(y),
                                 static_cast<uint32_t>(z),
                                 materialId,
+                                faceLight[dir],
                                 packedAoData,
                                 *quadRef,
                                 useVoxelAoForModel
@@ -478,6 +510,10 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                         }
                     }
 
+                    uint8_t nonCullableLight = Chunk::packLight(0u, 0u);
+                    for (uint8_t neighborLight : faceLight) {
+                        nonCullableLight = maxPackedLight(nonCullableLight, neighborLight);
+                    }
                     const uint16_t kFullBrightAo = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
                     for (uint32_t quadRefIndex : modelDefinition->nonCullableQuadRefs) {
                         const BlockModelQuadRef* quadRef = modelQuadRef(blockModelLibrary, quadRefIndex);
@@ -490,6 +526,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                             static_cast<uint32_t>(y),
                             static_cast<uint32_t>(z),
                             materialId,
+                            nonCullableLight,
                             kFullBrightAo,
                             *quadRef,
                             false
@@ -514,6 +551,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                         static_cast<uint32_t>(y),
                         static_cast<uint32_t>(z),
                         materialId,
+                        faceLight[dir],
                         packedAoData,
                         fallbackRef,
                         true
