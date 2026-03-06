@@ -1,24 +1,16 @@
 [
   {
     "name": "stone",
-    "texture": "stone.png",
-    "randomRotation": false,
-    "randomOffsetDirections": "",
-    "randomOffsetAmount": 0.0
+    "texture": "stone.png"
   },
   {
     "name": "grass",
     "texture": "grass.png",
-    "randomRotation": true,
-    "randomOffsetDirections": "",
-    "randomOffsetAmount": 0.0
+    "randomRotation": true
   },
   {
     "name": "log",
-    "texture": "log.png",
-    "randomRotation": false,
-    "randomOffsetDirections": "",
-    "randomOffsetAmount": 0.0
+    "texture": "log.png"
   },
   {
     "name": "leaf",
