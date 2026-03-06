@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <limits>
 #include <queue>
@@ -77,6 +78,7 @@ public:
     bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
     bool tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const;
     bool tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight, uint8_t mipLevel) const;
+    void markColumnLightingDirty(const ColumnCoord& coord);
     bool isColumnGenerated(const ColumnCoord& coord) const;
     bool tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const;
     uint64_t generationRevision() const;
@@ -92,6 +94,7 @@ public:
 
 private:
     struct ColumnGenerationResult;
+    struct ColumnRelightResult;
     struct ScheduledColumnJob {
         ColumnCoord coord{};
         jobsystem::Priority priority = jobsystem::Priority::Low;
@@ -105,6 +108,14 @@ private:
     void collectColumnJobsToScheduleLocked(std::vector<ScheduledColumnJob>& outJobs);
     void dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsToSchedule);
     void pumpColumnGenerationQueue();
+    void enqueueColumnRelightLocked(const ColumnCoord& coord);
+    void invalidateRelightNeighborhoodLocked(const ColumnCoord& coord);
+    void enqueueRelightNeighborhoodLocked(const ColumnCoord& coord);
+    bool hasRelightNeighborhoodLocked(const ColumnCoord& coord) const;
+    void pruneQueuedRelightColumnsOutsideActiveWindowLocked();
+    void collectRelightJobsToScheduleLocked(std::vector<ColumnCoord>& outJobs);
+    void dispatchScheduledRelightJobs(std::vector<ColumnCoord>&& jobsToSchedule);
+    void pumpColumnRelightQueue();
 
     void onColumnGenerated(const ColumnCoord& coord, Column&& column);
 
@@ -141,6 +152,10 @@ private:
     std::vector<ColumnCoord> generatedColumnHistory_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
     std::unordered_set<ColumnCoord> queuedColumnJobs_;
+    std::unordered_set<ColumnCoord> pendingRelightJobs_;
+    std::unordered_set<ColumnCoord> queuedRelightJobs_;
+    std::unordered_set<ColumnCoord> resolvedLightingColumns_;
+    std::deque<ColumnCoord> queuedRelightOrder_;
     std::priority_queue<
         QueuedColumnEntry,
         std::vector<QueuedColumnEntry>,
@@ -149,6 +164,7 @@ private:
     std::atomic<uint64_t> generationRevision_{0};
     std::atomic<bool> shuttingDown_{false};
     std::size_t maxInFlightColumnJobs_ = 1;
+    std::size_t maxInFlightRelightJobs_ = 1;
     uint64_t queueSequence_ = 0;
     uint64_t queueCenterVersion_ = 0;
 

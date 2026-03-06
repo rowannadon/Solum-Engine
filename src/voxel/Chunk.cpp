@@ -146,6 +146,53 @@ void Chunk::setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight)
     }
 }
 
+bool Chunk::setPackedLightVolume(const uint8_t* packedLights, size_t count) {
+    if (packedLights == nullptr || count < VOLUME) {
+        return false;
+    }
+
+    std::vector<uint8_t>& baseLightLevel = lightMips_[0];
+    if (baseLightLevel.size() != VOLUME) {
+        baseLightLevel.assign(VOLUME, defaultPackedLight_);
+    }
+
+    if (std::equal(baseLightLevel.begin(), baseLightLevel.end(), packedLights)) {
+        return false;
+    }
+
+    std::copy_n(packedLights, VOLUME, baseLightLevel.begin());
+
+    for (uint8_t level = 1; level <= MAX_MIP_LEVEL; ++level) {
+        const uint8_t parentSize = mipSize(level);
+        const size_t parentVolume = static_cast<size_t>(parentSize) *
+                                    static_cast<size_t>(parentSize) *
+                                    static_cast<size_t>(parentSize);
+        std::vector<uint8_t>& parentLevel = lightMips_[level];
+        if (parentLevel.size() != parentVolume) {
+            parentLevel.assign(parentVolume, defaultPackedLight_);
+        }
+
+        const std::vector<uint8_t>& childLevel = lightMips_[level - 1];
+        const uint8_t childSize = mipSize(level - 1);
+        for (uint8_t pz = 0; pz < parentSize; ++pz) {
+            for (uint8_t py = 0; py < parentSize; ++py) {
+                for (uint8_t px = 0; px < parentSize; ++px) {
+                    const uint16_t parentIndex = getVoxelIndex(px, py, pz, parentSize);
+                    parentLevel[parentIndex] = downsamplePackedLightFromChildren(
+                        childLevel,
+                        childSize,
+                        px,
+                        py,
+                        pz
+                    );
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
 uint8_t Chunk::getSkyLight(uint8_t x, uint8_t y, uint8_t z) const {
     return unpackSkyLight(getPackedLight(x, y, z));
 }
