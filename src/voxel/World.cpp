@@ -434,12 +434,11 @@ void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
         // shift generation focus to the newest player position.
         queuedColumnJobs_.clear();
         queuedColumnHeap_ = decltype(queuedColumnHeap_){};
-        queuedRelightJobs_.clear();
-        queuedRelightOrder_.clear();
 
         refillQueuedColumnsLocked();
         pruneQueuedColumnsOutsideActiveWindowLocked();
         pruneQueuedRelightColumnsOutsideActiveWindowLocked();
+        seedQueuedRelightColumnsLocked();
         collectColumnJobsToScheduleLocked(jobsToSchedule);
         collectRelightJobsToScheduleLocked(relightJobsToSchedule);
     }
@@ -658,6 +657,24 @@ void World::pruneQueuedRelightColumnsOutsideActiveWindowLocked() {
         }
 
         queuedRelightOrder_.push_back(coord);
+    }
+}
+
+void World::seedQueuedRelightColumnsLocked() {
+    if (!hasLastScheduledCenter_ || !queuedRelightOrder_.empty()) {
+        return;
+    }
+
+    const int32_t radius = std::max(0, config_.columnLoadRadius);
+    const int32_t minX = lastScheduledCenter_.v.x - radius;
+    const int32_t maxX = lastScheduledCenter_.v.x + radius;
+    const int32_t minY = lastScheduledCenter_.v.y - radius;
+    const int32_t maxY = lastScheduledCenter_.v.y + radius;
+
+    for (int32_t y = minY; y <= maxY; ++y) {
+        for (int32_t x = minX; x <= maxX; ++x) {
+            enqueueColumnRelightLocked(ColumnCoord{x, y});
+        }
     }
 }
 
@@ -1066,6 +1083,7 @@ void World::pumpColumnGenerationQueue() {
         pruneQueuedColumnsOutsideActiveWindowLocked();
         pruneQueuedRelightColumnsOutsideActiveWindowLocked();
         refillQueuedColumnsLocked();
+        seedQueuedRelightColumnsLocked();
         collectColumnJobsToScheduleLocked(jobsToSchedule);
         collectRelightJobsToScheduleLocked(relightJobsToSchedule);
     }
@@ -1082,6 +1100,7 @@ void World::pumpColumnRelightQueue() {
     {
         std::unique_lock<std::shared_mutex> lock(worldMutex_);
         pruneQueuedRelightColumnsOutsideActiveWindowLocked();
+        seedQueuedRelightColumnsLocked();
         collectRelightJobsToScheduleLocked(jobsToSchedule);
     }
     dispatchScheduledRelightJobs(std::move(jobsToSchedule));

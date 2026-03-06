@@ -113,6 +113,7 @@ private:
     void enqueueRelightNeighborhoodLocked(const ColumnCoord& coord);
     bool hasRelightNeighborhoodLocked(const ColumnCoord& coord) const;
     void pruneQueuedRelightColumnsOutsideActiveWindowLocked();
+    void seedQueuedRelightColumnsLocked();
     void collectRelightJobsToScheduleLocked(std::vector<ColumnCoord>& outJobs);
     void dispatchScheduledRelightJobs(std::vector<ColumnCoord>&& jobsToSchedule);
     void pumpColumnRelightQueue();
