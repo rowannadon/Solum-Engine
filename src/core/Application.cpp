@@ -11,7 +11,7 @@
 bool Application::Initialize() {
     WebGPURenderer::Config rendererConfig{};
     if (!gpu.initialize(rendererConfig)) return false;
-    if (!voxelStreaming_.initialize()) return false;
+    if (!voxelStreaming_.initialize(gpu.getBlockModelLibrary())) return false;
     buf = gpu.getBufferManager();
 
     window = gpu.getWindow();

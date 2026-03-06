@@ -4,6 +4,7 @@
 @group(0) @binding(0) var<uniform> frameUniforms: FrameUniforms;
 @group(0) @binding(1) var<storage, read> meshletDataWords: array<u32>;
 @group(0) @binding(2) var<storage, read> meshletMetadata: array<MeshletMetadata>;
+@group(0) @binding(3) var<storage, read> modelQuads: array<ModelQuad>;
 
 struct ActiveMeshletRange {
     meshletOffset: u32,
@@ -19,8 +20,8 @@ struct ActiveRangeParams {
     pad1: u32,
 };
 
-@group(0) @binding(3) var<storage, read> activeRanges: array<ActiveMeshletRange>;
-@group(0) @binding(4) var<uniform> activeRangeParams: ActiveRangeParams;
+@group(0) @binding(4) var<storage, read> activeRanges: array<ActiveMeshletRange>;
+@group(0) @binding(5) var<uniform> activeRangeParams: ActiveRangeParams;
 
 struct VertexInput {
     @builtin(instance_index) instance_idx: u32,

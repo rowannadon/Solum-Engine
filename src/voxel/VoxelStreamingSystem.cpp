@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include "solum_engine/voxel/MeshManager.h"
 #include "solum_engine/voxel/World.h"
@@ -12,7 +13,9 @@ VoxelStreamingSystem::~VoxelStreamingSystem() {
     stop();
 }
 
-bool VoxelStreamingSystem::initialize() {
+bool VoxelStreamingSystem::initialize(std::shared_ptr<const BlockModelLibrary> blockModelLibrary) {
+    blockModelLibrary_ = std::move(blockModelLibrary);
+
     World::Config worldConfig;
     worldConfig.columnLoadRadius = 255;
     worldConfig.jobConfig.worker_threads = 2;
@@ -27,7 +30,7 @@ bool VoxelStreamingSystem::initialize() {
     meshConfig.activeChunkRadius = std::min(meshConfig.activeChunkRadius, clampedWorldRadius);
 
     world_ = std::make_unique<World>(worldConfig);
-    meshManager_ = std::make_unique<MeshManager>(*world_, meshConfig);
+    meshManager_ = std::make_unique<MeshManager>(*world_, meshConfig, blockModelLibrary_);
 
     return world_ && meshManager_;
 }

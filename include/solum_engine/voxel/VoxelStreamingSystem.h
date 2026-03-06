@@ -16,6 +16,7 @@
 #include "solum_engine/render/RuntimeTiming.h"
 #include "solum_engine/render/TimingAccumulator.h"
 #include "solum_engine/resources/Coords.h"
+#include "solum_engine/voxel/BlockModelLibrary.h"
 #include "solum_engine/voxel/StreamingUpload.h"
 #include "solum_engine/voxel/mesh_stream/UploadMailbox.h"
 
@@ -46,6 +47,7 @@ private:
 
     std::unique_ptr<World> world_;
     std::unique_ptr<MeshManager> meshManager_;
+    std::shared_ptr<const BlockModelLibrary> blockModelLibrary_;
 
     std::thread streamingThread_;
     mutable std::mutex streamingMutex_;
@@ -78,7 +80,7 @@ public:
     VoxelStreamingSystem();
     ~VoxelStreamingSystem();
 
-    bool initialize();
+    bool initialize(std::shared_ptr<const BlockModelLibrary> blockModelLibrary);
     void start(const glm::vec3& initialCameraPosition, uint64_t initialUploadedMeshRevision);
     void stop();
 

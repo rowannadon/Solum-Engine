@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "lodepng/lodepng.h"
 #include "nlohmann_json/json.hpp"
@@ -12,10 +15,13 @@ using namespace wgpu;
 
 namespace {
 constexpr uint32_t kFirstMaterialId = 1u;
+constexpr const char* kDefaultVoxelModelName = "__default_voxel_model__";
+constexpr const char* kDefaultVoxelModelFile = "voxel_model.obj";
 
 struct LoadedMaterialTexture {
     std::string name;
     std::string textureRelativePath;
+    std::string modelRelativePath;
     std::vector<uint8_t> pixels;
     uint32_t width = 0u;
     uint32_t height = 0u;
@@ -31,8 +37,13 @@ bool MaterialManager::initialize(BufferManager& bufferManager, TextureManager& t
 
     materialLookup_.assign(kLookupEntryCount, 0u);
     materials_.clear();
+    blockModelLibrary_.reset();
 
     if (!buildDefaultMaterials(bufferManager, textureManager)) {
+        modelManager_.terminate(bufferManager);
+        blockModelLibrary_.reset();
+        materials_.clear();
+        materialLookup_.assign(kLookupEntryCount, 0u);
         return false;
     }
 
@@ -45,11 +56,13 @@ void MaterialManager::terminate(BufferManager& bufferManager, TextureManager& te
         return;
     }
 
+    modelManager_.terminate(bufferManager);
     bufferManager.deleteBuffer(kMaterialLookupBufferName);
     textureManager.removeTextureView(kMaterialTextureArrayViewName);
     textureManager.removeTexture(kMaterialTextureArrayName);
     textureManager.removeSampler(kMaterialSamplerName);
 
+    blockModelLibrary_.reset();
     materials_.clear();
     materialLookup_.clear();
     initialized_ = false;
@@ -70,10 +83,14 @@ uint32_t MaterialManager::textureIndexForMaterial(uint16_t materialId) const {
     return materialLookup_[materialId];
 }
 
+std::shared_ptr<const BlockModelLibrary> MaterialManager::blockModelLibrary() const {
+    return blockModelLibrary_;
+}
+
 bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, TextureManager& textureManager) {
     const std::filesystem::path materialConfigPath = std::filesystem::path(RESOURCE_DIR) / "materials.json";
 
-    std::vector<std::pair<std::string, std::string>> configMaterials;
+    std::vector<MaterialConfigEntry> configMaterials;
     if (!loadMaterialConfig(materialConfigPath, configMaterials)) {
         return false;
     }
@@ -91,13 +108,14 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
 
     const std::filesystem::path texturesRoot = std::filesystem::path(RESOURCE_DIR) / "textures";
     for (size_t i = 0; i < configMaterials.size(); ++i) {
-        const std::string& name = configMaterials[i].first;
-        const std::string& textureRelativePath = configMaterials[i].second;
+        const std::string& name = configMaterials[i].name;
+        const std::string& textureRelativePath = configMaterials[i].texture;
         const std::filesystem::path texturePath = texturesRoot / textureRelativePath;
 
         LoadedMaterialTexture loaded{};
         loaded.name = name;
         loaded.textureRelativePath = textureRelativePath;
+        loaded.modelRelativePath = configMaterials[i].model;
         loaded.materialId = static_cast<uint16_t>(kFirstMaterialId + static_cast<uint32_t>(i));
         loaded.textureLayer = static_cast<uint32_t>(i);
 
@@ -109,6 +127,106 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
 
         loadedMaterials.push_back(std::move(loaded));
     }
+
+    modelManager_.terminate(bufferManager);
+    const std::filesystem::path modelsRoot = std::filesystem::path(RESOURCE_DIR) / "models";
+    if (!modelManager_.loadModel(kDefaultVoxelModelName, modelsRoot / kDefaultVoxelModelFile)) {
+        std::cerr << "MaterialManager: failed to load fallback model '" << kDefaultVoxelModelFile << "'." << std::endl;
+        return false;
+    }
+
+    std::unordered_set<std::string> seenModelPaths;
+    for (const LoadedMaterialTexture& loaded : loadedMaterials) {
+        if (loaded.modelRelativePath.empty()) {
+            continue;
+        }
+        if (!seenModelPaths.insert(loaded.modelRelativePath).second) {
+            continue;
+        }
+        if (!modelManager_.loadModel(loaded.modelRelativePath, modelsRoot / loaded.modelRelativePath)) {
+            std::cerr << "MaterialManager: failed to load model '" << loaded.modelRelativePath
+                      << "' for material '" << loaded.name << "'." << std::endl;
+            return false;
+        }
+    }
+
+    if (!modelManager_.uploadModels(bufferManager)) {
+        return false;
+    }
+
+    auto blockModels = std::make_shared<BlockModelLibrary>();
+    blockModels->materialToModel.fill(0u);
+
+    std::unordered_map<std::string, uint16_t> modelIndexByName;
+    auto appendModelToLibrary = [&](const std::string& modelName, uint16_t& outIndex) -> bool {
+        const auto existing = modelIndexByName.find(modelName);
+        if (existing != modelIndexByName.end()) {
+            outIndex = existing->second;
+            return true;
+        }
+
+        const LoadedModel* loadedModel = modelManager_.getModel(modelName);
+        if (loadedModel == nullptr) {
+            std::cerr << "MaterialManager: model '" << modelName << "' is missing from ModelManager." << std::endl;
+            return false;
+        }
+
+        BlockModelDefinition definition{};
+        auto appendRefs = [&](const std::vector<uint32_t>& source, std::vector<uint32_t>& destination) {
+            destination.reserve(source.size());
+            for (uint32_t localQuadIndex : source) {
+                if (localQuadIndex >= loadedModel->quadMetadata.size() ||
+                    localQuadIndex >= loadedModel->localToGpuQuadIndex.size()) {
+                    continue;
+                }
+
+                const uint32_t gpuQuadIndex = loadedModel->localToGpuQuadIndex[localQuadIndex];
+                if (gpuQuadIndex == std::numeric_limits<uint32_t>::max()) {
+                    continue;
+                }
+
+                const ModelQuadMetadata& metadata = loadedModel->quadMetadata[localQuadIndex];
+                BlockModelQuadRef ref{};
+                ref.gpuQuadIndex = gpuQuadIndex;
+                ref.preferredFace = metadata.preferredFace;
+                ref.minCorner = metadata.minCorner;
+                ref.maxCorner = metadata.maxCorner;
+
+                const uint32_t refIndex = static_cast<uint32_t>(blockModels->quadRefs.size());
+                blockModels->quadRefs.push_back(ref);
+                destination.push_back(refIndex);
+            }
+        };
+
+        for (uint32_t face = 0u; face < 6u; ++face) {
+            appendRefs(loadedModel->cullableQuadIndices[face], definition.cullableQuadRefs[face]);
+        }
+        appendRefs(loadedModel->nonCullableQuadIndices, definition.nonCullableQuadRefs);
+
+        outIndex = static_cast<uint16_t>(blockModels->models.size());
+        blockModels->models.push_back(std::move(definition));
+        modelIndexByName.emplace(modelName, outIndex);
+        return true;
+    };
+
+    uint16_t fallbackModelIndex = 0u;
+    if (!appendModelToLibrary(kDefaultVoxelModelName, fallbackModelIndex)) {
+        return false;
+    }
+    blockModels->fallbackModelIndex = fallbackModelIndex;
+    blockModels->materialToModel[0] = fallbackModelIndex;
+
+    for (const LoadedMaterialTexture& material : loadedMaterials) {
+        const std::string& modelName = material.modelRelativePath.empty()
+            ? std::string(kDefaultVoxelModelName)
+            : material.modelRelativePath;
+        uint16_t modelIndex = fallbackModelIndex;
+        if (!appendModelToLibrary(modelName, modelIndex)) {
+            return false;
+        }
+        blockModels->materialToModel[material.materialId] = modelIndex;
+    }
+    blockModelLibrary_ = std::move(blockModels);
 
     const uint32_t baseWidth = loadedMaterials.front().width;
     const uint32_t baseHeight = loadedMaterials.front().height;
@@ -215,7 +333,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
 }
 
 bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
-                                         std::vector<std::pair<std::string, std::string>>& outMaterials) {
+                                         std::vector<MaterialConfigEntry>& outMaterials) {
     std::ifstream file(path);
     if (!file.is_open()) {
         std::cerr << "MaterialManager: unable to open material config '" << path.string() << "'." << std::endl;
@@ -259,7 +377,17 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
             return false;
         }
 
-        outMaterials.emplace_back(entry["name"].get<std::string>(), entry["texture"].get<std::string>());
+        MaterialConfigEntry material{};
+        material.name = entry["name"].get<std::string>();
+        material.texture = entry["texture"].get<std::string>();
+        if (entry.contains("model") && !entry["model"].is_string()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'model' must be a string when present." << std::endl;
+            return false;
+        }
+        if (entry.contains("model")) {
+            material.model = entry["model"].get<std::string>();
+        }
+        outMaterials.push_back(std::move(material));
     }
 
     return true;

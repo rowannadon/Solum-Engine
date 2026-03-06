@@ -9,12 +9,21 @@ struct MeshletMetadata {
     pad1: u32,
 };
 
+struct ModelQuad {
+    vertexPositions: array<vec4f, 4>,
+    uvs: array<vec2f, 4>,
+    aoValues: array<f32, 4>,
+    normal: vec4f,
+};
+
 struct MeshletQuadVertexSample {
     worldPosition: vec3f,
+    texCoord: vec2f,
     cornerOffset: vec3f,
     quadData: u32,
     quadAoData: u32,
     corner: u32,
+    useVoxelAo: bool,
 };
 
 fn fetch_quad_data(quadOffset: u32) -> u32 {
@@ -32,6 +41,14 @@ fn decode_local_offset(packed: u32) -> vec3u {
 
 fn decode_material_id(packed: u32) -> u32 {
     return (packed >> 16u) & 0xffffu;
+}
+
+fn decode_model_quad_index(packedAuxData: u32) -> u32 {
+    return (packedAuxData >> 9u) & 0x3fffffu;
+}
+
+fn decode_use_voxel_ao(packedAuxData: u32) -> bool {
+    return ((packedAuxData >> 31u) & 0x1u) != 0u;
 }
 
 fn decode_flip(packedAoData: u32) -> bool {
@@ -128,19 +145,34 @@ fn sample_meshlet_quad_vertex(
     let quadDataOffset = meshlet.dataOffset + (quadIdx * 2u);
     let quadData = fetch_quad_data(quadDataOffset);
     let quadAoData = fetch_quad_data(quadDataOffset + 1u);
+    let modelQuadIndex = decode_model_quad_index(quadAoData);
     let blockLocal = decode_local_offset(quadData);
     let corner = corner_from_triangle_vertex(triangleVertex, decode_flip(quadAoData));
-    let cornerOffset = face_corner_offset(meshlet.faceDirection, corner);
     let voxelScale = f32(max(meshlet.voxelScale, 1u));
     let meshletOrigin = vec3f(f32(meshlet.originX), f32(meshlet.originY), f32(meshlet.originZ));
+    let blockBase = vec3f(f32(blockLocal.x), f32(blockLocal.y), f32(blockLocal.z));
+    let useVoxelAo = decode_use_voxel_ao(quadAoData);
+    var cornerOffset = vec3f(0.0, 0.0, 0.0);
+    var texCoord = vec2f(0.0, 0.0);
+    var worldPosition = vec3f(0.0, 0.0, 0.0);
+
+    if (useVoxelAo) {
+        cornerOffset = face_corner_offset(meshlet.faceDirection, corner);
+        worldPosition = meshletOrigin + (blockBase + cornerOffset) * voxelScale;
+    } else {
+        let modelQuad = modelQuads[modelQuadIndex];
+        cornerOffset = modelQuad.vertexPositions[corner].xyz;
+        texCoord = modelQuad.uvs[corner];
+        worldPosition = meshletOrigin + (blockBase + cornerOffset) * voxelScale;
+    }
 
     var sample: MeshletQuadVertexSample;
-    sample.worldPosition =
-        meshletOrigin +
-        (vec3f(f32(blockLocal.x), f32(blockLocal.y), f32(blockLocal.z)) + cornerOffset) * voxelScale;
+    sample.worldPosition = worldPosition;
+    sample.texCoord = texCoord;
     sample.cornerOffset = cornerOffset;
     sample.quadData = quadData;
     sample.quadAoData = quadAoData;
     sample.corner = corner;
+    sample.useVoxelAo = useVoxelAo;
     return sample;
 }

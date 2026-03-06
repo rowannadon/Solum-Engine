@@ -195,6 +195,13 @@ BufferManager* WebGPURenderer::getBufferManager() {
     return bufferManager.get();
 }
 
+std::shared_ptr<const BlockModelLibrary> WebGPURenderer::getBlockModelLibrary() const {
+    if (!materialManager) {
+        return {};
+    }
+    return materialManager->blockModelLibrary();
+}
+
 RuntimeTimingSnapshot WebGPURenderer::getRuntimeTimingSnapshot() {
     return timingTracker_.snapshot(pendingMeshDelta_.has_value());
 }

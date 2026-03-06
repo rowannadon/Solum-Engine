@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -9,7 +10,9 @@
 #include <vector>
 
 #include "solum_engine/render/BufferManager.h"
+#include "solum_engine/render/ModelManager.h"
 #include "solum_engine/render/TextureManager.h"
+#include "solum_engine/voxel/BlockModelLibrary.h"
 
 struct MaterialDefinition {
     uint16_t materialId = 0;
@@ -34,11 +37,18 @@ public:
 
     std::optional<MaterialDefinition> getMaterial(uint16_t materialId) const;
     uint32_t textureIndexForMaterial(uint16_t materialId) const;
+    std::shared_ptr<const BlockModelLibrary> blockModelLibrary() const;
 
 private:
+    struct MaterialConfigEntry {
+        std::string name;
+        std::string texture;
+        std::string model;
+    };
+
     bool buildDefaultMaterials(BufferManager& bufferManager, TextureManager& textureManager);
     static bool loadMaterialConfig(const std::filesystem::path& path,
-                                   std::vector<std::pair<std::string, std::string>>& outMaterials);
+                                   std::vector<MaterialConfigEntry>& outMaterials);
     static bool loadPngRgba8(const std::filesystem::path& path,
                              std::vector<uint8_t>& outPixels,
                              uint32_t& outWidth,
@@ -53,5 +63,7 @@ private:
 
     std::unordered_map<uint16_t, MaterialDefinition> materials_;
     std::vector<uint32_t> materialLookup_;
+    ModelManager modelManager_{};
+    std::shared_ptr<BlockModelLibrary> blockModelLibrary_{};
     bool initialized_ = false;
 };

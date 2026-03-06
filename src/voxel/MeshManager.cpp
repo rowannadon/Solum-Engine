@@ -157,11 +157,59 @@ std::size_t maxPendingMeshJobs(std::size_t workerCount) {
     return std::max<std::size_t>(24u, clampedWorkers * 3u);
 }
 
+const BlockModelQuadRef* selectModelQuadRef(const BlockModelLibrary* blockModelLibrary,
+                                            uint16_t materialId,
+                                            uint32_t faceDirection) {
+    if (blockModelLibrary == nullptr || blockModelLibrary->models.empty() || faceDirection >= 6u) {
+        return nullptr;
+    }
+
+    uint16_t modelIndex = blockModelLibrary->materialToModel[materialId];
+
+    const BlockModelDefinition* model = blockModelLibrary->modelByIndex(modelIndex);
+    if (model == nullptr) {
+        model = blockModelLibrary->modelByIndex(blockModelLibrary->fallbackModelIndex);
+    }
+    if (model == nullptr) {
+        return nullptr;
+    }
+
+    auto resolveRef = [blockModelLibrary](uint32_t refIndex) -> const BlockModelQuadRef* {
+        if (refIndex >= blockModelLibrary->quadRefs.size()) {
+            return nullptr;
+        }
+        return &blockModelLibrary->quadRefs[refIndex];
+    };
+
+    if (!model->cullableQuadRefs[faceDirection].empty()) {
+        if (const BlockModelQuadRef* ref = resolveRef(model->cullableQuadRefs[faceDirection][0])) {
+            return ref;
+        }
+    }
+
+    if (!model->nonCullableQuadRefs.empty()) {
+        if (const BlockModelQuadRef* ref = resolveRef(model->nonCullableQuadRefs[0])) {
+            return ref;
+        }
+    }
+
+    for (uint32_t face = 0u; face < 6u; ++face) {
+        if (!model->cullableQuadRefs[face].empty()) {
+            if (const BlockModelQuadRef* ref = resolveRef(model->cullableQuadRefs[face][0])) {
+                return ref;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
 void appendSkirtQuad(std::vector<Meshlet>& skirtMeshlets,
                      uint32_t faceDirection,
                      const glm::ivec3& origin,
                      uint32_t voxelScale,
-                     uint16_t materialId) {
+                     uint16_t materialId,
+                     const BlockModelLibrary* blockModelLibrary) {
     Meshlet skirt{};
     skirt.origin = origin;
     skirt.faceDirection = faceDirection;
@@ -169,6 +217,17 @@ void appendSkirtQuad(std::vector<Meshlet>& skirtMeshlets,
     skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
     skirt.quadMaterialIds[0] = materialId;
     skirt.quadAoData[0] = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
+    const BlockModelQuadRef* quadRef = selectModelQuadRef(blockModelLibrary, materialId, faceDirection);
+    skirt.quadModelQuadIndices[0] = (quadRef != nullptr) ? quadRef->gpuQuadIndex : faceDirection;
+    skirt.quadUsesVoxelAo[0] = 0u;
+    if (quadRef != nullptr) {
+        skirt.localBoundsMin = quadRef->minCorner;
+        skirt.localBoundsMax = quadRef->maxCorner;
+    } else {
+        skirt.localBoundsMin = glm::vec3(0.0f);
+        skirt.localBoundsMax = glm::vec3(1.0f);
+    }
+    skirt.hasCustomBounds = true;
     skirt.quadCount = 1u;
     skirtMeshlets.push_back(skirt);
 }
@@ -176,7 +235,8 @@ void appendSkirtQuad(std::vector<Meshlet>& skirtMeshlets,
 void appendAlwaysOnTileSkirts(std::vector<Meshlet>& meshlets,
                               const MeshTileCoord& tile,
                               int32_t meshTileSizeChunks,
-                              uint8_t lodLevel) {
+                              uint8_t lodLevel,
+                              const BlockModelLibrary* blockModelLibrary) {
     if (lodLevel == 0u || meshlets.empty()) {
         return;
     }
@@ -210,7 +270,8 @@ void appendAlwaysOnTileSkirts(std::vector<Meshlet>& meshlets,
                     Direction::MinusX,
                     glm::ivec3(worldX, worldY, worldZ),
                     voxelScale,
-                    materialId
+                    materialId,
+                    blockModelLibrary
                 );
             }
             if ((worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
@@ -219,7 +280,8 @@ void appendAlwaysOnTileSkirts(std::vector<Meshlet>& meshlets,
                     Direction::PlusX,
                     glm::ivec3(worldX, worldY, worldZ),
                     voxelScale,
-                    materialId
+                    materialId,
+                    blockModelLibrary
                 );
             }
             if (worldY == tileMinY) {
@@ -228,7 +290,8 @@ void appendAlwaysOnTileSkirts(std::vector<Meshlet>& meshlets,
                     Direction::MinusY,
                     glm::ivec3(worldX, worldY, worldZ),
                     voxelScale,
-                    materialId
+                    materialId,
+                    blockModelLibrary
                 );
             }
             if ((worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
@@ -237,7 +300,8 @@ void appendAlwaysOnTileSkirts(std::vector<Meshlet>& meshlets,
                     Direction::PlusY,
                     glm::ivec3(worldX, worldY, worldZ),
                     voxelScale,
-                    materialId
+                    materialId,
+                    blockModelLibrary
                 );
             }
         }
@@ -251,11 +315,12 @@ void appendAlwaysOnTileSkirts(std::vector<Meshlet>& meshlets,
 }
 }  // namespace
 
-MeshManager::MeshManager(const World& world)
-    : MeshManager(world, Config{}) {}
+MeshManager::MeshManager(const World& world, std::shared_ptr<const BlockModelLibrary> blockModelLibrary)
+    : MeshManager(world, Config{}, std::move(blockModelLibrary)) {}
 
-MeshManager::MeshManager(const World& world, Config config)
+MeshManager::MeshManager(const World& world, Config config, std::shared_ptr<const BlockModelLibrary> blockModelLibrary)
     : world_(world),
+      blockModelLibrary_(std::move(blockModelLibrary)),
       config_(std::move(config)),
       jobs_(config_.jobConfig) {
     sanitizeConfig(config_);
@@ -1058,7 +1123,7 @@ std::vector<Meshlet> MeshManager::meshTileLod(const TileLodCoord& coord) const {
         }
     }
 
-    appendAlwaysOnTileSkirts(meshlets, coord.tile, meshTileSizeChunks_, lodLevel);
+    appendAlwaysOnTileSkirts(meshlets, coord.tile, meshTileSizeChunks_, lodLevel, blockModelLibrary_.get());
     return meshlets;
 }
 
@@ -1072,7 +1137,7 @@ std::vector<Meshlet> MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8
     const uint32_t baseVoxelScale = static_cast<uint32_t>(1u << mipLevel);
     const uint32_t voxelScale = baseVoxelScale * static_cast<uint32_t>(sampleStrideMip);
 
-    ChunkMesher mesher;
+    ChunkMesher mesher(blockModelLibrary_);
     const BlockCoord sectionOriginSample{
         cellCoord.v.x * cfg::CHUNK_SIZE,
         cellCoord.v.y * cfg::CHUNK_SIZE,

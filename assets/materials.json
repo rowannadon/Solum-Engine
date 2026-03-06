@@ -13,6 +13,7 @@
   },
   {
     "name": "leaf",
-    "texture": "leaf.png"
+    "texture": "leaf.png",
+    "model": "bush_model.obj"
   }
 ]

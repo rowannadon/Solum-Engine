@@ -9,9 +9,18 @@
 using namespace wgpu;
 
 MeshletAabb MeshletBufferController::computeMeshletAabb(const Meshlet& meshlet) {
+    const float voxelScale = static_cast<float>(std::max(meshlet.voxelScale, 1u));
+    const glm::vec3 meshletOrigin = glm::vec3(meshlet.origin);
+
+    if (meshlet.hasCustomBounds) {
+        return MeshletAabb{
+            meshletOrigin + (meshlet.localBoundsMin * voxelScale),
+            meshletOrigin + (meshlet.localBoundsMax * voxelScale)
+        };
+    }
+
     if (meshlet.quadCount == 0u) {
-        const glm::vec3 origin = glm::vec3(meshlet.origin);
-        return MeshletAabb{origin, origin};
+        return MeshletAabb{meshletOrigin, meshletOrigin};
     }
 
     static const std::array<std::array<glm::vec3, 4>, 6> kFaceCornerOffsets{{
@@ -24,7 +33,6 @@ MeshletAabb MeshletBufferController::computeMeshletAabb(const Meshlet& meshlet) 
     }};
 
     const uint32_t safeFaceDirection = std::min(meshlet.faceDirection, 5u);
-    const float voxelScale = static_cast<float>(std::max(meshlet.voxelScale, 1u));
 
     bool firstVertex = true;
     glm::vec3 minCorner{0.0f};
@@ -32,7 +40,7 @@ MeshletAabb MeshletBufferController::computeMeshletAabb(const Meshlet& meshlet) 
 
     for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
         const glm::uvec3 local = unpackMeshletLocalOffset(meshlet.packedQuadLocalOffsets[quadIndex]);
-        const glm::vec3 quadBase = glm::vec3(meshlet.origin) + (glm::vec3(local) * voxelScale);
+        const glm::vec3 quadBase = meshletOrigin + (glm::vec3(local) * voxelScale);
         for (const glm::vec3& cornerOffset : kFaceCornerOffsets[safeFaceDirection]) {
             const glm::vec3 vertex = quadBase + (cornerOffset * voxelScale);
             if (firstVertex) {
@@ -98,7 +106,11 @@ MeshletBufferController::PackedTileLodData MeshletBufferController::packTileLodM
                 meshlet.packedQuadLocalOffsets[i],
                 meshlet.quadMaterialIds[i]
             ));
-            packed.quadData.push_back(static_cast<uint32_t>(meshlet.quadAoData[i]));
+            packed.quadData.push_back(packMeshletQuadAuxData(
+                meshlet.quadAoData[i],
+                meshlet.quadModelQuadIndices[i],
+                meshlet.quadUsesVoxelAo[i] != 0u
+            ));
         }
     }
 

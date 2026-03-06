@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -14,6 +15,7 @@
 #include "solum_engine/jobsystem/job_system.hpp"
 #include "solum_engine/render/MeshletTypes.h"
 #include "solum_engine/resources/Coords.h"
+#include "solum_engine/voxel/BlockModelLibrary.h"
 #include "solum_engine/voxel/MeshTileTypes.h"
 #include "solum_engine/voxel/StreamingUpload.h"
 
@@ -32,8 +34,8 @@ public:
         jobsystem::JobSystem::Config jobConfig{};
     };
 
-    explicit MeshManager(const World& world);
-    MeshManager(const World& world, Config config);
+    explicit MeshManager(const World& world, std::shared_ptr<const BlockModelLibrary> blockModelLibrary = {});
+    MeshManager(const World& world, Config config, std::shared_ptr<const BlockModelLibrary> blockModelLibrary = {});
     ~MeshManager();
 
     MeshManager(const MeshManager&) = delete;
@@ -124,6 +126,7 @@ private:
     static void sanitizeConfig(Config& config);
 
     const World& world_;
+    std::shared_ptr<const BlockModelLibrary> blockModelLibrary_;
     Config config_;
     jobsystem::JobSystem jobs_;
     int32_t meshTileSizeChunks_ = 4;

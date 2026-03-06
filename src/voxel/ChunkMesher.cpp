@@ -16,6 +16,49 @@ namespace {
         return blockID.unpack().id != kAirBlockId;
     }
 
+    const BlockModelDefinition* modelDefinitionForMaterial(const BlockModelLibrary* blockModelLibrary,
+                                                           uint16_t materialId) {
+        if (blockModelLibrary == nullptr || blockModelLibrary->models.empty()) {
+            return nullptr;
+        }
+
+        uint16_t modelIndex = blockModelLibrary->materialToModel[materialId];
+
+        const BlockModelDefinition* model = blockModelLibrary->modelByIndex(modelIndex);
+        if (model == nullptr) {
+            model = blockModelLibrary->modelByIndex(blockModelLibrary->fallbackModelIndex);
+        }
+        return model;
+    }
+
+    const BlockModelQuadRef* modelQuadRef(const BlockModelLibrary* blockModelLibrary, uint32_t refIndex) {
+        if (blockModelLibrary == nullptr || refIndex >= blockModelLibrary->quadRefs.size()) {
+            return nullptr;
+        }
+        return &blockModelLibrary->quadRefs[refIndex];
+    }
+
+    BlockModelQuadRef fallbackCubeFaceRef(uint32_t faceDirection) {
+        BlockModelQuadRef ref{};
+        ref.gpuQuadIndex = std::min(faceDirection, 5u);
+        ref.preferredFace = static_cast<uint8_t>(std::min(faceDirection, 5u));
+        ref.minCorner = glm::vec3(0.0f);
+        ref.maxCorner = glm::vec3(1.0f);
+        return ref;
+    }
+
+    void expandMeshletBounds(Meshlet& meshlet, const glm::vec3& quadMin, const glm::vec3& quadMax) {
+        if (!meshlet.hasCustomBounds) {
+            meshlet.localBoundsMin = quadMin;
+            meshlet.localBoundsMax = quadMax;
+            meshlet.hasCustomBounds = true;
+            return;
+        }
+
+        meshlet.localBoundsMin = glm::min(meshlet.localBoundsMin, quadMin);
+        meshlet.localBoundsMax = glm::max(meshlet.localBoundsMax, quadMax);
+    }
+
     constexpr std::array<std::array<std::array<glm::ivec3, 3>, 4>, 6> kAoStates = {{
         // PlusX
         {{
@@ -163,13 +206,16 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
     // 3. Generate Meshlets
     BlockCoord chunkOrigin = chunk_to_block_origin(coord);
     std::array<std::vector<Meshlet>, 6> meshletsByDirection;
+    const BlockModelLibrary* blockModelLibrary = blockModelLibrary_.get();
 
     auto appendQuad = [&](uint32_t dir,
                           uint32_t x,
                           uint32_t y,
                           uint32_t z,
                           uint16_t materialId,
-                          uint16_t packedAoData) {
+                          uint16_t packedAoData,
+                          const BlockModelQuadRef& quadRef,
+                          bool useVoxelAo) {
         auto& dirMeshlets = meshletsByDirection[dir];
         if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
             Meshlet meshlet{};
@@ -182,6 +228,10 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
         activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
         activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
         activeMeshlet.quadAoData[activeMeshlet.quadCount] = packedAoData;
+        activeMeshlet.quadModelQuadIndices[activeMeshlet.quadCount] = quadRef.gpuQuadIndex;
+        activeMeshlet.quadUsesVoxelAo[activeMeshlet.quadCount] = useVoxelAo ? 1u : 0u;
+        const glm::vec3 blockBase = glm::vec3(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
+        expandMeshletBounds(activeMeshlet, blockBase + quadRef.minCorner, blockBase + quadRef.maxCorner);
         activeMeshlet.quadCount += 1;
     };
 
@@ -202,33 +252,93 @@ std::vector<Meshlet> ChunkMesher::mesh(const Chunk& chunk,
                 if (materialId == kAirBlockId || materialId == ChunkMesher::kCulledSolidBlockId) {
                     continue;
                 }
-
-                // Check all 6 faces for visibility
+                std::array<bool, 6> faceVisible{};
                 for (uint32_t dir = 0; dir < 6; ++dir) {
                     const glm::ivec3& offset = directionOffsets[dir];
                     const int neighborX = paddedX + offset.x;
                     const int neighborY = paddedY + offset.y;
                     const int neighborZ = paddedZ + offset.z;
-                    
-                    BlockMaterial neighborBlockID = paddedBlockData[paddedIndex(neighborX, neighborY, neighborZ)];
-                    
-                    if (IsSolidForCulling(neighborBlockID)) {
-                        continue; // Face is occluded
+                    const BlockMaterial neighborBlockID = paddedBlockData[paddedIndex(neighborX, neighborY, neighborZ)];
+                    faceVisible[dir] = !IsSolidForCulling(neighborBlockID);
+                }
+
+                const BlockModelDefinition* modelDefinition = modelDefinitionForMaterial(blockModelLibrary, materialId);
+                if (modelDefinition != nullptr) {
+                    const BlockModelDefinition* fallbackModel = blockModelLibrary != nullptr
+                        ? blockModelLibrary->modelByIndex(blockModelLibrary->fallbackModelIndex)
+                        : nullptr;
+                    const bool useVoxelAoForModel = (fallbackModel != nullptr && modelDefinition == fallbackModel);
+
+                    for (uint32_t dir = 0; dir < 6; ++dir) {
+                        if (!faceVisible[dir]) {
+                            continue;
+                        }
+
+                        const uint16_t packedAoData = useVoxelAoForModel
+                            ? computePackedQuadAoData(
+                                dir,
+                                glm::ivec3{paddedX, paddedY, paddedZ},
+                                isSolidAtPadded
+                            )
+                            : packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
+
+                        for (uint32_t quadRefIndex : modelDefinition->cullableQuadRefs[dir]) {
+                            const BlockModelQuadRef* quadRef = modelQuadRef(blockModelLibrary, quadRefIndex);
+                            if (quadRef == nullptr) {
+                                continue;
+                            }
+                            appendQuad(
+                                dir,
+                                static_cast<uint32_t>(x),
+                                static_cast<uint32_t>(y),
+                                static_cast<uint32_t>(z),
+                                materialId,
+                                packedAoData,
+                                *quadRef,
+                                useVoxelAoForModel
+                            );
+                        }
                     }
 
+                    const uint16_t kFullBrightAo = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
+                    for (uint32_t quadRefIndex : modelDefinition->nonCullableQuadRefs) {
+                        const BlockModelQuadRef* quadRef = modelQuadRef(blockModelLibrary, quadRefIndex);
+                        if (quadRef == nullptr) {
+                            continue;
+                        }
+                        appendQuad(
+                            quadRef->preferredFace,
+                            static_cast<uint32_t>(x),
+                            static_cast<uint32_t>(y),
+                            static_cast<uint32_t>(z),
+                            materialId,
+                            kFullBrightAo,
+                            *quadRef,
+                            false
+                        );
+                    }
+                    continue;
+                }
+
+                for (uint32_t dir = 0; dir < 6; ++dir) {
+                    if (!faceVisible[dir]) {
+                        continue;
+                    }
                     const uint16_t packedAoData = computePackedQuadAoData(
                         dir,
                         glm::ivec3{paddedX, paddedY, paddedZ},
                         isSolidAtPadded
                     );
-
+                    const BlockModelQuadRef fallbackRef = fallbackCubeFaceRef(dir);
                     appendQuad(
                         dir,
                         static_cast<uint32_t>(x),
                         static_cast<uint32_t>(y),
                         static_cast<uint32_t>(z),
                         materialId,
-                        packedAoData
+                        packedAoData,
+                        fallbackRef,
+                        true
                     );
                 }
             }
@@ -252,13 +362,16 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
     }
 
     std::array<std::vector<Meshlet>, 6> meshletsByDirection;
+    const BlockModelLibrary* blockModelLibrary = blockModelLibrary_.get();
 
     auto appendQuad = [&](uint32_t dir,
                           uint32_t x,
                           uint32_t y,
                           uint32_t z,
                           uint16_t materialId,
-                          uint16_t packedAoData) {
+                          uint16_t packedAoData,
+                          const BlockModelQuadRef& quadRef,
+                          bool useVoxelAo) {
         auto& dirMeshlets = meshletsByDirection[dir];
         if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
             Meshlet meshlet{};
@@ -272,6 +385,10 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
         activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
         activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
         activeMeshlet.quadAoData[activeMeshlet.quadCount] = packedAoData;
+        activeMeshlet.quadModelQuadIndices[activeMeshlet.quadCount] = quadRef.gpuQuadIndex;
+        activeMeshlet.quadUsesVoxelAo[activeMeshlet.quadCount] = useVoxelAo ? 1u : 0u;
+        const glm::vec3 blockBase = glm::vec3(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
+        expandMeshletBounds(activeMeshlet, blockBase + quadRef.minCorner, blockBase + quadRef.maxCorner);
         activeMeshlet.quadCount += 1;
     };
 
@@ -293,7 +410,7 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                 if (materialId == kAirBlockId || materialId == ChunkMesher::kCulledSolidBlockId) {
                     continue;
                 }
-
+                std::array<bool, 6> faceVisible{};
                 for (uint32_t dir = 0; dir < 6; ++dir) {
                     const glm::ivec3& offset = directionOffsets[dir];
                     const BlockCoord neighborCoord{
@@ -301,25 +418,87 @@ std::vector<Meshlet> ChunkMesher::mesh(const IBlockSource& source,
                         blockCoord.v.y + offset.y,
                         blockCoord.v.z + offset.z
                     };
-
                     const BlockMaterial neighborBlockID = source.getBlock(neighborCoord);
-                    if (IsSolidForCulling(neighborBlockID)) {
-                        continue;
+                    faceVisible[dir] = !IsSolidForCulling(neighborBlockID);
+                }
+
+                const BlockModelDefinition* modelDefinition = modelDefinitionForMaterial(blockModelLibrary, materialId);
+                if (modelDefinition != nullptr) {
+                    const BlockModelDefinition* fallbackModel = blockModelLibrary != nullptr
+                        ? blockModelLibrary->modelByIndex(blockModelLibrary->fallbackModelIndex)
+                        : nullptr;
+                    const bool useVoxelAoForModel = (fallbackModel != nullptr && modelDefinition == fallbackModel);
+
+                    for (uint32_t dir = 0; dir < 6; ++dir) {
+                        if (!faceVisible[dir]) {
+                            continue;
+                        }
+
+                        const uint16_t packedAoData = useVoxelAoForModel
+                            ? computePackedQuadAoData(
+                                dir,
+                                blockCoord.v,
+                                isSolidAtCoord
+                            )
+                            : packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
+
+                        for (uint32_t quadRefIndex : modelDefinition->cullableQuadRefs[dir]) {
+                            const BlockModelQuadRef* quadRef = modelQuadRef(blockModelLibrary, quadRefIndex);
+                            if (quadRef == nullptr) {
+                                continue;
+                            }
+                            appendQuad(
+                                dir,
+                                static_cast<uint32_t>(x),
+                                static_cast<uint32_t>(y),
+                                static_cast<uint32_t>(z),
+                                materialId,
+                                packedAoData,
+                                *quadRef,
+                                useVoxelAoForModel
+                            );
+                        }
                     }
 
+                    const uint16_t kFullBrightAo = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
+                    for (uint32_t quadRefIndex : modelDefinition->nonCullableQuadRefs) {
+                        const BlockModelQuadRef* quadRef = modelQuadRef(blockModelLibrary, quadRefIndex);
+                        if (quadRef == nullptr) {
+                            continue;
+                        }
+                        appendQuad(
+                            quadRef->preferredFace,
+                            static_cast<uint32_t>(x),
+                            static_cast<uint32_t>(y),
+                            static_cast<uint32_t>(z),
+                            materialId,
+                            kFullBrightAo,
+                            *quadRef,
+                            false
+                        );
+                    }
+                    continue;
+                }
+
+                for (uint32_t dir = 0; dir < 6; ++dir) {
+                    if (!faceVisible[dir]) {
+                        continue;
+                    }
                     const uint16_t packedAoData = computePackedQuadAoData(
                         dir,
                         blockCoord.v,
                         isSolidAtCoord
                     );
-
+                    const BlockModelQuadRef fallbackRef = fallbackCubeFaceRef(dir);
                     appendQuad(
                         dir,
                         static_cast<uint32_t>(x),
                         static_cast<uint32_t>(y),
                         static_cast<uint32_t>(z),
                         materialId,
-                        packedAoData
+                        packedAoData,
+                        fallbackRef,
+                        true
                     );
                 }
             }

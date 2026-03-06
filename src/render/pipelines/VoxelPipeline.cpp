@@ -1,6 +1,7 @@
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 
 #include "solum_engine/render/MaterialManager.h"
+#include "solum_engine/render/ModelManager.h"
 #include "solum_engine/render/Uniforms.h"
 
 using namespace wgpu;
@@ -111,7 +112,7 @@ bool VoxelPipeline::createPipeline() {
     config.useCustomBlending = false;
     config.alphaToCoverageEnabled = false;
 
-    std::vector<BindGroupLayoutEntry> globalUniforms(7, Default);
+    std::vector<BindGroupLayoutEntry> globalUniforms(8, Default);
 
     int i = 0;
     globalUniforms[i].binding = i;
@@ -147,6 +148,11 @@ bool VoxelPipeline::createPipeline() {
     i++;
 
     globalUniforms[i].binding = i;
+    globalUniforms[i].visibility = ShaderStage::Vertex;
+    globalUniforms[i].buffer.type = BufferBindingType::ReadOnlyStorage;
+    i++;
+
+    globalUniforms[i].binding = i;
     globalUniforms[i].visibility = ShaderStage::Fragment;
     globalUniforms[i].sampler.type = SamplerBindingType::Filtering;
 
@@ -175,14 +181,16 @@ bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBuf
     Buffer metadataBuffer = r_.buf.getBuffer(metadataBufferName);
     Buffer visibleIndicesBuffer = r_.buf.getBuffer(visibleIndicesBufferName);
     Buffer materialLookupBuffer = r_.buf.getBuffer(MaterialManager::kMaterialLookupBufferName);
+    Buffer modelQuadBuffer = r_.buf.getBuffer(ModelManager::kModelQuadBufferName);
     TextureView materialTextureArrayView = r_.tex.getTextureView(MaterialManager::kMaterialTextureArrayViewName);
     Sampler materialSampler = r_.tex.getSampler(MaterialManager::kMaterialSamplerName);
 
-    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !visibleIndicesBuffer || !materialLookupBuffer || !materialTextureArrayView || !materialSampler) {
+    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !visibleIndicesBuffer ||
+        !materialLookupBuffer || !modelQuadBuffer || !materialTextureArrayView || !materialSampler) {
         return false;
     }
 
-    std::vector<BindGroupEntry> bindings(7, Default);
+    std::vector<BindGroupEntry> bindings(8, Default);
 
     int i = 0;
     bindings[i].binding = i;
@@ -217,6 +225,12 @@ bool VoxelPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBuf
 
     bindings[i].binding = i;
     bindings[i].textureView = materialTextureArrayView;
+    i++;
+
+    bindings[i].binding = i;
+    bindings[i].buffer = modelQuadBuffer;
+    bindings[i].offset = 0;
+    bindings[i].size = modelQuadBuffer.getSize();
     i++;
 
     bindings[i].binding = i;

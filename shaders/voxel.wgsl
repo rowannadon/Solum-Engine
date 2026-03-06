@@ -7,7 +7,8 @@
 @group(0) @binding(3) var<storage, read> materialToTexture: array<u32, 65536>;
 @group(0) @binding(4) var<storage, read> visibleMeshletIndices: array<u32>;
 @group(0) @binding(5) var materialTextures: texture_2d_array<f32>;
-@group(0) @binding(6) var materialSampler: sampler;
+@group(0) @binding(6) var<storage, read> modelQuads: array<ModelQuad>;
+@group(0) @binding(7) var materialSampler: sampler;
 
 struct VertexInput {
     @builtin(instance_index) instance_idx: u32,
@@ -80,9 +81,17 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.position = world_to_clip_position(worldSpacePosition);
 
     out.worldPosition = worldSpacePosition.xyz;
-    out.texCoord = face_uv(meshlet.faceDirection, sample.cornerOffset);
+    if (sample.useVoxelAo) {
+        out.texCoord = face_uv(meshlet.faceDirection, sample.cornerOffset);
+    } else {
+        out.texCoord = sample.texCoord;
+    }
     out.materialId = decode_material_id(sample.quadData);
-    out.ao = f32(decode_vertex_ao(sample.quadAoData, sample.corner)) / 3.0;
+    if (sample.useVoxelAo) {
+        out.ao = f32(decode_vertex_ao(sample.quadAoData, sample.corner)) / 3.0;
+    } else {
+        out.ao = 1.0;
+    }
 
     let meshletColorSeed = (bitcast<u32>(meshlet.originX) * 73856093u) ^
         (bitcast<u32>(meshlet.originY) * 19349663u) ^

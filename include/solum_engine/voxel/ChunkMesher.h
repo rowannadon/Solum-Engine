@@ -3,10 +3,13 @@
 #include "solum_engine/voxel/Chunk.h"
 #include "solum_engine/resources/Coords.h"
 #include "solum_engine/render/MeshletTypes.h"
+#include "solum_engine/voxel/BlockModelLibrary.h"
 #include <glm/glm.hpp>
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <utility>
 #include <vector>
 
 class IBlockSource {
@@ -18,6 +21,9 @@ public:
 class ChunkMesher {
 public:
     static constexpr uint16_t kCulledSolidBlockId = 255u;
+
+    explicit ChunkMesher(std::shared_ptr<const BlockModelLibrary> blockModelLibrary = {})
+        : blockModelLibrary_(std::move(blockModelLibrary)) {}
 
     std::vector<Meshlet> mesh(const Chunk& chunk, const ChunkCoord& coord, const std::vector<const Chunk*>& neighbors) const;
     std::vector<Meshlet> mesh(const IBlockSource& source,
@@ -34,4 +40,7 @@ public:
         glm::ivec3(0, 0, 1),   // PlusZ (up in z-up world)
         glm::ivec3(0, 0, -1),  // MinusZ (down in z-up world)
     };
+
+private:
+    std::shared_ptr<const BlockModelLibrary> blockModelLibrary_;
 };

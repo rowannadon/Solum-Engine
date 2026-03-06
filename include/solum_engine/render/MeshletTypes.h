@@ -7,6 +7,10 @@
 static constexpr uint32_t MESHLET_QUAD_CAPACITY = 128;
 static constexpr uint32_t MESHLET_VERTEX_CAPACITY = MESHLET_QUAD_CAPACITY * 6;
 static constexpr uint32_t MESHLET_QUAD_DATA_WORD_STRIDE = 2;
+static constexpr uint32_t MESHLET_AO_BITS = 9;
+static constexpr uint32_t MESHLET_MODEL_QUAD_INDEX_SHIFT = MESHLET_AO_BITS;
+static constexpr uint32_t MESHLET_MODEL_QUAD_INDEX_MASK = 0x3fffffu;
+static constexpr uint32_t MESHLET_VOXEL_AO_FLAG_SHIFT = 31u;
 
 inline uint16_t packMeshletLocalOffset(uint32_t x, uint32_t y, uint32_t z) {
     return static_cast<uint16_t>((x & 0x1Fu) | ((y & 0x1Fu) << 5u) | ((z & 0x1Fu) << 10u));
@@ -38,6 +42,15 @@ inline uint16_t packMeshletQuadAoData(uint8_t ao00,
     );
 }
 
+inline uint32_t packMeshletQuadAuxData(uint16_t packedAoData,
+                                       uint32_t modelQuadIndex,
+                                       bool useVoxelAo) {
+    const uint32_t sanitizedAo = static_cast<uint32_t>(packedAoData) & ((1u << MESHLET_AO_BITS) - 1u);
+    const uint32_t sanitizedModelQuadIndex = modelQuadIndex & MESHLET_MODEL_QUAD_INDEX_MASK;
+    const uint32_t voxelAoFlag = useVoxelAo ? (1u << MESHLET_VOXEL_AO_FLAG_SHIFT) : 0u;
+    return sanitizedAo | (sanitizedModelQuadIndex << MESHLET_MODEL_QUAD_INDEX_SHIFT) | voxelAoFlag;
+}
+
 struct Meshlet {
     glm::ivec3 origin{ 0, 0, 0 };
     uint32_t faceDirection = 0;
@@ -46,6 +59,11 @@ struct Meshlet {
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> packedQuadLocalOffsets{};
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> quadMaterialIds{};
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> quadAoData{};
+    std::array<uint32_t, MESHLET_QUAD_CAPACITY> quadModelQuadIndices{};
+    std::array<uint8_t, MESHLET_QUAD_CAPACITY> quadUsesVoxelAo{};
+    glm::vec3 localBoundsMin{0.0f};
+    bool hasCustomBounds = false;
+    glm::vec3 localBoundsMax{1.0f};
 };
 
 struct MeshletMetadataGPU {

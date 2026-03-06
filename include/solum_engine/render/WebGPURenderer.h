@@ -71,6 +71,7 @@ public:
     TextureManager* getTextureManager();
     WebGPUContext* getContext();
     GLFWwindow* getWindow();
+    std::shared_ptr<const BlockModelLibrary> getBlockModelLibrary() const;
 
     void removeRenderingTextures();
     void createRenderingTextures();
