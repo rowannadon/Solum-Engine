@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <limits>
 #include <queue>
@@ -92,6 +93,11 @@ public:
 
 private:
     struct ColumnGenerationResult;
+    struct ChunkPropagationResult;
+    struct ColumnLightingState {
+        uint32_t propagatedChunkMask = 0u;
+        uint32_t queuedChunkMask = 0u;
+    };
     struct ScheduledColumnJob {
         ColumnCoord coord{};
         jobsystem::Priority priority = jobsystem::Priority::Low;
@@ -105,8 +111,18 @@ private:
     void collectColumnJobsToScheduleLocked(std::vector<ScheduledColumnJob>& outJobs);
     void dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsToSchedule);
     void pumpColumnGenerationQueue();
+    void enqueueChunkPropagationCandidatesLocked(const ColumnCoord& coord);
+    void enqueueChunkPropagationIfReadyLocked(const ChunkCoord& coord);
+    void collectChunkPropagationJobsLocked(std::vector<ChunkCoord>& outChunks);
+    void dispatchChunkPropagationJobs(std::vector<ChunkCoord>&& chunksToSchedule);
+    void pumpChunkPropagationQueue();
 
     void onColumnGenerated(const ColumnCoord& coord, Column&& column);
+    bool propagateChunkLighting(const ChunkCoord& coord);
+    bool canPropagateChunkLocked(const ChunkCoord& coord) const;
+    bool isColumnSkycastCompleteLocked(const ColumnCoord& coord) const;
+    Column* tryGetSkycastColumnLocked(const ColumnCoord& coord);
+    const Column* tryGetSkycastColumnLocked(const ColumnCoord& coord) const;
 
     bool tryGetBlockLocked(const BlockCoord& coord, BlockMaterial& outBlock, uint8_t mipLevel) const;
     bool tryGetPackedLightLocked(const BlockCoord& coord, uint8_t& outPackedLight, uint8_t mipLevel) const;
@@ -134,12 +150,17 @@ private:
 
     Config config_;
     jobsystem::JobSystem jobs_;
+    jobsystem::JobSystem chunkPropagationJobs_;
 
     mutable std::shared_mutex worldMutex_;
     std::unordered_map<RegionCoord, std::unique_ptr<Region>> regions_;
+    std::unordered_set<ColumnCoord> skycastColumns_;
+    std::unordered_map<ColumnCoord, ColumnLightingState> columnLightingStates_;
     std::unordered_set<ColumnCoord> generatedColumns_;
     std::vector<ColumnCoord> generatedColumnHistory_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
+    std::deque<ChunkCoord> queuedChunkPropagationJobs_;
+    std::unordered_set<ChunkCoord> pendingChunkPropagationJobs_;
     std::unordered_set<ColumnCoord> queuedColumnJobs_;
     std::priority_queue<
         QueuedColumnEntry,
@@ -149,6 +170,7 @@ private:
     std::atomic<uint64_t> generationRevision_{0};
     std::atomic<bool> shuttingDown_{false};
     std::size_t maxInFlightColumnJobs_ = 1;
+    std::size_t maxInFlightChunkPropagationJobs_ = 1;
     uint64_t queueSequence_ = 0;
     uint64_t queueCenterVersion_ = 0;
 

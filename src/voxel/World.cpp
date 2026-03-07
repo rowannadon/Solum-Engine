@@ -1,6 +1,7 @@
 #include "solum_engine/voxel/World.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <exception>
 #include <iostream>
@@ -34,12 +35,43 @@ int32_t distanceSqToCenter(const ColumnCoord& coord, const ColumnCoord& center) 
     }
     return static_cast<int32_t>(distanceSq);
 }
+
+constexpr int kChunkExtent = cfg::CHUNK_SIZE;
+constexpr int kChunkArea = kChunkExtent * kChunkExtent;
+constexpr uint32_t kAllColumnChunkBits = Column::allChunksEmptyMask();
+constexpr std::array<glm::ivec2, 4> kHorizontalOffsets = {
+    glm::ivec2{1, 0},
+    glm::ivec2{-1, 0},
+    glm::ivec2{0, 1},
+    glm::ivec2{0, -1},
+};
+constexpr std::array<glm::ivec3, 6> kCardinalOffsets = {
+    glm::ivec3{1, 0, 0},
+    glm::ivec3{-1, 0, 0},
+    glm::ivec3{0, 1, 0},
+    glm::ivec3{0, -1, 0},
+    glm::ivec3{0, 0, 1},
+    glm::ivec3{0, 0, -1},
+};
+
+constexpr int chunkLocalIndex(int x, int y, int z) {
+    return (z * kChunkArea) + (y * kChunkExtent) + x;
+}
+
+bool isTransparent(BlockMaterial block) {
+    return block.unpack().id == 0u;
+}
 }  // namespace
 
 struct World::ColumnGenerationResult {
     ColumnCoord coord;
     Column column;
     bool generated = false;
+};
+
+struct World::ChunkPropagationResult {
+    ChunkCoord coord;
+    bool propagated = false;
 };
 
 WorldSection::WorldSection(const World& world,
@@ -121,7 +153,12 @@ World::World()
 
 World::World(Config config)
     : config_(std::move(config)),
-      jobs_(config_.jobConfig) {
+      jobs_(config_.jobConfig),
+      chunkPropagationJobs_([this]() {
+          jobsystem::JobSystem::Config propagationConfig = config_.jobConfig;
+          propagationConfig.worker_threads = 1;
+          return propagationConfig;
+      }()) {
     const std::size_t configuredMaxInFlight = config_.maxInFlightColumnJobs;
     const std::size_t workerCount = std::max<std::size_t>(std::size_t{1}, jobs_.worker_count());
     const std::size_t autoMaxInFlight = workerCount * 2;
@@ -129,12 +166,18 @@ World::World(Config config)
         std::size_t{1},
         (configuredMaxInFlight > 0) ? configuredMaxInFlight : autoMaxInFlight
     );
+    maxInFlightChunkPropagationJobs_ = std::max<std::size_t>(
+        std::size_t{1},
+        chunkPropagationJobs_.worker_count()
+    );
 }
 
 World::~World() {
     shuttingDown_.store(true, std::memory_order_release);
     jobs_.wait_for_idle();
+    chunkPropagationJobs_.wait_for_idle();
     jobs_.stop();
+    chunkPropagationJobs_.stop();
 }
 
 BlockMaterial World::getBlock(const BlockCoord& coord) const {
@@ -404,7 +447,7 @@ void World::enqueueColumnGenerationLocked(const ColumnCoord& coord) {
     if (!isWithinActiveWindowLocked(coord, 0)) {
         return;
     }
-    if (isColumnGeneratedLocked(coord)) {
+    if (isColumnSkycastCompleteLocked(coord)) {
         return;
     }
     if (pendingColumnJobs_.find(coord) != pendingColumnJobs_.end()) {
@@ -509,7 +552,7 @@ void World::pruneQueuedColumnsOutsideActiveWindowLocked() {
         }
 
         if (!isWithinActiveWindowLocked(top.coord, 0) ||
-            isColumnGeneratedLocked(top.coord) ||
+            isColumnSkycastCompleteLocked(top.coord) ||
             pendingColumnJobs_.find(top.coord) != pendingColumnJobs_.end()) {
             queuedColumnJobs_.erase(queuedIt);
             queuedColumnHeap_.pop();
@@ -544,7 +587,7 @@ void World::collectColumnJobsToScheduleLocked(std::vector<ScheduledColumnJob>& o
         }
 
         if (!isWithinActiveWindowLocked(top.coord, 0) ||
-            isColumnGeneratedLocked(top.coord) ||
+            isColumnSkycastCompleteLocked(top.coord) ||
             pendingColumnJobs_.find(top.coord) != pendingColumnJobs_.end()) {
             queuedColumnJobs_.erase(queuedIt);
             continue;
@@ -607,6 +650,7 @@ void World::dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsTo
                             pendingColumnJobs_.erase(coord);
                         }
                         pumpColumnGenerationQueue();
+                        pumpChunkPropagationQueue();
                         return;
                     }
 
@@ -617,10 +661,12 @@ void World::dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsTo
                             pendingColumnJobs_.erase(coord);
                         }
                         pumpColumnGenerationQueue();
+                        pumpChunkPropagationQueue();
                         return;
                     }
                     onColumnGenerated(generated.coord, std::move(generated.column));
                     pumpColumnGenerationQueue();
+                    pumpChunkPropagationQueue();
                 }
             );
         } catch (const std::exception&) {
@@ -629,7 +675,7 @@ void World::dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsTo
                 pendingColumnJobs_.erase(coord);
                 if (!shuttingDown_.load(std::memory_order_acquire) &&
                     isWithinActiveWindowLocked(coord, 0) &&
-                    !isColumnGeneratedLocked(coord)) {
+                    !isColumnSkycastCompleteLocked(coord)) {
                     queuedColumnJobs_.insert(coord);
                     const int32_t distanceSq = hasLastScheduledCenter_
                         ? distanceSqToCenter(coord, lastScheduledCenter_)
@@ -686,16 +732,482 @@ void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
         static_cast<uint8_t>(localColumn.y)
     ) = std::move(column);
 
-    const auto insertedResult = generatedColumns_.insert(coord);
-    if (insertedResult.second) {
-        generatedColumnHistory_.push_back(coord);
-        generationRevision_.fetch_add(1, std::memory_order_release);
+    skycastColumns_.insert(coord);
+    ColumnLightingState& lightingState = columnLightingStates_[coord];
+    lightingState.propagatedChunkMask = 0u;
+    lightingState.queuedChunkMask = 0u;
+
+    enqueueChunkPropagationCandidatesLocked(coord);
+}
+
+void World::enqueueChunkPropagationCandidatesLocked(const ColumnCoord& coord) {
+    auto enqueueForColumn = [&](const ColumnCoord& candidateColumn) {
+        if (!isColumnSkycastCompleteLocked(candidateColumn)) {
+            return;
+        }
+        for (int32_t z = 0; z < cfg::COLUMN_HEIGHT; ++z) {
+            enqueueChunkPropagationIfReadyLocked(ChunkCoord{
+                candidateColumn.v.x,
+                candidateColumn.v.y,
+                z
+            });
+        }
+    };
+
+    enqueueForColumn(coord);
+    for (const glm::ivec2& offset : kHorizontalOffsets) {
+        enqueueForColumn(ColumnCoord{
+            coord.v.x + offset.x,
+            coord.v.y + offset.y
+        });
     }
+}
+
+void World::enqueueChunkPropagationIfReadyLocked(const ChunkCoord& coord) {
+    if (!canPropagateChunkLocked(coord)) {
+        return;
+    }
+
+    if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT) {
+        return;
+    }
+
+    const ColumnCoord columnCoord = chunk_to_column(coord);
+    auto stateIt = columnLightingStates_.find(columnCoord);
+    if (stateIt == columnLightingStates_.end()) {
+        return;
+    }
+
+    const uint8_t chunkZ = static_cast<uint8_t>(coord.v.z);
+    const uint32_t bit = (1u << static_cast<uint32_t>(chunkZ));
+    ColumnLightingState& state = stateIt->second;
+    if ((state.propagatedChunkMask & bit) != 0u ||
+        (state.queuedChunkMask & bit) != 0u ||
+        pendingChunkPropagationJobs_.find(coord) != pendingChunkPropagationJobs_.end()) {
+        return;
+    }
+
+    state.queuedChunkMask |= bit;
+    queuedChunkPropagationJobs_.push_back(coord);
+}
+
+void World::collectChunkPropagationJobsLocked(std::vector<ChunkCoord>& outChunks) {
+    while (pendingChunkPropagationJobs_.size() < maxInFlightChunkPropagationJobs_ &&
+           !queuedChunkPropagationJobs_.empty()) {
+        const ChunkCoord coord = queuedChunkPropagationJobs_.front();
+        queuedChunkPropagationJobs_.pop_front();
+        if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT) {
+            continue;
+        }
+
+        const ColumnCoord columnCoord = chunk_to_column(coord);
+        auto stateIt = columnLightingStates_.find(columnCoord);
+        if (stateIt == columnLightingStates_.end()) {
+            continue;
+        }
+
+        const uint8_t chunkZ = static_cast<uint8_t>(coord.v.z);
+        const uint32_t bit = (1u << static_cast<uint32_t>(chunkZ));
+        ColumnLightingState& state = stateIt->second;
+        if ((state.queuedChunkMask & bit) == 0u) {
+            continue;
+        }
+
+        state.queuedChunkMask &= ~bit;
+        if ((state.propagatedChunkMask & bit) != 0u) {
+            continue;
+        }
+        if (!canPropagateChunkLocked(coord)) {
+            continue;
+        }
+
+        pendingChunkPropagationJobs_.insert(coord);
+        outChunks.push_back(coord);
+    }
+}
+
+void World::dispatchChunkPropagationJobs(std::vector<ChunkCoord>&& chunksToSchedule) {
+    for (const ChunkCoord& coord : chunksToSchedule) {
+        const int32_t distanceSq = hasLastScheduledCenter_
+            ? distanceSqToCenter(chunk_to_column(coord), lastScheduledCenter_)
+            : 0;
+        const jobsystem::Priority priority = priorityFromDistanceSq(distanceSq);
+
+        try {
+            chunkPropagationJobs_.schedule(
+                priority,
+                [this, coord]() -> ChunkPropagationResult {
+                    return ChunkPropagationResult{
+                        coord,
+                        propagateChunkLighting(coord)
+                    };
+                },
+                [this, coord](jobsystem::JobResult<ChunkPropagationResult>&& result) {
+                    {
+                        std::unique_lock<std::shared_mutex> lock(worldMutex_);
+                        pendingChunkPropagationJobs_.erase(coord);
+
+                        bool propagated = false;
+                        if (result.success()) {
+                            ChunkPropagationResult propagationResult = std::move(result).value();
+                            propagated = propagationResult.propagated;
+                        }
+
+                        if (!propagated && !shuttingDown_.load(std::memory_order_acquire)) {
+                            const ColumnCoord columnCoord = chunk_to_column(coord);
+                            const auto stateIt = columnLightingStates_.find(columnCoord);
+                            if (stateIt != columnLightingStates_.end()) {
+                                const uint8_t chunkZ = static_cast<uint8_t>(coord.v.z);
+                                const uint32_t bit = (1u << static_cast<uint32_t>(chunkZ));
+                                if ((stateIt->second.propagatedChunkMask & bit) == 0u &&
+                                    (stateIt->second.queuedChunkMask & bit) == 0u &&
+                                    canPropagateChunkLocked(coord)) {
+                                    stateIt->second.queuedChunkMask |= bit;
+                                    queuedChunkPropagationJobs_.push_back(coord);
+                                }
+                            }
+                        }
+                    }
+                    pumpChunkPropagationQueue();
+                }
+            );
+        } catch (const std::exception&) {
+            std::unique_lock<std::shared_mutex> lock(worldMutex_);
+            pendingChunkPropagationJobs_.erase(coord);
+            if (!shuttingDown_.load(std::memory_order_acquire) && canPropagateChunkLocked(coord)) {
+                const ColumnCoord columnCoord = chunk_to_column(coord);
+                auto stateIt = columnLightingStates_.find(columnCoord);
+                if (stateIt != columnLightingStates_.end()) {
+                    const uint8_t chunkZ = static_cast<uint8_t>(coord.v.z);
+                    const uint32_t bit = (1u << static_cast<uint32_t>(chunkZ));
+                    if ((stateIt->second.propagatedChunkMask & bit) == 0u &&
+                        (stateIt->second.queuedChunkMask & bit) == 0u) {
+                        stateIt->second.queuedChunkMask |= bit;
+                        queuedChunkPropagationJobs_.push_back(coord);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void World::pumpChunkPropagationQueue() {
+    if (shuttingDown_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    std::vector<ChunkCoord> chunksToSchedule;
+    {
+        std::unique_lock<std::shared_mutex> lock(worldMutex_);
+        collectChunkPropagationJobsLocked(chunksToSchedule);
+    }
+    dispatchChunkPropagationJobs(std::move(chunksToSchedule));
+}
+
+bool World::propagateChunkLighting(const ChunkCoord& coord) {
+    if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT) {
+        return false;
+    }
+
+    struct ChunkPropagationSnapshot {
+        std::array<uint8_t, Chunk::VOLUME> sky{};
+        std::array<uint8_t, Chunk::VOLUME> blockLight{};
+        std::array<uint8_t, Chunk::VOLUME> solidMask{};
+    };
+
+    const ColumnCoord columnCoord = chunk_to_column(coord);
+    const uint8_t chunkZ = static_cast<uint8_t>(coord.v.z);
+    const uint32_t bit = (1u << static_cast<uint32_t>(chunkZ));
+    ChunkPropagationSnapshot snapshot{};
+    std::vector<int> floodQueue;
+    floodQueue.reserve(Chunk::VOLUME);
+
+    {
+        std::shared_lock<std::shared_mutex> lock(worldMutex_);
+        if (!canPropagateChunkLocked(coord)) {
+            return false;
+        }
+
+        const auto stateIt = columnLightingStates_.find(columnCoord);
+        if (stateIt == columnLightingStates_.end()) {
+            return false;
+        }
+        if ((stateIt->second.propagatedChunkMask & bit) != 0u) {
+            return true;
+        }
+
+        const Column* centerColumn = tryGetSkycastColumnLocked(columnCoord);
+        if (centerColumn == nullptr) {
+            return false;
+        }
+        const Chunk& centerChunk = centerColumn->getChunk(chunkZ);
+
+        for (int z = 0; z < kChunkExtent; ++z) {
+            for (int y = 0; y < kChunkExtent; ++y) {
+                for (int x = 0; x < kChunkExtent; ++x) {
+                    const int index = chunkLocalIndex(x, y, z);
+                    const BlockMaterial block = centerChunk.getBlock(
+                        static_cast<uint8_t>(x),
+                        static_cast<uint8_t>(y),
+                        static_cast<uint8_t>(z)
+                    );
+                    const bool solid = !isTransparent(block);
+                    const uint8_t packedLight = centerChunk.getPackedLight(
+                        static_cast<uint8_t>(x),
+                        static_cast<uint8_t>(y),
+                        static_cast<uint8_t>(z)
+                    );
+                    const uint8_t sky = solid ? 0u : Chunk::unpackSkyLight(packedLight);
+                    snapshot.solidMask[static_cast<size_t>(index)] = solid ? 1u : 0u;
+                    snapshot.sky[static_cast<size_t>(index)] = sky;
+                    snapshot.blockLight[static_cast<size_t>(index)] = Chunk::unpackBlockLight(packedLight);
+                }
+            }
+        }
+
+        const Column* plusXColumn = tryGetSkycastColumnLocked(ColumnCoord{columnCoord.v.x + 1, columnCoord.v.y});
+        const Column* minusXColumn = tryGetSkycastColumnLocked(ColumnCoord{columnCoord.v.x - 1, columnCoord.v.y});
+        const Column* plusYColumn = tryGetSkycastColumnLocked(ColumnCoord{columnCoord.v.x, columnCoord.v.y + 1});
+        const Column* minusYColumn = tryGetSkycastColumnLocked(ColumnCoord{columnCoord.v.x, columnCoord.v.y - 1});
+        const Chunk* plusXChunk = (plusXColumn != nullptr) ? &plusXColumn->getChunk(chunkZ) : nullptr;
+        const Chunk* minusXChunk = (minusXColumn != nullptr) ? &minusXColumn->getChunk(chunkZ) : nullptr;
+        const Chunk* plusYChunk = (plusYColumn != nullptr) ? &plusYColumn->getChunk(chunkZ) : nullptr;
+        const Chunk* minusYChunk = (minusYColumn != nullptr) ? &minusYColumn->getChunk(chunkZ) : nullptr;
+        const Chunk* plusZChunk =
+            (chunkZ + 1u < static_cast<uint8_t>(cfg::COLUMN_HEIGHT))
+            ? &centerColumn->getChunk(static_cast<uint8_t>(chunkZ + 1u))
+            : nullptr;
+        const Chunk* minusZChunk = (chunkZ > 0u)
+            ? &centerColumn->getChunk(static_cast<uint8_t>(chunkZ - 1u))
+            : nullptr;
+
+        auto enqueueBoundarySeed = [&](int lx, int ly, int lz, const Chunk* neighbor, int nx, int ny, int nz) {
+            const int localIndex = chunkLocalIndex(lx, ly, lz);
+            if (snapshot.solidMask[static_cast<size_t>(localIndex)] != 0u) {
+                return;
+            }
+            if (neighbor == nullptr) {
+                return;
+            }
+            const BlockMaterial neighborBlock = neighbor->getBlock(
+                static_cast<uint8_t>(nx),
+                static_cast<uint8_t>(ny),
+                static_cast<uint8_t>(nz)
+            );
+            if (!isTransparent(neighborBlock)) {
+                return;
+            }
+            const uint8_t neighborSky = Chunk::unpackSkyLight(neighbor->getPackedLight(
+                static_cast<uint8_t>(nx),
+                static_cast<uint8_t>(ny),
+                static_cast<uint8_t>(nz)
+            ));
+            if (neighborSky <= 1u) {
+                return;
+            }
+
+            const uint8_t candidate = static_cast<uint8_t>(neighborSky - 1u);
+            uint8_t& current = snapshot.sky[static_cast<size_t>(localIndex)];
+            if (candidate <= current) {
+                return;
+            }
+
+            current = candidate;
+            floodQueue.push_back(localIndex);
+        };
+
+        for (int z = 0; z < kChunkExtent; ++z) {
+            for (int y = 0; y < kChunkExtent; ++y) {
+                for (int x = 0; x < kChunkExtent; ++x) {
+                    const int index = chunkLocalIndex(x, y, z);
+                    if (snapshot.solidMask[static_cast<size_t>(index)] != 0u) {
+                        continue;
+                    }
+                    if (snapshot.sky[static_cast<size_t>(index)] > 1u) {
+                        floodQueue.push_back(index);
+                    }
+                }
+            }
+        }
+
+        for (int z = 0; z < kChunkExtent; ++z) {
+            for (int y = 0; y < kChunkExtent; ++y) {
+                enqueueBoundarySeed(kChunkExtent - 1, y, z, plusXChunk, 0, y, z);
+                enqueueBoundarySeed(0, y, z, minusXChunk, kChunkExtent - 1, y, z);
+            }
+        }
+        for (int z = 0; z < kChunkExtent; ++z) {
+            for (int x = 0; x < kChunkExtent; ++x) {
+                enqueueBoundarySeed(x, kChunkExtent - 1, z, plusYChunk, x, 0, z);
+                enqueueBoundarySeed(x, 0, z, minusYChunk, x, kChunkExtent - 1, z);
+            }
+        }
+        for (int y = 0; y < kChunkExtent; ++y) {
+            for (int x = 0; x < kChunkExtent; ++x) {
+                enqueueBoundarySeed(x, y, kChunkExtent - 1, plusZChunk, x, y, 0);
+                enqueueBoundarySeed(x, y, 0, minusZChunk, x, y, kChunkExtent - 1);
+            }
+        }
+    }
+
+    std::size_t queueHead = 0u;
+    while (queueHead < floodQueue.size()) {
+        const int index = floodQueue[queueHead++];
+        const uint8_t current = snapshot.sky[static_cast<size_t>(index)];
+        if (current <= 1u) {
+            continue;
+        }
+
+        const int x = index % kChunkExtent;
+        const int y = (index / kChunkExtent) % kChunkExtent;
+        const int z = index / kChunkArea;
+        const uint8_t propagated = static_cast<uint8_t>(current - 1u);
+
+        for (const glm::ivec3& offset : kCardinalOffsets) {
+            const int nx = x + offset.x;
+            const int ny = y + offset.y;
+            const int nz = z + offset.z;
+            if (nx < 0 || ny < 0 || nz < 0 ||
+                nx >= kChunkExtent || ny >= kChunkExtent || nz >= kChunkExtent) {
+                continue;
+            }
+
+            const int neighborIndex = chunkLocalIndex(nx, ny, nz);
+            if (snapshot.solidMask[static_cast<size_t>(neighborIndex)] != 0u) {
+                continue;
+            }
+            uint8_t& neighborSky = snapshot.sky[static_cast<size_t>(neighborIndex)];
+            if (propagated <= neighborSky) {
+                continue;
+            }
+
+            neighborSky = propagated;
+            floodQueue.push_back(neighborIndex);
+        }
+    }
+
+    std::array<uint8_t, Chunk::VOLUME> propagatedPackedLight{};
+    for (int z = 0; z < kChunkExtent; ++z) {
+        for (int y = 0; y < kChunkExtent; ++y) {
+            for (int x = 0; x < kChunkExtent; ++x) {
+                const int index = chunkLocalIndex(x, y, z);
+                const bool solid = snapshot.solidMask[static_cast<size_t>(index)] != 0u;
+                uint8_t sky = snapshot.sky[static_cast<size_t>(index)];
+                if (solid) {
+                    sky = 0u;
+                }
+
+                propagatedPackedLight[static_cast<size_t>(index)] = Chunk::packLight(
+                    sky,
+                    snapshot.blockLight[static_cast<size_t>(index)]
+                );
+            }
+        }
+    }
+
+    {
+        std::unique_lock<std::shared_mutex> lock(worldMutex_);
+        if (!canPropagateChunkLocked(coord)) {
+            return false;
+        }
+
+        auto stateIt = columnLightingStates_.find(columnCoord);
+        if (stateIt == columnLightingStates_.end()) {
+            return false;
+        }
+
+        if ((stateIt->second.propagatedChunkMask & bit) != 0u) {
+            return true;
+        }
+
+        Column* centerColumn = tryGetSkycastColumnLocked(columnCoord);
+        if (centerColumn == nullptr) {
+            return false;
+        }
+
+        centerColumn->getChunk(chunkZ).setPackedLightVolume(propagatedPackedLight);
+        stateIt->second.propagatedChunkMask |= bit;
+
+        if (stateIt->second.propagatedChunkMask == kAllColumnChunkBits) {
+            if (generatedColumns_.insert(columnCoord).second) {
+                generatedColumnHistory_.push_back(columnCoord);
+                generationRevision_.fetch_add(1, std::memory_order_release);
+            }
+        }
+    }
+
+    return true;
+}
+
+bool World::canPropagateChunkLocked(const ChunkCoord& coord) const {
+    if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT) {
+        return false;
+    }
+
+    const ColumnCoord columnCoord = chunk_to_column(coord);
+    if (!isColumnSkycastCompleteLocked(columnCoord)) {
+        return false;
+    }
+
+    for (const glm::ivec2& offset : kHorizontalOffsets) {
+        const ColumnCoord neighborCoord{
+            columnCoord.v.x + offset.x,
+            columnCoord.v.y + offset.y
+        };
+        if (!isColumnSkycastCompleteLocked(neighborCoord)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool World::isColumnSkycastCompleteLocked(const ColumnCoord& coord) const {
+    return skycastColumns_.find(coord) != skycastColumns_.end();
+}
+
+Column* World::tryGetSkycastColumnLocked(const ColumnCoord& coord) {
+    if (!isColumnSkycastCompleteLocked(coord)) {
+        return nullptr;
+    }
+
+    const RegionCoord regionCoord = column_to_region(coord);
+    const auto regionIt = regions_.find(regionCoord);
+    if (regionIt == regions_.end() || regionIt->second == nullptr) {
+        return nullptr;
+    }
+
+    const glm::ivec2 localColumn = column_local_in_region(coord);
+    return &regionIt->second->getColumn(
+        static_cast<uint8_t>(localColumn.x),
+        static_cast<uint8_t>(localColumn.y)
+    );
+}
+
+const Column* World::tryGetSkycastColumnLocked(const ColumnCoord& coord) const {
+    if (!isColumnSkycastCompleteLocked(coord)) {
+        return nullptr;
+    }
+
+    const RegionCoord regionCoord = column_to_region(coord);
+    const auto regionIt = regions_.find(regionCoord);
+    if (regionIt == regions_.end() || regionIt->second == nullptr) {
+        return nullptr;
+    }
+
+    const glm::ivec2 localColumn = column_local_in_region(coord);
+    return &regionIt->second->getColumn(
+        static_cast<uint8_t>(localColumn.x),
+        static_cast<uint8_t>(localColumn.y)
+    );
 }
 
 bool World::hasPendingJobs() const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
-    return !pendingColumnJobs_.empty() || !queuedColumnJobs_.empty();
+    return !pendingColumnJobs_.empty() ||
+           !queuedColumnJobs_.empty() ||
+           !pendingChunkPropagationJobs_.empty() ||
+           !queuedChunkPropagationJobs_.empty();
 }
 
 bool World::isColumnGeneratedLocked(const ColumnCoord& coord) const {

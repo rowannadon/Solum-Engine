@@ -20,6 +20,7 @@ public:
     void setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockID);
     uint8_t getPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel = 0) const;
     void setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight);
+    void setPackedLightVolume(const std::array<uint8_t, VOLUME>& packedLights);
     uint8_t getSkyLight(uint8_t x, uint8_t y, uint8_t z) const;
     uint8_t getBlockLight(uint8_t x, uint8_t y, uint8_t z) const;
     bool isAllAir() const noexcept { return solidVoxelCount_ == 0; }

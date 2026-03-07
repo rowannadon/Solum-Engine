@@ -24,7 +24,7 @@ bool VoxelStreamingSystem::initialize(std::shared_ptr<const BlockModelLibrary> b
     meshConfig.meshTileSizeChunks = 4;
     meshConfig.lodLevelCount = 5;
     meshConfig.activeChunkRadius = 255;
-    meshConfig.lodSseTargetPixels = 8.0f;
+    meshConfig.lodSseTargetPixels = 2.0f;
     meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
     const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
     meshConfig.activeChunkRadius = std::min(meshConfig.activeChunkRadius, clampedWorldRadius);
