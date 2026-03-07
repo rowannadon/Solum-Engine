@@ -994,8 +994,11 @@ void World::enqueueChunkPropagationIfReadyLocked(const ChunkCoord& coord) {
 }
 
 void World::collectChunkPropagationJobsLocked(std::vector<ChunkCoord>& outChunks) {
+    std::size_t retryBudget = queuedChunkPropagationJobs_.size();
     while (pendingChunkPropagationJobs_.size() < maxInFlightChunkPropagationJobs_ &&
-           !queuedChunkPropagationJobs_.empty()) {
+           !queuedChunkPropagationJobs_.empty() &&
+           retryBudget > 0u) {
+        --retryBudget;
         const ChunkCoord coord = queuedChunkPropagationJobs_.front();
         queuedChunkPropagationJobs_.pop_front();
         if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT) {
@@ -1023,7 +1026,8 @@ void World::collectChunkPropagationJobsLocked(std::vector<ChunkCoord>& outChunks
             continue;
         }
         if (!canPropagateChunkLocked(coord)) {
-            priorityChunkPropagationJobs_.erase(coord);
+            state.queuedChunkMask |= bit;
+            queuedChunkPropagationJobs_.push_back(coord);
             continue;
         }
 
@@ -1399,30 +1403,97 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
         centerChunk.setPackedLightVolume(propagatedPackedLight);
         stateIt->second.propagatedChunkMask |= bit;
 
-        if (chunkLightChanged && chunkZ > 0u) {
-            const ChunkCoord belowCoord{coord.v.x, coord.v.y, coord.v.z - 1};
-            const ColumnCoord belowColumnCoord = chunk_to_column(belowCoord);
-            const auto belowStateIt = columnLightingStates_.find(belowColumnCoord);
-            if (belowStateIt != columnLightingStates_.end()) {
-                const uint8_t belowChunkZ = static_cast<uint8_t>(belowCoord.v.z);
-                const uint32_t belowBit = (1u << static_cast<uint32_t>(belowChunkZ));
-                ColumnLightingState& belowState = belowStateIt->second;
-                const bool belowAlreadyQueued = (belowState.queuedChunkMask & belowBit) != 0u;
-                belowState.propagatedChunkMask &= ~belowBit;
+        if (chunkLightChanged && wasGenerated) {
+            playerEditedColumnHistory_.push_back(columnCoord);
+            playerEditRevision_.fetch_add(1, std::memory_order_release);
+        }
 
-                if (pendingChunkPropagationJobs_.find(belowCoord) != pendingChunkPropagationJobs_.end()) {
-                    belowState.queuedChunkMask |= belowBit;
-                    if (!belowAlreadyQueued) {
-                        queuedChunkPropagationJobs_.push_front(belowCoord);
-                    }
-                    priorityChunkPropagationJobs_.insert(belowCoord);
-                } else if (canPropagateChunkLocked(belowCoord)) {
-                    belowState.queuedChunkMask |= belowBit;
-                    if (!belowAlreadyQueued) {
-                        queuedChunkPropagationJobs_.push_front(belowCoord);
-                    }
-                    priorityChunkPropagationJobs_.insert(belowCoord);
+        auto ensureDependentQueuedIfUnpropagated = [&](const ChunkCoord& dependentCoord) {
+            if (dependentCoord.v.z < 0 || dependentCoord.v.z >= cfg::COLUMN_HEIGHT) {
+                return;
+            }
+
+            const ColumnCoord dependentColumnCoord = chunk_to_column(dependentCoord);
+            if (!isColumnSkycastCompleteLocked(dependentColumnCoord)) {
+                return;
+            }
+
+            auto dependentStateIt = columnLightingStates_.find(dependentColumnCoord);
+            if (dependentStateIt == columnLightingStates_.end()) {
+                return;
+            }
+
+            const uint8_t dependentChunkZ = static_cast<uint8_t>(dependentCoord.v.z);
+            const uint32_t dependentBit = (1u << static_cast<uint32_t>(dependentChunkZ));
+            ColumnLightingState& dependentState = dependentStateIt->second;
+            if ((dependentState.propagatedChunkMask & dependentBit) != 0u) {
+                return;
+            }
+
+            const bool alreadyQueued = (dependentState.queuedChunkMask & dependentBit) != 0u;
+            dependentState.queuedChunkMask |= dependentBit;
+            if (!alreadyQueued) {
+                if (pendingChunkPropagationJobs_.find(dependentCoord) != pendingChunkPropagationJobs_.end()) {
+                    queuedChunkPropagationJobs_.push_front(dependentCoord);
+                } else if (canPropagateChunkLocked(dependentCoord)) {
+                    queuedChunkPropagationJobs_.push_front(dependentCoord);
+                } else {
+                    queuedChunkPropagationJobs_.push_back(dependentCoord);
                 }
+            }
+            priorityChunkPropagationJobs_.insert(dependentCoord);
+        };
+
+        // Guarantee top-down progress across chunk boundaries even when this chunk's
+        // final light matches its previous value.
+        if (chunkZ > 0u) {
+            ensureDependentQueuedIfUnpropagated(ChunkCoord{coord.v.x, coord.v.y, coord.v.z - 1});
+        }
+
+        if (chunkLightChanged) {
+            auto invalidateDependentChunk = [&](const ChunkCoord& dependentCoord) {
+                if (dependentCoord.v.z < 0 || dependentCoord.v.z >= cfg::COLUMN_HEIGHT) {
+                    return;
+                }
+
+                const ColumnCoord dependentColumnCoord = chunk_to_column(dependentCoord);
+                if (!isColumnSkycastCompleteLocked(dependentColumnCoord)) {
+                    return;
+                }
+
+                auto dependentStateIt = columnLightingStates_.find(dependentColumnCoord);
+                if (dependentStateIt == columnLightingStates_.end()) {
+                    return;
+                }
+
+                const uint8_t dependentChunkZ = static_cast<uint8_t>(dependentCoord.v.z);
+                const uint32_t dependentBit = (1u << static_cast<uint32_t>(dependentChunkZ));
+                ColumnLightingState& dependentState = dependentStateIt->second;
+                const bool alreadyQueued = (dependentState.queuedChunkMask & dependentBit) != 0u;
+                dependentState.propagatedChunkMask &= ~dependentBit;
+                dependentState.queuedChunkMask |= dependentBit;
+
+                if (alreadyQueued) {
+                    priorityChunkPropagationJobs_.insert(dependentCoord);
+                    return;
+                }
+
+                if (pendingChunkPropagationJobs_.find(dependentCoord) != pendingChunkPropagationJobs_.end()) {
+                    queuedChunkPropagationJobs_.push_front(dependentCoord);
+                } else if (canPropagateChunkLocked(dependentCoord)) {
+                    queuedChunkPropagationJobs_.push_front(dependentCoord);
+                } else {
+                    queuedChunkPropagationJobs_.push_back(dependentCoord);
+                }
+                priorityChunkPropagationJobs_.insert(dependentCoord);
+            };
+
+            for (const glm::ivec2& offset : kHorizontalOffsets) {
+                invalidateDependentChunk(ChunkCoord{
+                    coord.v.x + offset.x,
+                    coord.v.y + offset.y,
+                    coord.v.z
+                });
             }
         }
 

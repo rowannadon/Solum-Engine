@@ -24,5 +24,9 @@
     "randomOffsetDirections": "XYZ",
     "randomOffsetAmount": 0.06,
     "blockLightOpacity": 0.15
+  },
+  {
+    "name": "glowstone",
+    "texture": "glowstone.png"
   }
 ]

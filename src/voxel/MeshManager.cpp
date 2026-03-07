@@ -908,18 +908,15 @@ void MeshManager::scheduleRemeshForPlayerEditedColumns(const ColumnCoord& center
         std::shared_lock<std::shared_mutex> lock(meshMutex_);
         for (const MeshTileCoord& tile : tilesToRemesh) {
             const auto tileIt = meshTiles_.find(tile);
-            if (tileIt == meshTiles_.end()) {
-                continue;
-            }
 
-            const int8_t desired = (tileIt->second.desiredLod >= 0)
+            const int8_t desired = (tileIt != meshTiles_.end() && tileIt->second.desiredLod >= 0)
                 ? tileIt->second.desiredLod
                 : desiredLodForTile(tile, centerChunk, playerWorldPosition, sseProjectionScale, 0);
             if (desired < 0) {
                 continue;
             }
 
-            const int8_t selected = tileIt->second.selectedLod;
+            const int8_t selected = (tileIt != meshTiles_.end()) ? tileIt->second.selectedLod : -1;
             const int8_t targetLod = (selected >= 0) ? selected : desired;
             if (targetLod < 0) {
                 continue;
@@ -1071,14 +1068,16 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
         std::shared_lock<std::shared_mutex> lock(meshMutex_);
         for (const MeshTileCoord& tile : tilesToRemesh) {
             const auto tileIt = meshTiles_.find(tile);
-            if (tileIt == meshTiles_.end()) {
-                continue;
-            }
 
-            const int8_t desired = (tileIt->second.desiredLod >= 0)
+            const int8_t desired = (tileIt != meshTiles_.end() && tileIt->second.desiredLod >= 0)
                 ? tileIt->second.desiredLod
                 : desiredLodForTile(tile, centerChunk, playerWorldPosition, sseProjectionScale, 0);
             if (desired < 0) {
+                continue;
+            }
+            const int8_t selected = (tileIt != meshTiles_.end()) ? tileIt->second.selectedLod : -1;
+            const int8_t targetLod = (selected >= 0) ? selected : desired;
+            if (targetLod < 0) {
                 continue;
             }
 
@@ -1096,46 +1095,14 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
 
             const jobsystem::Priority primaryPriority =
                 primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
-            const jobsystem::Priority secondaryPriority = demotePriority(primaryPriority);
 
             jobsToSchedule.push_back(ScheduledTileLod{
-                TileLodCoord{tile, static_cast<uint8_t>(desired)},
+                TileLodCoord{tile, static_cast<uint8_t>(targetLod)},
                 frontierDepth,
                 distanceSq,
                 0u,
                 primaryPriority
             });
-
-            std::vector<int32_t> supplementalLods;
-            supplementalLods.reserve(static_cast<std::size_t>(config_.lodLevelCount - 1));
-            for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
-                if (lod == desired) {
-                    continue;
-                }
-                supplementalLods.push_back(lod);
-            }
-            std::stable_sort(
-                supplementalLods.begin(),
-                supplementalLods.end(),
-                [desired](int32_t a, int32_t b) {
-                    const int32_t ad = std::abs(a - desired);
-                    const int32_t bd = std::abs(b - desired);
-                    if (ad != bd) {
-                        return ad < bd;
-                    }
-                    return a > b;
-                }
-            );
-
-            for (int32_t lod : supplementalLods) {
-                jobsToSchedule.push_back(ScheduledTileLod{
-                    TileLodCoord{tile, static_cast<uint8_t>(lod)},
-                    frontierDepth,
-                    distanceSq,
-                    1u,
-                    secondaryPriority
-                });
-            }
         }
     }
 
