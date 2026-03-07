@@ -1307,9 +1307,6 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
         const int z = index / kChunkArea;
 
         for (const glm::ivec3& offset : kCardinalOffsets) {
-            if (offset.z > 0) {
-                continue;
-            }
             const int nx = x + offset.x;
             const int ny = y + offset.y;
             const int nz = z + offset.z;
@@ -1322,9 +1319,19 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             if (snapshot.blocksLightMask[static_cast<size_t>(neighborIndex)] != 0u) {
                 continue;
             }
-            const uint8_t loss = (offset.z != 0)
-                ? snapshot.skyVerticalLoss[static_cast<size_t>(neighborIndex)]
-                : snapshot.blockLightLoss[static_cast<size_t>(neighborIndex)];
+            uint8_t loss = snapshot.blockLightLoss[static_cast<size_t>(neighborIndex)];
+            if (offset.z < 0) {
+                // Downward skylight transfer should preserve strong shafts through air.
+                loss = snapshot.skyVerticalLoss[static_cast<size_t>(neighborIndex)];
+            } else if (offset.z > 0) {
+                // Allow only limited upward spread so openings can light nearby ceilings
+                // without turning enclosed shafts into persistent light sources.
+                const uint16_t upwardLossBase = static_cast<uint16_t>(
+                    snapshot.blockLightLoss[static_cast<size_t>(neighborIndex)]
+                );
+                const uint16_t upwardLoss = std::min<uint16_t>(15u, upwardLossBase + 1u);
+                loss = static_cast<uint8_t>(upwardLoss);
+            }
             const uint8_t propagated = attenuateLight(
                 current,
                 loss
@@ -1408,6 +1415,47 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             playerEditRevision_.fetch_add(1, std::memory_order_release);
         }
 
+        bool needsBelowRefreshFromBoundary = false;
+        if (chunkZ > 0u) {
+            const Chunk& belowChunk = centerColumn->getChunk(static_cast<uint8_t>(chunkZ - 1u));
+            for (int y = 0; y < kChunkExtent && !needsBelowRefreshFromBoundary; ++y) {
+                for (int x = 0; x < kChunkExtent; ++x) {
+                    const uint8_t aboveSky = Chunk::unpackSkyLight(centerChunk.getPackedLight(
+                        static_cast<uint8_t>(x),
+                        static_cast<uint8_t>(y),
+                        0u
+                    ));
+                    if (aboveSky == 0u) {
+                        continue;
+                    }
+
+                    const BlockMaterial belowBlock = belowChunk.getBlock(
+                        static_cast<uint8_t>(x),
+                        static_cast<uint8_t>(y),
+                        static_cast<uint8_t>(kChunkExtent - 1)
+                    );
+                    const uint16_t belowMaterialId = belowBlock.unpack().id;
+                    if (MaterialLightProperties::blocksLight(belowMaterialId)) {
+                        continue;
+                    }
+
+                    const uint8_t candidate = attenuateLight(
+                        aboveSky,
+                        MaterialLightProperties::skyLightVerticalLoss(belowMaterialId)
+                    );
+                    const uint8_t belowSky = Chunk::unpackSkyLight(belowChunk.getPackedLight(
+                        static_cast<uint8_t>(x),
+                        static_cast<uint8_t>(y),
+                        static_cast<uint8_t>(kChunkExtent - 1)
+                    ));
+                    if (candidate > belowSky) {
+                        needsBelowRefreshFromBoundary = true;
+                        break;
+                    }
+                }
+            }
+        }
+
         auto ensureDependentQueuedIfUnpropagated = [&](const ChunkCoord& dependentCoord) {
             if (dependentCoord.v.z < 0 || dependentCoord.v.z >= cfg::COLUMN_HEIGHT) {
                 return;
@@ -1450,44 +1498,51 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             ensureDependentQueuedIfUnpropagated(ChunkCoord{coord.v.x, coord.v.y, coord.v.z - 1});
         }
 
-        if (chunkLightChanged) {
-            auto invalidateDependentChunk = [&](const ChunkCoord& dependentCoord) {
-                if (dependentCoord.v.z < 0 || dependentCoord.v.z >= cfg::COLUMN_HEIGHT) {
-                    return;
-                }
+        auto invalidateDependentChunk = [&](const ChunkCoord& dependentCoord) {
+            if (dependentCoord.v.z < 0 || dependentCoord.v.z >= cfg::COLUMN_HEIGHT) {
+                return;
+            }
 
-                const ColumnCoord dependentColumnCoord = chunk_to_column(dependentCoord);
-                if (!isColumnSkycastCompleteLocked(dependentColumnCoord)) {
-                    return;
-                }
+            const ColumnCoord dependentColumnCoord = chunk_to_column(dependentCoord);
+            if (!isColumnSkycastCompleteLocked(dependentColumnCoord)) {
+                return;
+            }
 
-                auto dependentStateIt = columnLightingStates_.find(dependentColumnCoord);
-                if (dependentStateIt == columnLightingStates_.end()) {
-                    return;
-                }
+            auto dependentStateIt = columnLightingStates_.find(dependentColumnCoord);
+            if (dependentStateIt == columnLightingStates_.end()) {
+                return;
+            }
 
-                const uint8_t dependentChunkZ = static_cast<uint8_t>(dependentCoord.v.z);
-                const uint32_t dependentBit = (1u << static_cast<uint32_t>(dependentChunkZ));
-                ColumnLightingState& dependentState = dependentStateIt->second;
-                const bool alreadyQueued = (dependentState.queuedChunkMask & dependentBit) != 0u;
-                dependentState.propagatedChunkMask &= ~dependentBit;
-                dependentState.queuedChunkMask |= dependentBit;
+            const uint8_t dependentChunkZ = static_cast<uint8_t>(dependentCoord.v.z);
+            const uint32_t dependentBit = (1u << static_cast<uint32_t>(dependentChunkZ));
+            ColumnLightingState& dependentState = dependentStateIt->second;
+            const bool alreadyQueued = (dependentState.queuedChunkMask & dependentBit) != 0u;
+            dependentState.propagatedChunkMask &= ~dependentBit;
+            dependentState.queuedChunkMask |= dependentBit;
 
-                if (alreadyQueued) {
-                    priorityChunkPropagationJobs_.insert(dependentCoord);
-                    return;
-                }
-
-                if (pendingChunkPropagationJobs_.find(dependentCoord) != pendingChunkPropagationJobs_.end()) {
-                    queuedChunkPropagationJobs_.push_front(dependentCoord);
-                } else if (canPropagateChunkLocked(dependentCoord)) {
-                    queuedChunkPropagationJobs_.push_front(dependentCoord);
-                } else {
-                    queuedChunkPropagationJobs_.push_back(dependentCoord);
-                }
+            if (alreadyQueued) {
                 priorityChunkPropagationJobs_.insert(dependentCoord);
-            };
+                return;
+            }
 
+            if (pendingChunkPropagationJobs_.find(dependentCoord) != pendingChunkPropagationJobs_.end()) {
+                queuedChunkPropagationJobs_.push_front(dependentCoord);
+            } else if (canPropagateChunkLocked(dependentCoord)) {
+                queuedChunkPropagationJobs_.push_front(dependentCoord);
+            } else {
+                queuedChunkPropagationJobs_.push_back(dependentCoord);
+            }
+            priorityChunkPropagationJobs_.insert(dependentCoord);
+        };
+
+        if (needsBelowRefreshFromBoundary && chunkZ > 0u) {
+            invalidateDependentChunk(ChunkCoord{coord.v.x, coord.v.y, coord.v.z - 1});
+        }
+
+        if (chunkLightChanged) {
+            if (chunkZ > 0u) {
+                invalidateDependentChunk(ChunkCoord{coord.v.x, coord.v.y, coord.v.z - 1});
+            }
             for (const glm::ivec2& offset : kHorizontalOffsets) {
                 invalidateDependentChunk(ChunkCoord{
                     coord.v.x + offset.x,
