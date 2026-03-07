@@ -27,6 +27,7 @@ struct LoadedMaterialTexture {
     bool randomRotation = false;
     uint8_t randomOffsetDirectionsMask = 0u;
     float randomOffsetAmount = 0.0f;
+    float blockLightOpacity = 1.0f;
     std::vector<uint8_t> pixels;
     uint32_t width = 0u;
     uint32_t height = 0u;
@@ -153,6 +154,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         loaded.randomRotation = configMaterials[i].randomRotation;
         loaded.randomOffsetDirectionsMask = configMaterials[i].randomOffsetDirectionsMask;
         loaded.randomOffsetAmount = configMaterials[i].randomOffsetAmount;
+        loaded.blockLightOpacity = configMaterials[i].blockLightOpacity;
         loaded.materialId = static_cast<uint16_t>(kFirstMaterialId + static_cast<uint32_t>(i));
         loaded.textureLayer = static_cast<uint32_t>(i);
 
@@ -366,7 +368,8 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
                 material.doubleSided,
                 material.randomRotation,
                 material.randomOffsetDirectionsMask,
-                material.randomOffsetAmount
+                material.randomOffsetAmount,
+                material.blockLightOpacity
             }
         );
     }
@@ -460,6 +463,10 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
             std::cerr << "MaterialManager: materials[" << i << "] field 'randomOffsetAmount' must be a number when present." << std::endl;
             return false;
         }
+        if (entry.contains("blockLightOpacity") && !entry["blockLightOpacity"].is_number()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'blockLightOpacity' must be a number when present." << std::endl;
+            return false;
+        }
         if (entry.contains("model")) {
             material.model = entry["model"].get<std::string>();
         }
@@ -483,6 +490,14 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
             if (material.randomOffsetAmount < 0.0f || material.randomOffsetAmount > 1.0f) {
                 std::cerr << "MaterialManager: materials[" << i
                           << "] field 'randomOffsetAmount' must be within [0.0, 1.0]." << std::endl;
+                return false;
+            }
+        }
+        if (entry.contains("blockLightOpacity")) {
+            material.blockLightOpacity = entry["blockLightOpacity"].get<float>();
+            if (material.blockLightOpacity < 0.0f || material.blockLightOpacity > 1.0f) {
+                std::cerr << "MaterialManager: materials[" << i
+                          << "] field 'blockLightOpacity' must be within [0.0, 1.0]." << std::endl;
                 return false;
             }
         }

@@ -1,24 +1,28 @@
 [
   {
     "name": "stone",
-    "texture": "stone.png"
+    "texture": "stone.png",
+    "blockLightOpacity": 1.0
   },
   {
     "name": "grass",
     "texture": "grass.png",
-    "randomRotation": true
+    "randomRotation": true,
+    "blockLightOpacity": 1.0
   },
   {
     "name": "log",
-    "texture": "log.png"
+    "texture": "log.png",
+    "blockLightOpacity": 1.0
   },
   {
     "name": "leaf",
     "texture": "oak_leaves.png",
-    "model": "leaf_model_cube_2x.obj",
+    
     "doubleSided": true,
     "randomRotation": false,
     "randomOffsetDirections": "XYZ",
-    "randomOffsetAmount": 0.2
+    "randomOffsetAmount": 0.06,
+    "blockLightOpacity": 0.15
   }
 ]

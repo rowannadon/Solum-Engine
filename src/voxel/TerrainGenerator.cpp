@@ -1,5 +1,6 @@
 #include "solum_engine/voxel/TerrainGenerator.h"
 #include "solum_engine/resources/Constants.h"
+#include "solum_engine/voxel/MaterialLightProperties.h"
 #include "solum_engine/voxel/StructureManager.h"
 
 #include <algorithm>
@@ -18,9 +19,9 @@ namespace {
 constexpr int kHeightmapUpscaleFactor = 2;
 constexpr int kFallbackTerrainHeight = 100;
 constexpr int kNoiseSeed = 1337;
-constexpr float kNoiseHorizontalFrequency = 0.045f;
-constexpr float kNoiseVerticalFrequency = 0.08f;
-constexpr float kNoiseMaxStrengthBlocks = 12.0f;
+constexpr float kNoiseHorizontalFrequency = 0.025f;
+constexpr float kNoiseVerticalFrequency = 0.04f;
+constexpr float kNoiseMaxStrengthBlocks = 32.0f;
 constexpr float kNoiseFalloffBlocks = 20.0f;
 constexpr float kGrassFlatnessThreshold = 0.75f;
 
@@ -256,6 +257,13 @@ int levelIndex(int x, int y) {
     return (y * cfg::CHUNK_SIZE) + x;
 }
 
+uint8_t attenuateLight(uint8_t light, uint8_t loss) {
+    if (light == 0u || loss == MaterialLightProperties::kOpaqueLightLoss || loss >= light) {
+        return 0u;
+    }
+    return static_cast<uint8_t>(light - loss);
+}
+
 void rebuildSimpleColumnLighting(Column& col) {
     constexpr uint8_t kMaxSkyLight = 15u;
     constexpr uint8_t kBaseBlockLight = 0u;
@@ -269,7 +277,8 @@ void rebuildSimpleColumnLighting(Column& col) {
 
     std::array<uint8_t, kLevelArea> skyFromAbove{};
     std::array<uint8_t, kLevelArea> levelSky{};
-    std::array<uint8_t, kLevelArea> solidMask{};
+    std::array<uint8_t, kLevelArea> blockLightLoss{};
+    std::array<uint8_t, kLevelArea> blocksLightMask{};
     skyFromAbove.fill(kMaxSkyLight);
 
     std::vector<int> floodQueue;
@@ -287,17 +296,20 @@ void rebuildSimpleColumnLighting(Column& col) {
                     static_cast<uint8_t>(y),
                     static_cast<uint16_t>(z)
                 );
-                const bool isSolid = block.unpack().id != 0u;
-                solidMask[static_cast<size_t>(idx)] = isSolid ? 1u : 0u;
+                const uint16_t materialId = block.unpack().id;
+                const bool blocksLight = MaterialLightProperties::blocksLight(materialId);
+                const uint8_t verticalLoss = MaterialLightProperties::skyLightVerticalLoss(materialId);
+                blocksLightMask[static_cast<size_t>(idx)] = blocksLight ? 1u : 0u;
+                blockLightLoss[static_cast<size_t>(idx)] = MaterialLightProperties::blockLightStepLoss(materialId);
 
-                if (isSolid) {
+                if (blocksLight) {
                     levelSky[static_cast<size_t>(idx)] = 0u;
                     continue;
                 }
 
-                const uint8_t directSky = skyFromAbove[static_cast<size_t>(idx)];
+                const uint8_t directSky = attenuateLight(skyFromAbove[static_cast<size_t>(idx)], verticalLoss);
                 levelSky[static_cast<size_t>(idx)] = directSky;
-                if (directSky > 1u) {
+                if (directSky > 0u) {
                     floodQueue.push_back(idx);
                 }
             }
@@ -306,11 +318,10 @@ void rebuildSimpleColumnLighting(Column& col) {
         while (queueHead < floodQueue.size()) {
             const int idx = floodQueue[queueHead++];
             const uint8_t current = levelSky[static_cast<size_t>(idx)];
-            if (current <= 1u) {
+            if (current == 0u) {
                 continue;
             }
 
-            const uint8_t propagated = static_cast<uint8_t>(current - 1u);
             const int x = idx % cfg::CHUNK_SIZE;
             const int y = idx / cfg::CHUNK_SIZE;
 
@@ -322,7 +333,15 @@ void rebuildSimpleColumnLighting(Column& col) {
                 }
 
                 const int neighborIdx = levelIndex(nx, ny);
-                if (solidMask[static_cast<size_t>(neighborIdx)] != 0u) {
+                if (blocksLightMask[static_cast<size_t>(neighborIdx)] != 0u) {
+                    continue;
+                }
+
+                const uint8_t propagated = attenuateLight(
+                    current,
+                    blockLightLoss[static_cast<size_t>(neighborIdx)]
+                );
+                if (propagated == 0u) {
                     continue;
                 }
 
@@ -339,7 +358,7 @@ void rebuildSimpleColumnLighting(Column& col) {
         for (int y = 0; y < cfg::CHUNK_SIZE; ++y) {
             for (int x = 0; x < cfg::CHUNK_SIZE; ++x) {
                 const int idx = levelIndex(x, y);
-                const uint8_t sky = (solidMask[static_cast<size_t>(idx)] != 0u)
+                const uint8_t sky = (blocksLightMask[static_cast<size_t>(idx)] != 0u)
                     ? 0u
                     : levelSky[static_cast<size_t>(idx)];
 

@@ -12,6 +12,7 @@
 
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/voxel/Column.h"
+#include "solum_engine/voxel/MaterialLightProperties.h"
 #include "solum_engine/voxel/Region.h"
 #include "solum_engine/voxel/TerrainGenerator.h"
 
@@ -58,8 +59,11 @@ constexpr int chunkLocalIndex(int x, int y, int z) {
     return (z * kChunkArea) + (y * kChunkExtent) + x;
 }
 
-bool isTransparent(BlockMaterial block) {
-    return block.unpack().id == 0u;
+uint8_t attenuateLight(uint8_t light, uint8_t loss) {
+    if (light == 0u || loss == MaterialLightProperties::kOpaqueLightLoss || loss >= light) {
+        return 0u;
+    }
+    return static_cast<uint8_t>(light - loss);
 }
 }  // namespace
 
@@ -912,7 +916,8 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
     struct ChunkPropagationSnapshot {
         std::array<uint8_t, Chunk::VOLUME> sky{};
         std::array<uint8_t, Chunk::VOLUME> blockLight{};
-        std::array<uint8_t, Chunk::VOLUME> solidMask{};
+        std::array<uint8_t, Chunk::VOLUME> blockLightLoss{};
+        std::array<uint8_t, Chunk::VOLUME> blocksLightMask{};
     };
 
     const ColumnCoord columnCoord = chunk_to_column(coord);
@@ -951,14 +956,16 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
                         static_cast<uint8_t>(y),
                         static_cast<uint8_t>(z)
                     );
-                    const bool solid = !isTransparent(block);
+                    const uint16_t materialId = block.unpack().id;
+                    const bool blocksLight = MaterialLightProperties::blocksLight(materialId);
                     const uint8_t packedLight = centerChunk.getPackedLight(
                         static_cast<uint8_t>(x),
                         static_cast<uint8_t>(y),
                         static_cast<uint8_t>(z)
                     );
-                    const uint8_t sky = solid ? 0u : Chunk::unpackSkyLight(packedLight);
-                    snapshot.solidMask[static_cast<size_t>(index)] = solid ? 1u : 0u;
+                    const uint8_t sky = blocksLight ? 0u : Chunk::unpackSkyLight(packedLight);
+                    snapshot.blocksLightMask[static_cast<size_t>(index)] = blocksLight ? 1u : 0u;
+                    snapshot.blockLightLoss[static_cast<size_t>(index)] = MaterialLightProperties::blockLightStepLoss(materialId);
                     snapshot.sky[static_cast<size_t>(index)] = sky;
                     snapshot.blockLight[static_cast<size_t>(index)] = Chunk::unpackBlockLight(packedLight);
                 }
@@ -983,7 +990,7 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
 
         auto enqueueBoundarySeed = [&](int lx, int ly, int lz, const Chunk* neighbor, int nx, int ny, int nz) {
             const int localIndex = chunkLocalIndex(lx, ly, lz);
-            if (snapshot.solidMask[static_cast<size_t>(localIndex)] != 0u) {
+            if (snapshot.blocksLightMask[static_cast<size_t>(localIndex)] != 0u) {
                 return;
             }
             if (neighbor == nullptr) {
@@ -994,7 +1001,7 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
                 static_cast<uint8_t>(ny),
                 static_cast<uint8_t>(nz)
             );
-            if (!isTransparent(neighborBlock)) {
+            if (MaterialLightProperties::blocksLight(neighborBlock.unpack().id)) {
                 return;
             }
             const uint8_t neighborSky = Chunk::unpackSkyLight(neighbor->getPackedLight(
@@ -1002,11 +1009,14 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
                 static_cast<uint8_t>(ny),
                 static_cast<uint8_t>(nz)
             ));
-            if (neighborSky <= 1u) {
+            const uint8_t candidate = attenuateLight(
+                neighborSky,
+                snapshot.blockLightLoss[static_cast<size_t>(localIndex)]
+            );
+            if (candidate == 0u) {
                 return;
             }
 
-            const uint8_t candidate = static_cast<uint8_t>(neighborSky - 1u);
             uint8_t& current = snapshot.sky[static_cast<size_t>(localIndex)];
             if (candidate <= current) {
                 return;
@@ -1020,10 +1030,10 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             for (int y = 0; y < kChunkExtent; ++y) {
                 for (int x = 0; x < kChunkExtent; ++x) {
                     const int index = chunkLocalIndex(x, y, z);
-                    if (snapshot.solidMask[static_cast<size_t>(index)] != 0u) {
+                    if (snapshot.blocksLightMask[static_cast<size_t>(index)] != 0u) {
                         continue;
                     }
-                    if (snapshot.sky[static_cast<size_t>(index)] > 1u) {
+                    if (snapshot.sky[static_cast<size_t>(index)] > 0u) {
                         floodQueue.push_back(index);
                     }
                 }
@@ -1054,14 +1064,13 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
     while (queueHead < floodQueue.size()) {
         const int index = floodQueue[queueHead++];
         const uint8_t current = snapshot.sky[static_cast<size_t>(index)];
-        if (current <= 1u) {
+        if (current == 0u) {
             continue;
         }
 
         const int x = index % kChunkExtent;
         const int y = (index / kChunkExtent) % kChunkExtent;
         const int z = index / kChunkArea;
-        const uint8_t propagated = static_cast<uint8_t>(current - 1u);
 
         for (const glm::ivec3& offset : kCardinalOffsets) {
             const int nx = x + offset.x;
@@ -1073,7 +1082,14 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             }
 
             const int neighborIndex = chunkLocalIndex(nx, ny, nz);
-            if (snapshot.solidMask[static_cast<size_t>(neighborIndex)] != 0u) {
+            if (snapshot.blocksLightMask[static_cast<size_t>(neighborIndex)] != 0u) {
+                continue;
+            }
+            const uint8_t propagated = attenuateLight(
+                current,
+                snapshot.blockLightLoss[static_cast<size_t>(neighborIndex)]
+            );
+            if (propagated == 0u) {
                 continue;
             }
             uint8_t& neighborSky = snapshot.sky[static_cast<size_t>(neighborIndex)];
@@ -1091,9 +1107,9 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
         for (int y = 0; y < kChunkExtent; ++y) {
             for (int x = 0; x < kChunkExtent; ++x) {
                 const int index = chunkLocalIndex(x, y, z);
-                const bool solid = snapshot.solidMask[static_cast<size_t>(index)] != 0u;
+                const bool blocksLight = snapshot.blocksLightMask[static_cast<size_t>(index)] != 0u;
                 uint8_t sky = snapshot.sky[static_cast<size_t>(index)];
-                if (solid) {
+                if (blocksLight) {
                     sky = 0u;
                 }
 

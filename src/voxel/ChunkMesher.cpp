@@ -45,6 +45,14 @@ namespace {
         return blockModelLibrary->isMaterialDoubleSided(materialId);
     }
 
+    bool isNeighborTransparentForMeshing(const BlockModelLibrary* blockModelLibrary, BlockMaterial neighborBlockID) {
+        const uint16_t neighborMaterialId = neighborBlockID.unpack().id;
+        if (neighborMaterialId == kAirBlockId) {
+            return true;
+        }
+        return isMaterialDoubleSided(blockModelLibrary, neighborMaterialId);
+    }
+
     const BlockModelQuadRef* modelQuadRef(const BlockModelLibrary* blockModelLibrary, uint32_t refIndex) {
         if (blockModelLibrary == nullptr || refIndex >= blockModelLibrary->quadRefs.size()) {
             return nullptr;
@@ -281,6 +289,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                 if (materialId == kAirBlockId || materialId == ChunkMesher::kCulledSolidBlockId) {
                     continue;
                 }
+                const bool materialDoubleSided = isMaterialDoubleSided(blockModelLibrary, materialId);
                 std::array<bool, 6> faceVisible{};
                 std::array<uint8_t, 6> faceLight{};
                 for (uint32_t dir = 0; dir < 6; ++dir) {
@@ -290,7 +299,8 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                     const int neighborZ = paddedZ + offset.z;
                     const BlockMaterial neighborBlockID = paddedBlockData[paddedIndex(neighborX, neighborY, neighborZ)];
                     faceLight[dir] = paddedLightData[paddedIndex(neighborX, neighborY, neighborZ)];
-                    faceVisible[dir] = !IsSolidForCulling(neighborBlockID);
+                    faceVisible[dir] = materialDoubleSided ||
+                                       isNeighborTransparentForMeshing(blockModelLibrary, neighborBlockID);
                 }
 
                 const BlockModelDefinition* modelDefinition = modelDefinitionForMaterial(blockModelLibrary, materialId);
@@ -457,6 +467,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                 if (materialId == kAirBlockId || materialId == ChunkMesher::kCulledSolidBlockId) {
                     continue;
                 }
+                const bool materialDoubleSided = isMaterialDoubleSided(blockModelLibrary, materialId);
                 std::array<bool, 6> faceVisible{};
                 std::array<uint8_t, 6> faceLight{};
                 for (uint32_t dir = 0; dir < 6; ++dir) {
@@ -468,7 +479,8 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                     };
                     const BlockMaterial neighborBlockID = source.getBlock(neighborCoord);
                     faceLight[dir] = source.getPackedLight(neighborCoord);
-                    faceVisible[dir] = !IsSolidForCulling(neighborBlockID);
+                    faceVisible[dir] = materialDoubleSided ||
+                                       isNeighborTransparentForMeshing(blockModelLibrary, neighborBlockID);
                 }
 
                 const BlockModelDefinition* modelDefinition = modelDefinitionForMaterial(blockModelLibrary, materialId);

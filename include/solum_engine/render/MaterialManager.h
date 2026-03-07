@@ -24,6 +24,7 @@ struct MaterialDefinition {
     bool randomRotation = false;
     uint8_t randomOffsetDirectionsMask = 0u;
     float randomOffsetAmount = 0.0f;
+    float blockLightOpacity = 1.0f;
 };
 
 class MaterialManager {
@@ -60,6 +61,7 @@ private:
         bool randomRotation = false;
         uint8_t randomOffsetDirectionsMask = 0u;
         float randomOffsetAmount = 0.0f;
+        float blockLightOpacity = 1.0f;
     };
 
     bool buildDefaultMaterials(BufferManager& bufferManager, TextureManager& textureManager);
