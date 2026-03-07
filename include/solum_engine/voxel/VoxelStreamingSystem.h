@@ -16,6 +16,7 @@
 #include "solum_engine/render/RuntimeTiming.h"
 #include "solum_engine/render/TimingAccumulator.h"
 #include "solum_engine/resources/Coords.h"
+#include "solum_engine/voxel/BlockMaterial.h"
 #include "solum_engine/voxel/BlockModelLibrary.h"
 #include "solum_engine/voxel/StreamingUpload.h"
 #include "solum_engine/voxel/mesh_stream/UploadMailbox.h"
@@ -85,6 +86,8 @@ public:
     void stop();
 
     void updateCamera(const glm::vec3& cameraPosition, float sseProjectionScale);
+    bool breakBlock(const BlockCoord& coord);
+    bool placeBlock(const BlockCoord& coord, const BlockMaterial& block);
     std::optional<MeshStreamingDelta> tryConsumePreparedDelta();
     void recordMainUpdateDurationNs(uint64_t ns) noexcept;
 

@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <limits>
 
 #include "solum_engine/render/RuntimeTimingMerger.h"
+#include "solum_engine/voxel/World.h"
 
 bool Application::Initialize() {
     WebGPURenderer::Config rendererConfig{};
@@ -102,6 +104,7 @@ void Application::MainLoop() {
 
     if (!io.WantCaptureKeyboard && !io.WantCaptureMouse) {
         processInput();
+        processBlockInteractions();
     }
 
     // Early exit if frame budget is already exceeded
@@ -282,19 +285,22 @@ void Application::onMouseButton(int button, int action, int /* modifiers */) {
 
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
-            // Left click focuses the window and enables camera control
-            mouseState.firstMouse = true;
-            cursorCaptured = true;
-            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-            glfwSetCursorPos(window, mouseState.lastX, mouseState.lastY);
+            if (!cursorCaptured) {
+                // First left click focuses the window and enables camera control.
+                mouseState.firstMouse = true;
+                cursorCaptured = true;
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                glfwSetCursorPos(window, mouseState.lastX, mouseState.lastY);
+            } else {
+                mouseState.leftClickRequested = true;
+            }
         }
     }
     if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         if (action == GLFW_PRESS) {
-            mouseState.rightMousePressed = true;
-        }
-        else if (action == GLFW_RELEASE) {
-            mouseState.rightMousePressed = false;
+            if (cursorCaptured) {
+                mouseState.rightClickRequested = true;
+            }
         }
     }
 }
@@ -353,6 +359,8 @@ void Application::onKey(int key, int /* scancode */, int action, int /* mods */)
         if (keyPressed) {
             cursorCaptured = false;
             mouseState.firstMouse = true;
+            mouseState.leftClickRequested = false;
+            mouseState.rightClickRequested = false;
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         }
         break;
@@ -361,4 +369,114 @@ void Application::onKey(int key, int /* scancode */, int action, int /* mods */)
 
 bool Application::IsRunning() {
     return !glfwWindowShouldClose(window);
+}
+
+bool Application::raycastTargetBlock(float maxDistance, VoxelRaycastHit& outHit) const {
+    outHit = VoxelRaycastHit{};
+    const World* world = voxelStreaming_.world();
+    if (world == nullptr) {
+        return false;
+    }
+
+    glm::vec3 rayDir = camera.front;
+    const float rayLengthSq = glm::dot(rayDir, rayDir);
+    if (rayLengthSq <= 0.000001f) {
+        return false;
+    }
+    rayDir /= std::sqrt(rayLengthSq);
+
+    const glm::vec3 rayOrigin = camera.position;
+    BlockCoord current{
+        static_cast<int32_t>(std::floor(rayOrigin.x)),
+        static_cast<int32_t>(std::floor(rayOrigin.y)),
+        static_cast<int32_t>(std::floor(rayOrigin.z))
+    };
+    BlockCoord previous = current;
+
+    auto initialAxisStep = [](float originComponent, float directionComponent, int32_t& step, float& tMax, float& tDelta) {
+        if (directionComponent > 0.0f) {
+            step = 1;
+            const float nextBoundary = std::floor(originComponent) + 1.0f;
+            tMax = (nextBoundary - originComponent) / directionComponent;
+            tDelta = 1.0f / directionComponent;
+        } else if (directionComponent < 0.0f) {
+            step = -1;
+            const float previousBoundary = std::floor(originComponent);
+            tMax = (originComponent - previousBoundary) / -directionComponent;
+            tDelta = 1.0f / -directionComponent;
+        } else {
+            step = 0;
+            tMax = std::numeric_limits<float>::infinity();
+            tDelta = std::numeric_limits<float>::infinity();
+        }
+    };
+
+    int32_t stepX = 0;
+    int32_t stepY = 0;
+    int32_t stepZ = 0;
+    float tMaxX = 0.0f;
+    float tMaxY = 0.0f;
+    float tMaxZ = 0.0f;
+    float tDeltaX = 0.0f;
+    float tDeltaY = 0.0f;
+    float tDeltaZ = 0.0f;
+    initialAxisStep(rayOrigin.x, rayDir.x, stepX, tMaxX, tDeltaX);
+    initialAxisStep(rayOrigin.y, rayDir.y, stepY, tMaxY, tDeltaY);
+    initialAxisStep(rayOrigin.z, rayDir.z, stepZ, tMaxZ, tDeltaZ);
+
+    float traveled = 0.0f;
+    while (traveled <= maxDistance) {
+        BlockMaterial block = UnpackedBlockMaterial{}.pack();
+        if (world->tryGetBlock(current, block) && block.unpack().id != 0u) {
+            outHit.hit = true;
+            outHit.breakCoord = current;
+            outHit.placeCoord = previous;
+            return true;
+        }
+
+        previous = current;
+        if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
+            current.v.x += stepX;
+            traveled = tMaxX;
+            tMaxX += tDeltaX;
+        } else if (tMaxY <= tMaxZ) {
+            current.v.y += stepY;
+            traveled = tMaxY;
+            tMaxY += tDeltaY;
+        } else {
+            current.v.z += stepZ;
+            traveled = tMaxZ;
+            tMaxZ += tDeltaZ;
+        }
+    }
+
+    return false;
+}
+
+void Application::processBlockInteractions() {
+    if (!cursorCaptured) {
+        mouseState.leftClickRequested = false;
+        mouseState.rightClickRequested = false;
+        return;
+    }
+
+    VoxelRaycastHit rayHit{};
+    const bool hasHit = raycastTargetBlock(8.0f, rayHit);
+    if (!hasHit || !rayHit.hit) {
+        mouseState.leftClickRequested = false;
+        mouseState.rightClickRequested = false;
+        return;
+    }
+
+    if (mouseState.leftClickRequested) {
+        voxelStreaming_.breakBlock(rayHit.breakCoord);
+    }
+
+    if (mouseState.rightClickRequested) {
+        const BlockMaterial placementBlock = UnpackedBlockMaterial{1u, 0, Direction::PlusZ, 0}.pack();
+        voxelStreaming_.placeBlock(rayHit.placeCoord, placementBlock);
+    }
+
+    mouseState.leftClickRequested = false;
+    mouseState.rightClickRequested = false;
 }

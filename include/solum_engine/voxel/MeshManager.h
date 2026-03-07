@@ -80,12 +80,14 @@ private:
                              float sseProjectionScale,
                              const ChunkCoord* previousCenterChunk,
                              int32_t centerShiftChunks);
+    void scheduleRemeshForPlayerEditedColumns(const ColumnCoord& centerColumn);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);
     void scheduleTileLodMeshing(const TileLodCoord& coord,
                                 jobsystem::Priority priority,
                                 bool forceRemesh,
-                                int32_t activeWindowExtraChunks);
-    void queueTileLodUploadLocked(const MeshTileLodKey& key);
+                                int32_t activeWindowExtraChunks,
+                                bool usePriorityQueue = false);
+    void queueTileLodUploadLocked(const MeshTileLodKey& key, bool highPriority);
     void queueTileLodRemovalLocked(const MeshTileLodKey& key);
 
     int8_t desiredLodForTile(const MeshTileCoord& tileCoord,
@@ -131,19 +133,24 @@ private:
     std::shared_ptr<const BlockModelLibrary> blockModelLibrary_;
     Config config_;
     jobsystem::JobSystem jobs_;
+    jobsystem::JobSystem priorityJobs_;
     int32_t meshTileSizeChunks_ = 4;
 
     mutable std::shared_mutex meshMutex_;
     std::unordered_set<TileLodCoord> pendingTileLodJobs_;
+    std::unordered_set<TileLodCoord> pendingPriorityTileLodJobs_;
     std::unordered_set<TileLodCoord> deferredRemeshTileLods_;
     std::unordered_map<MeshTileCoord, MeshTileState> meshTiles_;
 
     std::deque<MeshTileLodKey> pendingUploadOrder_;
     std::unordered_set<MeshTileLodKey> pendingUploadSet_;
+    std::deque<MeshTileLodKey> pendingPriorityUploadOrder_;
+    std::unordered_set<MeshTileLodKey> pendingPriorityUploadSet_;
     std::deque<MeshTileLodKey> pendingRemovalOrder_;
     std::unordered_set<MeshTileLodKey> pendingRemovalSet_;
 
     std::atomic<uint64_t> meshRevision_{0};
+    std::atomic<uint64_t> processedWorldPlayerEditRevision_{0};
     std::atomic<uint64_t> processedWorldGenerationRevision_{0};
     std::atomic<bool> shuttingDown_{false};
 

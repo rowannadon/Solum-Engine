@@ -54,14 +54,21 @@ private:
     void updateProjectionMatrix(int zoom);
     void updateViewMatrix();
     void processInput();
+    void processBlockInteractions();
     void updateCullingCameraMatrices(const glm::mat4& renderViewMatrix, bool freezeCullingCamera);
+    struct VoxelRaycastHit {
+        bool hit = false;
+        BlockCoord breakCoord{};
+        BlockCoord placeCoord{};
+    };
+    bool raycastTargetBlock(float maxDistance, VoxelRaycastHit& outHit) const;
 
 private:
     // Mouse state for first person look
     struct MouseState {
         bool firstMouse = true;
-        bool leftMousePressed = false;
-        bool rightMousePressed = false;
+        bool leftClickRequested = false;
+        bool rightClickRequested = false;
         float lastX = 640.0f;  // Half of initial window width
         float lastY = 360.0f;  // Half of initial window height
     };

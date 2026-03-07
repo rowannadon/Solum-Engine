@@ -17,13 +17,13 @@ bool VoxelStreamingSystem::initialize(std::shared_ptr<const BlockModelLibrary> b
     blockModelLibrary_ = std::move(blockModelLibrary);
 
     World::Config worldConfig;
-    worldConfig.columnLoadRadius = 255;
+    worldConfig.columnLoadRadius = 8;
     worldConfig.jobConfig.worker_threads = 2;
 
     MeshManager::Config meshConfig;
-    meshConfig.meshTileSizeChunks = 4;
+    meshConfig.meshTileSizeChunks = 2;
     meshConfig.lodLevelCount = 5;
-    meshConfig.activeChunkRadius = 255;
+    meshConfig.activeChunkRadius = 8;
     meshConfig.lodSseTargetPixels = 2.0f;
     meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
     const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
@@ -80,6 +80,38 @@ void VoxelStreamingSystem::updateCamera(const glm::vec3& cameraPosition, float s
         latestStreamingSseProjectionScale_ = sseProjectionScale;
     }
     streamingCv_.notify_one();
+}
+
+bool VoxelStreamingSystem::breakBlock(const BlockCoord& coord) {
+    if (!world_) {
+        return false;
+    }
+
+    const bool changed = world_->breakBlock(coord);
+    if (changed) {
+        {
+            std::lock_guard<std::mutex> lock(streamingMutex_);
+            hasLatestStreamingCamera_ = true;
+        }
+        streamingCv_.notify_one();
+    }
+    return changed;
+}
+
+bool VoxelStreamingSystem::placeBlock(const BlockCoord& coord, const BlockMaterial& block) {
+    if (!world_) {
+        return false;
+    }
+
+    const bool changed = world_->placeBlock(coord, block);
+    if (changed) {
+        {
+            std::lock_guard<std::mutex> lock(streamingMutex_);
+            hasLatestStreamingCamera_ = true;
+        }
+        streamingCv_.notify_one();
+    }
+    return changed;
 }
 
 std::optional<MeshStreamingDelta> VoxelStreamingSystem::tryConsumePreparedDelta() {

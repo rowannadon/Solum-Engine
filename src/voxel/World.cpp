@@ -160,7 +160,9 @@ World::World(Config config)
       jobs_(config_.jobConfig),
       chunkPropagationJobs_([this]() {
           jobsystem::JobSystem::Config propagationConfig = config_.jobConfig;
-          propagationConfig.worker_threads = 1;
+          const std::size_t configuredWorkers =
+              (propagationConfig.worker_threads > 0) ? propagationConfig.worker_threads : 1u;
+          propagationConfig.worker_threads = std::clamp<std::size_t>(configuredWorkers, 1u, 2u);
           return propagationConfig;
       }()) {
     const std::size_t configuredMaxInFlight = config_.maxInFlightColumnJobs;
@@ -209,6 +211,59 @@ bool World::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock, uint8_
     return tryGetBlockLocked(coord, outBlock, mipLevel);
 }
 
+bool World::tryGetBlockAndPackedLight(const BlockCoord& coord,
+                                      BlockMaterial& outBlock,
+                                      uint8_t& outPackedLight,
+                                      uint8_t mipLevel) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    return tryGetBlockAndPackedLightLocked(coord, outBlock, outPackedLight, mipLevel);
+}
+
+void World::sampleBlockAndLightVolume(const BlockCoord& origin,
+                                      const glm::ivec3& extent,
+                                      const glm::ivec3& stride,
+                                      uint8_t mipLevel,
+                                      BlockMaterial* outBlocks,
+                                      uint8_t* outPackedLights,
+                                      uint8_t* outKnownMask) const {
+    if (outBlocks == nullptr || outPackedLights == nullptr) {
+        return;
+    }
+
+    const int32_t width = std::max(0, extent.x);
+    const int32_t height = std::max(0, extent.y);
+    const int32_t depth = std::max(0, extent.z);
+    if (width == 0 || height == 0 || depth == 0) {
+        return;
+    }
+
+    const int32_t strideX = std::max(1, stride.x);
+    const int32_t strideY = std::max(1, stride.y);
+    const int32_t strideZ = std::max(1, stride.z);
+    const int32_t rowStride = height * depth;
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    for (int32_t x = 0; x < width; ++x) {
+        for (int32_t y = 0; y < height; ++y) {
+            for (int32_t z = 0; z < depth; ++z) {
+                const int32_t index = (x * rowStride) + (y * depth) + z;
+                const BlockCoord coord{
+                    origin.v.x + (x * strideX),
+                    origin.v.y + (y * strideY),
+                    origin.v.z + (z * strideZ)
+                };
+                BlockMaterial block = airBlock();
+                uint8_t packedLight = unlitPackedLight();
+                const bool known = tryGetBlockAndPackedLightLocked(coord, block, packedLight, mipLevel);
+                outBlocks[index] = block;
+                outPackedLights[index] = packedLight;
+                if (outKnownMask != nullptr) {
+                    outKnownMask[index] = known ? 1u : 0u;
+                }
+            }
+        }
+    }
+}
+
 bool World::tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const {
     return tryGetPackedLight(coord, outPackedLight, 0);
 }
@@ -216,6 +271,36 @@ bool World::tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) 
 bool World::tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight, uint8_t mipLevel) const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
     return tryGetPackedLightLocked(coord, outPackedLight, mipLevel);
+}
+
+bool World::breakBlock(const BlockCoord& coord) {
+    if (shuttingDown_.load(std::memory_order_acquire)) {
+        return false;
+    }
+    bool changed = false;
+    {
+        std::unique_lock<std::shared_mutex> lock(worldMutex_);
+        changed = applyBlockEditLocked(coord, airBlock(), false, true);
+    }
+    if (changed) {
+        pumpChunkPropagationQueue();
+    }
+    return changed;
+}
+
+bool World::placeBlock(const BlockCoord& coord, const BlockMaterial& block) {
+    if (shuttingDown_.load(std::memory_order_acquire)) {
+        return false;
+    }
+    bool changed = false;
+    {
+        std::unique_lock<std::shared_mutex> lock(worldMutex_);
+        changed = applyBlockEditLocked(coord, block, true, false);
+    }
+    if (changed) {
+        pumpChunkPropagationQueue();
+    }
+    return changed;
 }
 
 bool World::isColumnGenerated(const ColumnCoord& coord) const {
@@ -250,6 +335,10 @@ uint64_t World::generationRevision() const {
     return generationRevision_.load(std::memory_order_acquire);
 }
 
+uint64_t World::playerEditRevision() const {
+    return playerEditRevision_.load(std::memory_order_acquire);
+}
+
 uint64_t World::copyGeneratedColumnsSince(uint64_t afterRevision,
                                           std::vector<ColumnCoord>& outColumns,
                                           std::size_t maxCount) const {
@@ -269,6 +358,25 @@ uint64_t World::copyGeneratedColumnsSince(uint64_t afterRevision,
     return clampedRevision + static_cast<uint64_t>(count);
 }
 
+uint64_t World::copyPlayerEditedColumnsSince(uint64_t afterRevision,
+                                             std::vector<ColumnCoord>& outColumns,
+                                             std::size_t maxCount) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    const uint64_t currentRevision = static_cast<uint64_t>(playerEditedColumnHistory_.size());
+    const uint64_t clampedRevision = std::min(afterRevision, currentRevision);
+    const size_t startIndex = static_cast<size_t>(clampedRevision);
+    const size_t available = playerEditedColumnHistory_.size() - startIndex;
+    const size_t count = std::min(maxCount, available);
+
+    outColumns.clear();
+    outColumns.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        outColumns.push_back(playerEditedColumnHistory_[startIndex + i]);
+    }
+
+    return clampedRevision + static_cast<uint64_t>(count);
+}
+
 void World::copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
     outColumns.clear();
@@ -282,12 +390,21 @@ void World::copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const {
 bool World::tryGetBlockLocked(const BlockCoord& coord,
                               BlockMaterial& outBlock,
                               uint8_t mipLevel) const {
+    uint8_t ignoredPackedLight = unlitPackedLight();
+    return tryGetBlockAndPackedLightLocked(coord, outBlock, ignoredPackedLight, mipLevel);
+}
+
+bool World::tryGetBlockAndPackedLightLocked(const BlockCoord& coord,
+                                            BlockMaterial& outBlock,
+                                            uint8_t& outPackedLight,
+                                            uint8_t mipLevel) const {
     const uint8_t clampedMip = std::min<uint8_t>(mipLevel, Chunk::MAX_MIP_LEVEL);
     const int32_t chunkSizeAtMip = static_cast<int32_t>(Chunk::mipSize(clampedMip));
     const int32_t worldHeightAtMip = cfg::COLUMN_HEIGHT_BLOCKS >> clampedMip;
 
     if (coord.v.z < 0 || coord.v.z >= worldHeightAtMip) {
         outBlock = airBlock();
+        outPackedLight = unlitPackedLight();
         return false;
     }
 
@@ -298,6 +415,7 @@ bool World::tryGetBlockLocked(const BlockCoord& coord,
     };
     if (chunkCoord.v.z < 0 || chunkCoord.v.z >= cfg::COLUMN_HEIGHT) {
         outBlock = airBlock();
+        outPackedLight = unlitPackedLight();
         return false;
     }
 
@@ -308,12 +426,14 @@ bool World::tryGetBlockLocked(const BlockCoord& coord,
     // Treat those columns as unknown so meshing can apply boundary policy.
     if (generatedColumns_.find(columnCoord) == generatedColumns_.end()) {
         outBlock = airBlock();
+        outPackedLight = unlitPackedLight();
         return false;
     }
 
     const auto regionIt = regions_.find(regionCoord);
     if (regionIt == regions_.end() || regionIt->second == nullptr) {
         outBlock = airBlock();
+        outPackedLight = unlitPackedLight();
         return false;
     }
 
@@ -327,8 +447,15 @@ bool World::tryGetBlockLocked(const BlockCoord& coord,
         static_cast<uint8_t>(localColumn.x),
         static_cast<uint8_t>(localColumn.y)
     );
+    const Chunk& chunk = column.getChunk(static_cast<uint8_t>(chunkCoord.v.z));
 
-    outBlock = column.getChunk(static_cast<uint8_t>(chunkCoord.v.z)).getBlock(
+    outBlock = chunk.getBlock(
+        static_cast<uint8_t>(localBlock.x),
+        static_cast<uint8_t>(localBlock.y),
+        static_cast<uint8_t>(localBlock.z),
+        clampedMip
+    );
+    outPackedLight = chunk.getPackedLight(
         static_cast<uint8_t>(localBlock.x),
         static_cast<uint8_t>(localBlock.y),
         static_cast<uint8_t>(localBlock.z),
@@ -340,57 +467,8 @@ bool World::tryGetBlockLocked(const BlockCoord& coord,
 bool World::tryGetPackedLightLocked(const BlockCoord& coord,
                                     uint8_t& outPackedLight,
                                     uint8_t mipLevel) const {
-    const uint8_t clampedMip = std::min<uint8_t>(mipLevel, Chunk::MAX_MIP_LEVEL);
-    const int32_t chunkSizeAtMip = static_cast<int32_t>(Chunk::mipSize(clampedMip));
-    const int32_t worldHeightAtMip = cfg::COLUMN_HEIGHT_BLOCKS >> clampedMip;
-
-    if (coord.v.z < 0 || coord.v.z >= worldHeightAtMip) {
-        outPackedLight = unlitPackedLight();
-        return false;
-    }
-
-    const ChunkCoord chunkCoord{
-        floor_div(coord.v.x, chunkSizeAtMip),
-        floor_div(coord.v.y, chunkSizeAtMip),
-        floor_div(coord.v.z, chunkSizeAtMip)
-    };
-    if (chunkCoord.v.z < 0 || chunkCoord.v.z >= cfg::COLUMN_HEIGHT) {
-        outPackedLight = unlitPackedLight();
-        return false;
-    }
-
-    const ColumnCoord columnCoord = chunk_to_column(chunkCoord);
-    const RegionCoord regionCoord = column_to_region(columnCoord);
-
-    if (generatedColumns_.find(columnCoord) == generatedColumns_.end()) {
-        outPackedLight = unlitPackedLight();
-        return false;
-    }
-
-    const auto regionIt = regions_.find(regionCoord);
-    if (regionIt == regions_.end() || regionIt->second == nullptr) {
-        outPackedLight = unlitPackedLight();
-        return false;
-    }
-
-    const glm::ivec2 localColumn = column_local_in_region(columnCoord);
-    const glm::ivec3 localBlock{
-        floor_mod(coord.v.x, chunkSizeAtMip),
-        floor_mod(coord.v.y, chunkSizeAtMip),
-        floor_mod(coord.v.z, chunkSizeAtMip)
-    };
-    const Column& column = regionIt->second->getColumn(
-        static_cast<uint8_t>(localColumn.x),
-        static_cast<uint8_t>(localColumn.y)
-    );
-
-    outPackedLight = column.getChunk(static_cast<uint8_t>(chunkCoord.v.z)).getPackedLight(
-        static_cast<uint8_t>(localBlock.x),
-        static_cast<uint8_t>(localBlock.y),
-        static_cast<uint8_t>(localBlock.z),
-        clampedMip
-    );
-    return true;
+    BlockMaterial ignoredBlock = airBlock();
+    return tryGetBlockAndPackedLightLocked(coord, ignoredBlock, outPackedLight, mipLevel);
 }
 
 WorldSection World::createSection(const BlockCoord& origin, const glm::ivec3& extent) const {
@@ -744,6 +822,126 @@ void World::onColumnGenerated(const ColumnCoord& coord, Column&& column) {
     enqueueChunkPropagationCandidatesLocked(coord);
 }
 
+bool World::applyBlockEditLocked(const BlockCoord& coord,
+                                 const BlockMaterial& newBlock,
+                                 bool requireCurrentAir,
+                                 bool requireCurrentSolid) {
+    if (coord.v.z < 0 || coord.v.z >= cfg::COLUMN_HEIGHT_BLOCKS) {
+        return false;
+    }
+    const ChunkCoord chunkCoord = block_to_chunk(coord);
+    if (chunkCoord.v.z < 0 || chunkCoord.v.z >= cfg::COLUMN_HEIGHT) {
+        return false;
+    }
+
+    const ColumnCoord columnCoord = chunk_to_column(chunkCoord);
+    if (!isColumnSkycastCompleteLocked(columnCoord)) {
+        return false;
+    }
+
+    Column* column = tryGetSkycastColumnLocked(columnCoord);
+    if (column == nullptr) {
+        return false;
+    }
+
+    const uint8_t localX = static_cast<uint8_t>(floor_mod(coord.v.x, cfg::CHUNK_SIZE));
+    const uint8_t localY = static_cast<uint8_t>(floor_mod(coord.v.y, cfg::CHUNK_SIZE));
+    const uint16_t localZ = static_cast<uint16_t>(floor_mod(coord.v.z, cfg::COLUMN_HEIGHT_BLOCKS));
+    const BlockMaterial currentBlock = column->getBlock(localX, localY, localZ);
+    if (currentBlock == newBlock) {
+        return false;
+    }
+
+    const bool currentIsAir = (currentBlock.unpack().id == 0u);
+    if (requireCurrentAir && !currentIsAir) {
+        return false;
+    }
+    if (requireCurrentSolid && currentIsAir) {
+        return false;
+    }
+
+    column->setBlock(localX, localY, localZ, newBlock);
+
+    std::unordered_set<ColumnCoord> geometryDirtyColumns;
+    geometryDirtyColumns.insert(columnCoord);
+    if (localX == 0u) {
+        geometryDirtyColumns.insert(ColumnCoord{columnCoord.v.x - 1, columnCoord.v.y});
+    } else if (localX == static_cast<uint8_t>(cfg::CHUNK_SIZE - 1)) {
+        geometryDirtyColumns.insert(ColumnCoord{columnCoord.v.x + 1, columnCoord.v.y});
+    }
+    if (localY == 0u) {
+        geometryDirtyColumns.insert(ColumnCoord{columnCoord.v.x, columnCoord.v.y - 1});
+    } else if (localY == static_cast<uint8_t>(cfg::CHUNK_SIZE - 1)) {
+        geometryDirtyColumns.insert(ColumnCoord{columnCoord.v.x, columnCoord.v.y + 1});
+    }
+
+    for (const ColumnCoord& dirtyColumn : geometryDirtyColumns) {
+        if (!isColumnSkycastCompleteLocked(dirtyColumn)) {
+            continue;
+        }
+        generatedColumns_.insert(dirtyColumn);
+        playerEditedColumnHistory_.push_back(dirtyColumn);
+        playerEditRevision_.fetch_add(1, std::memory_order_release);
+        generatedColumnHistory_.push_back(dirtyColumn);
+        generationRevision_.fetch_add(1, std::memory_order_release);
+    }
+
+    for (int32_t oy = -1; oy <= 1; ++oy) {
+        for (int32_t ox = -1; ox <= 1; ++ox) {
+            int32_t zMin = std::max(0, chunkCoord.v.z - 1);
+            const int32_t zMax = std::min(cfg::COLUMN_HEIGHT - 1, chunkCoord.v.z + 1);
+            // A vertical edit can affect skylight for the entire shaft below.
+            if (ox == 0 && oy == 0) {
+                zMin = 0;
+            }
+
+            for (int32_t nz = zMin; nz <= zMax; ++nz) {
+                const ChunkCoord affectedChunk{
+                    chunkCoord.v.x + ox,
+                    chunkCoord.v.y + oy,
+                    nz
+                };
+                const ColumnCoord affectedColumn = chunk_to_column(affectedChunk);
+                if (!isColumnSkycastCompleteLocked(affectedColumn)) {
+                    continue;
+                }
+
+                auto stateIt = columnLightingStates_.find(affectedColumn);
+                if (stateIt == columnLightingStates_.end()) {
+                    continue;
+                }
+
+                const uint8_t chunkZ = static_cast<uint8_t>(nz);
+                const uint32_t bit = (1u << static_cast<uint32_t>(chunkZ));
+                ColumnLightingState& state = stateIt->second;
+                const bool alreadyQueued = (state.queuedChunkMask & bit) != 0u;
+                state.propagatedChunkMask &= ~bit;
+
+                if (pendingChunkPropagationJobs_.find(affectedChunk) != pendingChunkPropagationJobs_.end()) {
+                    state.queuedChunkMask |= bit;
+                    if (!alreadyQueued) {
+                        queuedChunkPropagationJobs_.push_front(affectedChunk);
+                    }
+                    priorityChunkPropagationJobs_.insert(affectedChunk);
+                    continue;
+                }
+
+                if (!canPropagateChunkLocked(affectedChunk)) {
+                    continue;
+                }
+
+                state.queuedChunkMask |= bit;
+                if (!alreadyQueued) {
+                    queuedChunkPropagationJobs_.push_front(affectedChunk);
+                }
+                priorityChunkPropagationJobs_.insert(affectedChunk);
+            }
+        }
+    }
+
+    return true;
+}
+
 void World::enqueueChunkPropagationCandidatesLocked(const ColumnCoord& coord) {
     auto enqueueForColumn = [&](const ColumnCoord& candidateColumn) {
         if (!isColumnSkycastCompleteLocked(candidateColumn)) {
@@ -807,6 +1005,7 @@ void World::collectChunkPropagationJobsLocked(std::vector<ChunkCoord>& outChunks
         const ColumnCoord columnCoord = chunk_to_column(coord);
         auto stateIt = columnLightingStates_.find(columnCoord);
         if (stateIt == columnLightingStates_.end()) {
+            priorityChunkPropagationJobs_.erase(coord);
             continue;
         }
 
@@ -814,14 +1013,17 @@ void World::collectChunkPropagationJobsLocked(std::vector<ChunkCoord>& outChunks
         const uint32_t bit = (1u << static_cast<uint32_t>(chunkZ));
         ColumnLightingState& state = stateIt->second;
         if ((state.queuedChunkMask & bit) == 0u) {
+            priorityChunkPropagationJobs_.erase(coord);
             continue;
         }
 
         state.queuedChunkMask &= ~bit;
         if ((state.propagatedChunkMask & bit) != 0u) {
+            priorityChunkPropagationJobs_.erase(coord);
             continue;
         }
         if (!canPropagateChunkLocked(coord)) {
+            priorityChunkPropagationJobs_.erase(coord);
             continue;
         }
 
@@ -835,7 +1037,10 @@ void World::dispatchChunkPropagationJobs(std::vector<ChunkCoord>&& chunksToSched
         const int32_t distanceSq = hasLastScheduledCenter_
             ? distanceSqToCenter(chunk_to_column(coord), lastScheduledCenter_)
             : 0;
-        const jobsystem::Priority priority = priorityFromDistanceSq(distanceSq);
+        const bool highPriority = (priorityChunkPropagationJobs_.erase(coord) > 0u);
+        const jobsystem::Priority priority = highPriority
+            ? jobsystem::Priority::Critical
+            : priorityFromDistanceSq(distanceSq);
 
         try {
             chunkPropagationJobs_.schedule(
@@ -846,7 +1051,7 @@ void World::dispatchChunkPropagationJobs(std::vector<ChunkCoord>&& chunksToSched
                         propagateChunkLighting(coord)
                     };
                 },
-                [this, coord](jobsystem::JobResult<ChunkPropagationResult>&& result) {
+                [this, coord, highPriority](jobsystem::JobResult<ChunkPropagationResult>&& result) {
                     {
                         std::unique_lock<std::shared_mutex> lock(worldMutex_);
                         pendingChunkPropagationJobs_.erase(coord);
@@ -868,6 +1073,9 @@ void World::dispatchChunkPropagationJobs(std::vector<ChunkCoord>&& chunksToSched
                                     canPropagateChunkLocked(coord)) {
                                     stateIt->second.queuedChunkMask |= bit;
                                     queuedChunkPropagationJobs_.push_back(coord);
+                                    if (highPriority) {
+                                        priorityChunkPropagationJobs_.insert(coord);
+                                    }
                                 }
                             }
                         }
@@ -888,6 +1096,9 @@ void World::dispatchChunkPropagationJobs(std::vector<ChunkCoord>&& chunksToSched
                         (stateIt->second.queuedChunkMask & bit) == 0u) {
                         stateIt->second.queuedChunkMask |= bit;
                         queuedChunkPropagationJobs_.push_back(coord);
+                        if (highPriority) {
+                            priorityChunkPropagationJobs_.insert(coord);
+                        }
                     }
                 }
             }
@@ -917,6 +1128,7 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
         std::array<uint8_t, Chunk::VOLUME> sky{};
         std::array<uint8_t, Chunk::VOLUME> blockLight{};
         std::array<uint8_t, Chunk::VOLUME> blockLightLoss{};
+        std::array<uint8_t, Chunk::VOLUME> skyVerticalLoss{};
         std::array<uint8_t, Chunk::VOLUME> blocksLightMask{};
     };
 
@@ -963,10 +1175,10 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
                         static_cast<uint8_t>(y),
                         static_cast<uint8_t>(z)
                     );
-                    const uint8_t sky = blocksLight ? 0u : Chunk::unpackSkyLight(packedLight);
                     snapshot.blocksLightMask[static_cast<size_t>(index)] = blocksLight ? 1u : 0u;
                     snapshot.blockLightLoss[static_cast<size_t>(index)] = MaterialLightProperties::blockLightStepLoss(materialId);
-                    snapshot.sky[static_cast<size_t>(index)] = sky;
+                    snapshot.skyVerticalLoss[static_cast<size_t>(index)] = MaterialLightProperties::skyLightVerticalLoss(materialId);
+                    snapshot.sky[static_cast<size_t>(index)] = 0u;
                     snapshot.blockLight[static_cast<size_t>(index)] = Chunk::unpackBlockLight(packedLight);
                 }
             }
@@ -984,11 +1196,15 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             (chunkZ + 1u < static_cast<uint8_t>(cfg::COLUMN_HEIGHT))
             ? &centerColumn->getChunk(static_cast<uint8_t>(chunkZ + 1u))
             : nullptr;
-        const Chunk* minusZChunk = (chunkZ > 0u)
-            ? &centerColumn->getChunk(static_cast<uint8_t>(chunkZ - 1u))
-            : nullptr;
 
-        auto enqueueBoundarySeed = [&](int lx, int ly, int lz, const Chunk* neighbor, int nx, int ny, int nz) {
+        auto enqueueBoundarySeed = [&](int lx,
+                                       int ly,
+                                       int lz,
+                                       const Chunk* neighbor,
+                                       int nx,
+                                       int ny,
+                                       int nz,
+                                       bool verticalStep) {
             const int localIndex = chunkLocalIndex(lx, ly, lz);
             if (snapshot.blocksLightMask[static_cast<size_t>(localIndex)] != 0u) {
                 return;
@@ -1009,9 +1225,12 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
                 static_cast<uint8_t>(ny),
                 static_cast<uint8_t>(nz)
             ));
+            const uint8_t loss = verticalStep
+                ? snapshot.skyVerticalLoss[static_cast<size_t>(localIndex)]
+                : snapshot.blockLightLoss[static_cast<size_t>(localIndex)];
             const uint8_t candidate = attenuateLight(
                 neighborSky,
-                snapshot.blockLightLoss[static_cast<size_t>(localIndex)]
+                loss
             );
             if (candidate == 0u) {
                 return;
@@ -1026,36 +1245,47 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             floodQueue.push_back(localIndex);
         };
 
-        for (int z = 0; z < kChunkExtent; ++z) {
+        if (chunkZ == static_cast<uint8_t>(cfg::COLUMN_HEIGHT - 1)) {
             for (int y = 0; y < kChunkExtent; ++y) {
                 for (int x = 0; x < kChunkExtent; ++x) {
-                    const int index = chunkLocalIndex(x, y, z);
-                    if (snapshot.blocksLightMask[static_cast<size_t>(index)] != 0u) {
+                    const int localIndex = chunkLocalIndex(x, y, kChunkExtent - 1);
+                    if (snapshot.blocksLightMask[static_cast<size_t>(localIndex)] != 0u) {
                         continue;
                     }
-                    if (snapshot.sky[static_cast<size_t>(index)] > 0u) {
-                        floodQueue.push_back(index);
+
+                    const uint8_t candidate = attenuateLight(
+                        15u,
+                        snapshot.skyVerticalLoss[static_cast<size_t>(localIndex)]
+                    );
+                    if (candidate == 0u) {
+                        continue;
                     }
+
+                    uint8_t& current = snapshot.sky[static_cast<size_t>(localIndex)];
+                    if (candidate <= current) {
+                        continue;
+                    }
+                    current = candidate;
+                    floodQueue.push_back(localIndex);
                 }
             }
         }
 
         for (int z = 0; z < kChunkExtent; ++z) {
             for (int y = 0; y < kChunkExtent; ++y) {
-                enqueueBoundarySeed(kChunkExtent - 1, y, z, plusXChunk, 0, y, z);
-                enqueueBoundarySeed(0, y, z, minusXChunk, kChunkExtent - 1, y, z);
+                enqueueBoundarySeed(kChunkExtent - 1, y, z, plusXChunk, 0, y, z, false);
+                enqueueBoundarySeed(0, y, z, minusXChunk, kChunkExtent - 1, y, z, false);
             }
         }
         for (int z = 0; z < kChunkExtent; ++z) {
             for (int x = 0; x < kChunkExtent; ++x) {
-                enqueueBoundarySeed(x, kChunkExtent - 1, z, plusYChunk, x, 0, z);
-                enqueueBoundarySeed(x, 0, z, minusYChunk, x, kChunkExtent - 1, z);
+                enqueueBoundarySeed(x, kChunkExtent - 1, z, plusYChunk, x, 0, z, false);
+                enqueueBoundarySeed(x, 0, z, minusYChunk, x, kChunkExtent - 1, z, false);
             }
         }
         for (int y = 0; y < kChunkExtent; ++y) {
             for (int x = 0; x < kChunkExtent; ++x) {
-                enqueueBoundarySeed(x, y, kChunkExtent - 1, plusZChunk, x, y, 0);
-                enqueueBoundarySeed(x, y, 0, minusZChunk, x, y, kChunkExtent - 1);
+                enqueueBoundarySeed(x, y, kChunkExtent - 1, plusZChunk, x, y, 0, true);
             }
         }
     }
@@ -1073,6 +1303,9 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
         const int z = index / kChunkArea;
 
         for (const glm::ivec3& offset : kCardinalOffsets) {
+            if (offset.z > 0) {
+                continue;
+            }
             const int nx = x + offset.x;
             const int ny = y + offset.y;
             const int nz = z + offset.z;
@@ -1085,9 +1318,12 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             if (snapshot.blocksLightMask[static_cast<size_t>(neighborIndex)] != 0u) {
                 continue;
             }
+            const uint8_t loss = (offset.z != 0)
+                ? snapshot.skyVerticalLoss[static_cast<size_t>(neighborIndex)]
+                : snapshot.blockLightLoss[static_cast<size_t>(neighborIndex)];
             const uint8_t propagated = attenuateLight(
                 current,
-                snapshot.blockLightLoss[static_cast<size_t>(neighborIndex)]
+                loss
             );
             if (propagated == 0u) {
                 continue;
@@ -1141,14 +1377,66 @@ bool World::propagateChunkLighting(const ChunkCoord& coord) {
             return false;
         }
 
-        centerColumn->getChunk(chunkZ).setPackedLightVolume(propagatedPackedLight);
+        const bool wasGenerated = generatedColumns_.find(columnCoord) != generatedColumns_.end();
+        Chunk& centerChunk = centerColumn->getChunk(chunkZ);
+        bool chunkLightChanged = false;
+        for (int z = 0; z < kChunkExtent && !chunkLightChanged; ++z) {
+            for (int y = 0; y < kChunkExtent && !chunkLightChanged; ++y) {
+                for (int x = 0; x < kChunkExtent; ++x) {
+                    const int index = chunkLocalIndex(x, y, z);
+                    if (centerChunk.getPackedLight(
+                            static_cast<uint8_t>(x),
+                            static_cast<uint8_t>(y),
+                            static_cast<uint8_t>(z)) !=
+                        propagatedPackedLight[static_cast<size_t>(index)]) {
+                        chunkLightChanged = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        centerChunk.setPackedLightVolume(propagatedPackedLight);
         stateIt->second.propagatedChunkMask |= bit;
+
+        if (chunkLightChanged && chunkZ > 0u) {
+            const ChunkCoord belowCoord{coord.v.x, coord.v.y, coord.v.z - 1};
+            const ColumnCoord belowColumnCoord = chunk_to_column(belowCoord);
+            const auto belowStateIt = columnLightingStates_.find(belowColumnCoord);
+            if (belowStateIt != columnLightingStates_.end()) {
+                const uint8_t belowChunkZ = static_cast<uint8_t>(belowCoord.v.z);
+                const uint32_t belowBit = (1u << static_cast<uint32_t>(belowChunkZ));
+                ColumnLightingState& belowState = belowStateIt->second;
+                const bool belowAlreadyQueued = (belowState.queuedChunkMask & belowBit) != 0u;
+                belowState.propagatedChunkMask &= ~belowBit;
+
+                if (pendingChunkPropagationJobs_.find(belowCoord) != pendingChunkPropagationJobs_.end()) {
+                    belowState.queuedChunkMask |= belowBit;
+                    if (!belowAlreadyQueued) {
+                        queuedChunkPropagationJobs_.push_front(belowCoord);
+                    }
+                    priorityChunkPropagationJobs_.insert(belowCoord);
+                } else if (canPropagateChunkLocked(belowCoord)) {
+                    belowState.queuedChunkMask |= belowBit;
+                    if (!belowAlreadyQueued) {
+                        queuedChunkPropagationJobs_.push_front(belowCoord);
+                    }
+                    priorityChunkPropagationJobs_.insert(belowCoord);
+                }
+            }
+        }
 
         if (stateIt->second.propagatedChunkMask == kAllColumnChunkBits) {
             if (generatedColumns_.insert(columnCoord).second) {
                 generatedColumnHistory_.push_back(columnCoord);
                 generationRevision_.fetch_add(1, std::memory_order_release);
+            } else if (wasGenerated) {
+                generatedColumnHistory_.push_back(columnCoord);
+                generationRevision_.fetch_add(1, std::memory_order_release);
             }
+        } else if (wasGenerated) {
+            generatedColumnHistory_.push_back(columnCoord);
+            generationRevision_.fetch_add(1, std::memory_order_release);
         }
     }
 

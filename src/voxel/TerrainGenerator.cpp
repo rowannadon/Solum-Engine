@@ -19,10 +19,10 @@ namespace {
 constexpr int kHeightmapUpscaleFactor = 2;
 constexpr int kFallbackTerrainHeight = 100;
 constexpr int kNoiseSeed = 1337;
-constexpr float kNoiseHorizontalFrequency = 0.025f;
+constexpr float kNoiseHorizontalFrequency = 0.015f;
 constexpr float kNoiseVerticalFrequency = 0.04f;
-constexpr float kNoiseMaxStrengthBlocks = 32.0f;
-constexpr float kNoiseFalloffBlocks = 20.0f;
+constexpr float kNoiseMaxStrengthBlocks = 64.0f;
+constexpr float kNoiseFalloffBlocks = 55.0f;
 constexpr float kGrassFlatnessThreshold = 0.75f;
 
 struct HeightmapData {
