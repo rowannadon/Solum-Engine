@@ -15,6 +15,8 @@ private:
     wgpu::Device device;
     wgpu::Queue queue;
 
+    size_t frameBytesWritten_{0};
+
 public:
     BufferManager(wgpu::Device d, wgpu::Queue q) : device(d), queue(q) {}
 
@@ -26,6 +28,15 @@ public:
     void deleteBuffer(const std::string& bufferName);
     void terminate();
 
+    void resetFrameBudget() { frameBytesWritten_ = 0; }
+    size_t frameBytesWritten() const { return frameBytesWritten_; }
+
+#ifdef __APPLE__
+    static constexpr size_t kFrameUploadBudget = 2u * 1024u * 1024u;
+#else
+    static constexpr size_t kFrameUploadBudget = 128u * 1024u * 1024u;
+#endif
+    bool isOverBudget() const { return frameBytesWritten_ >= kFrameUploadBudget; }
 };
 
 #endif

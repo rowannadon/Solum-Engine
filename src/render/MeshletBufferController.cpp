@@ -410,6 +410,13 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
 
         allocations_[upsert.key] = std::move(record);
         result.deltaApplied = true;
+
+        // Stop uploading if per-frame byte budget is exceeded to avoid
+        // overwhelming the Metal command queue on macOS (IOFence deadlock).
+        // Skipped upserts will reappear in the next streaming delta.
+        if (bufferManager_->isOverBudget()) {
+            break;
+        }
     }
 
     if (!delta.selectionSnapshot.empty()) {
@@ -472,6 +479,12 @@ bool MeshletBufferController::buildActiveRanges() {
         const uint32_t count = static_cast<uint32_t>(it->second.packed->metadata.size());
         if (count == 0u) {
             continue;
+        }
+
+        // Cap total meshlets per controller to prevent a single command buffer
+        // from monopolizing the GPU on macOS (no preemption like WDDM).
+        if (activeSelectionMeshletCount_ + count > maxActiveMeshlets_) {
+            break;
         }
 
         activeSelectionMeshletCount_ += count;

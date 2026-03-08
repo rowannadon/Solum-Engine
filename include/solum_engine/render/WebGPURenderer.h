@@ -60,8 +60,19 @@ private:
     bool resizePending = false;
     std::optional<MeshStreamingDelta> pendingMeshDelta_;
 
+#ifdef __APPLE__
+    static constexpr uint32_t kMaxFramesInFlight = 1u;
+#else
     static constexpr uint32_t kMaxFramesInFlight = 2u;
+#endif
     std::atomic<uint32_t> framesInFlight_{0};
+
+    bool gpuStallDetected_{false};
+    uint32_t consecutiveSlowFrames_{0};
+    static constexpr uint32_t kMaxConsecutiveSlowFrames = 15u;
+
+    bool checkGpuStall(const char* stage, std::chrono::steady_clock::time_point start,
+                       std::chrono::milliseconds threshold);
 
     bool refreshMeshBindings(bool uploadApplied, bool rebuildDrawConfig);
     void processPendingMeshUploads();

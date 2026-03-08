@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <thread>
 
 #include <imgui/backends/imgui_impl_wgpu.h>
 #include <imgui/imgui.h>
@@ -314,6 +315,8 @@ void WebGPURenderer::processPendingMeshUploads() {
         );
     };
 
+    bufferManager->resetFrameBudget();
+
     const MeshletBufferController::ApplyResult culledResult =
         culledMeshletBuffers_.applyDelta(*pendingMeshDelta_);
     const MeshletBufferController::ApplyResult doubleSidedResult =
@@ -337,6 +340,22 @@ void WebGPURenderer::processPendingMeshUploads() {
     finalizeUploadTiming();
 }
 
+bool WebGPURenderer::checkGpuStall(const char* stage,
+                                   std::chrono::steady_clock::time_point start,
+                                   std::chrono::milliseconds threshold) {
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    if (elapsed > threshold) {
+        std::cerr << "GPU stall detected in " << stage << ": "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+                  << "ms (threshold " << threshold.count() << "ms). Requesting shutdown."
+                  << std::endl;
+        gpuStallDetected_ = true;
+        glfwSetWindowShouldClose(context->getWindow(), GLFW_TRUE);
+        return true;
+    }
+    return false;
+}
+
 void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
     const auto frameCpuStart = std::chrono::steady_clock::now();
     auto finalizeFrameTiming = [this, &frameCpuStart]() {
@@ -348,8 +367,22 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
         );
     };
 
-    while (framesInFlight_.load(std::memory_order_acquire) >= kMaxFramesInFlight) {
-        context->instance.processEvents();
+    if (gpuStallDetected_ || context->isDeviceLost()) {
+        finalizeFrameTiming();
+        return;
+    }
+
+    // Wait for GPU to catch up, but with a timeout to avoid hanging the system.
+    {
+        const auto waitStart = std::chrono::steady_clock::now();
+        while (framesInFlight_.load(std::memory_order_acquire) >= kMaxFramesInFlight) {
+            context->instance.processEvents();
+            if (checkGpuStall("framesInFlight wait", waitStart, std::chrono::milliseconds(2000))) {
+                finalizeFrameTiming();
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
     }
 
     int fbWidth = 0;
@@ -482,37 +515,61 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
     {
         const auto tickStart = std::chrono::steady_clock::now();
         context->getDevice().tick();
+        const auto tickElapsed = std::chrono::steady_clock::now() - tickStart;
         timingTracker_.record(
             MainTimingStage::DeviceTick,
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - tickStart
-            ).count())
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(tickElapsed).count())
         );
+        if (checkGpuStall("device.tick (pre-present)", tickStart, std::chrono::milliseconds(1500))) {
+            targetView.release();
+            finalizeFrameTiming();
+            return;
+        }
     }
 #endif
 
     targetView.release();
     const auto presentStart = std::chrono::steady_clock::now();
     context->getSurface().present();
+    const auto presentElapsed = std::chrono::steady_clock::now() - presentStart;
     timingTracker_.record(
         MainTimingStage::Present,
-        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - presentStart
-        ).count())
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(presentElapsed).count())
     );
+    if (checkGpuStall("present", presentStart, std::chrono::milliseconds(1500))) {
+        finalizeFrameTiming();
+        return;
+    }
 
 #ifdef WEBGPU_BACKEND_DAWN
     {
         const auto tickStart = std::chrono::steady_clock::now();
         context->getDevice().tick();
+        const auto tickElapsed = std::chrono::steady_clock::now() - tickStart;
         timingTracker_.record(
             MainTimingStage::DeviceTick,
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - tickStart
-            ).count())
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(tickElapsed).count())
         );
+        if (checkGpuStall("device.tick (post-present)", tickStart, std::chrono::milliseconds(1500))) {
+            finalizeFrameTiming();
+            return;
+        }
     }
 #endif
+
+    // Track slow frames for upload throttling.
+    const auto totalFrameTime = std::chrono::steady_clock::now() - frameCpuStart;
+    if (totalFrameTime > std::chrono::milliseconds(200)) {
+        ++consecutiveSlowFrames_;
+        if (consecutiveSlowFrames_ >= kMaxConsecutiveSlowFrames) {
+            std::cerr << "GPU overload: " << kMaxConsecutiveSlowFrames
+                      << " consecutive slow frames. Requesting shutdown." << std::endl;
+            gpuStallDetected_ = true;
+            glfwSetWindowShouldClose(context->getWindow(), GLFW_TRUE);
+        }
+    } else {
+        consecutiveSlowFrames_ = 0;
+    }
 
     finalizeFrameTiming();
 }

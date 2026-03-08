@@ -137,4 +137,11 @@ private:
     uint32_t activeSelectionMeshletCount_ = 0u;
 
     uint64_t uploadedMeshRevision_ = 0u;
+
+#ifdef __APPLE__
+    static constexpr uint32_t kDefaultMaxActiveMeshlets = 300'000u;
+#else
+    static constexpr uint32_t kDefaultMaxActiveMeshlets = UINT32_MAX;
+#endif
+    uint32_t maxActiveMeshlets_ = kDefaultMaxActiveMeshlets;
 };

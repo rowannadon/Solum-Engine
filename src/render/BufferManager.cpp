@@ -18,6 +18,7 @@ void BufferManager::writeBuffer(const std::string& bufferName, uint64_t bufferOf
     const wgpu::Buffer buffer = getBuffer(bufferName);
     if (buffer) {
         queue.writeBuffer(buffer, bufferOffset, data, size);
+        frameBytesWritten_ += size;
     }
 }
 

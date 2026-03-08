@@ -199,10 +199,15 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     deviceLostCallbackInfo.mode = CallbackMode::AllowSpontaneous;
     deviceLostCallbackInfo.callback = [](const WGPUDevice *device, WGPUDeviceLostReason reason, WGPUStringView msg, void* userdata1, void* userdata2) {
         std::string message(static_cast<const char*>(msg.data), msg.length);
-        std::cout << "Device lost: reason " << reason;
-        if (message.length() > 0) std::cout << " (" << message << ")";
-        std::cout << std::endl;
+        std::cerr << "Device lost: reason " << reason;
+        if (message.length() > 0) std::cerr << " (" << message << ")";
+        std::cerr << std::endl;
+        auto* self = static_cast<WebGPUContext*>(userdata1);
+        if (self != nullptr) {
+            self->deviceLost_.store(true, std::memory_order_release);
+        }
         };
+    deviceLostCallbackInfo.userdata1 = this;
 
     // A function that is invoked whenever the device stops being available.
     deviceDesc.deviceLostCallbackInfo = deviceLostCallbackInfo;

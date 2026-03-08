@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <glfw3webgpu/glfw3webgpu.h>
 
+#include <atomic>
 #include <webgpu/webgpu.hpp>
 
 struct RenderConfig {
@@ -29,9 +30,14 @@ public:
     wgpu::Surface getSurface() { return surface; }
     wgpu::TextureFormat getSurfaceFormat() { return surfaceFormat; }
 
+    bool isDeviceLost() const { return deviceLost_.load(std::memory_order_acquire); }
+
     bool initialize(const RenderConfig& config);
     bool configureSurface();
     void unconfigureSurface();
     wgpu::Limits GetRequiredLimits(wgpu::Adapter adapter) const;
     void terminate();
+
+private:
+    std::atomic<bool> deviceLost_{false};
 };
