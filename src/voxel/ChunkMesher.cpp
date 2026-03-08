@@ -23,6 +23,17 @@ namespace {
         );
     }
 
+    uint32_t oppositeDirection(uint32_t dir) {
+        switch (dir) {
+            case 0u: return 1u;
+            case 1u: return 0u;
+            case 2u: return 3u;
+            case 3u: return 2u;
+            case 4u: return 5u;
+            default: return 4u;
+        }
+    }
+
     const BlockModelDefinition* modelDefinitionForMaterial(const BlockModelLibrary* blockModelLibrary,
                                                            uint16_t materialId) {
         if (blockModelLibrary == nullptr || blockModelLibrary->models.empty()) {
@@ -245,7 +256,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                           uint32_t y,
                           uint32_t z,
                           uint16_t materialId,
-                          uint8_t packedLight,
+                          uint16_t packedLight,
                           uint16_t packedAoData,
                           const BlockModelQuadRef& quadRef,
                           bool useVoxelAo) {
@@ -334,7 +345,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                                 static_cast<uint32_t>(y),
                                 static_cast<uint32_t>(z),
                                 materialId,
-                                faceLight[dir],
+                                packMeshletQuadLightPair(faceLight[dir], faceLight[oppositeDirection(dir)]),
                                 packedAoData,
                                 *quadRef,
                                 useVoxelAoForModel
@@ -358,7 +369,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                             static_cast<uint32_t>(y),
                             static_cast<uint32_t>(z),
                             materialId,
-                            nonCullableLight,
+                            packMeshletQuadLightPair(nonCullableLight, nonCullableLight),
                             kFullBrightAo,
                             *quadRef,
                             false
@@ -383,7 +394,7 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                         static_cast<uint32_t>(y),
                         static_cast<uint32_t>(z),
                         materialId,
-                        faceLight[dir],
+                        packMeshletQuadLightPair(faceLight[dir], faceLight[oppositeDirection(dir)]),
                         packedAoData,
                         fallbackRef,
                         true
@@ -421,7 +432,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                           uint32_t y,
                           uint32_t z,
                           uint16_t materialId,
-                          uint8_t packedLight,
+                          uint16_t packedLight,
                           uint16_t packedAoData,
                           const BlockModelQuadRef& quadRef,
                           bool useVoxelAo) {
@@ -514,7 +525,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                                 static_cast<uint32_t>(y),
                                 static_cast<uint32_t>(z),
                                 materialId,
-                                faceLight[dir],
+                                packMeshletQuadLightPair(faceLight[dir], faceLight[oppositeDirection(dir)]),
                                 packedAoData,
                                 *quadRef,
                                 useVoxelAoForModel
@@ -538,7 +549,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                             static_cast<uint32_t>(y),
                             static_cast<uint32_t>(z),
                             materialId,
-                            nonCullableLight,
+                            packMeshletQuadLightPair(nonCullableLight, nonCullableLight),
                             kFullBrightAo,
                             *quadRef,
                             false
@@ -563,7 +574,7 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
                         static_cast<uint32_t>(y),
                         static_cast<uint32_t>(z),
                         materialId,
-                        faceLight[dir],
+                        packMeshletQuadLightPair(faceLight[dir], faceLight[oppositeDirection(dir)]),
                         packedAoData,
                         fallbackRef,
                         true

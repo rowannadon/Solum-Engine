@@ -51,8 +51,13 @@ inline uint32_t packMeshletQuadAuxData(uint16_t packedAoData,
     return sanitizedAo | (sanitizedModelQuadIndex << MESHLET_MODEL_QUAD_INDEX_SHIFT) | voxelAoFlag;
 }
 
-inline uint32_t packMeshletQuadLightData(uint8_t packedLight) {
-    return static_cast<uint32_t>(packedLight);
+inline uint16_t packMeshletQuadLightPair(uint8_t frontPackedLight, uint8_t backPackedLight) {
+    return static_cast<uint16_t>(static_cast<uint16_t>(frontPackedLight) |
+                                 (static_cast<uint16_t>(backPackedLight) << 8u));
+}
+
+inline uint32_t packMeshletQuadLightData(uint16_t packedLightPair) {
+    return static_cast<uint32_t>(packedLightPair);
 }
 
 struct Meshlet {
@@ -62,7 +67,7 @@ struct Meshlet {
     uint32_t voxelScale = 1;
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> packedQuadLocalOffsets{};
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> quadMaterialIds{};
-    std::array<uint8_t, MESHLET_QUAD_CAPACITY> quadLightData{};
+    std::array<uint16_t, MESHLET_QUAD_CAPACITY> quadLightData{};
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> quadAoData{};
     std::array<uint32_t, MESHLET_QUAD_CAPACITY> quadModelQuadIndices{};
     std::array<uint8_t, MESHLET_QUAD_CAPACITY> quadUsesVoxelAo{};

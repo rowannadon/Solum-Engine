@@ -46,6 +46,7 @@ constexpr uint32_t kRandomModelRotationEnabledFlagBit = 1u << 4u;
 constexpr uint32_t kRandomModelRotationXFlagBit = 1u << 5u;
 constexpr uint32_t kRandomModelRotationYFlagBit = 1u << 6u;
 constexpr uint32_t kRandomModelRotationZFlagBit = 1u << 7u;
+constexpr uint32_t kDoubleSidedMaterialFlagBit = 1u << 8u;
 
 bool parseDirectionMask(const std::string& value, uint8_t& outMask) {
     outMask = 0u;
@@ -374,6 +375,9 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         }
         if ((material.randomOffsetDirectionsMask & 0x4u) != 0u) {
             flags |= kRandomOffsetZFlagBit;
+        }
+        if (material.doubleSided) {
+            flags |= kDoubleSidedMaterialFlagBit;
         }
         materialMetadata_[material.materialId].textureIndex = material.textureLayer;
         materialMetadata_[material.materialId].flags = flags;

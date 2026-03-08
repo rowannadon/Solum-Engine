@@ -233,7 +233,10 @@ void appendSkirtQuad(std::vector<Meshlet>& targetMeshlets,
     skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
     skirt.quadMaterialIds[0] = materialId;
     skirt.quadAoData[0] = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
-    skirt.quadLightData[0] = Chunk::packLight(15u, 0u);
+    skirt.quadLightData[0] = packMeshletQuadLightPair(
+        Chunk::packLight(15u, 0u),
+        Chunk::packLight(15u, 0u)
+    );
     const BlockModelQuadRef* quadRef = selectModelQuadRef(blockModelLibrary, materialId, faceDirection);
     skirt.quadModelQuadIndices[0] = (quadRef != nullptr) ? quadRef->gpuQuadIndex : faceDirection;
     skirt.quadUsesVoxelAo[0] = 0u;

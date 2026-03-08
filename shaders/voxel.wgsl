@@ -222,7 +222,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         out.useVoxelAo = 0u;
     }
     out.blockCoord = sample.blockCoord;
-    out.packedLight = sample.packedLightData & 0xffu;
+    out.packedLight = sample.packedLightData;
 
     let meshletColorSeed = (bitcast<u32>(meshlet.originX) * 73856093u) ^
         (bitcast<u32>(meshlet.originY) * 19349663u) ^
@@ -268,8 +268,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         baseColor = albedo.rgb;
     }
 
-    let skyLight = f32(decode_sky_light(in.packedLight)) / 15.0;
-    let blockLight = f32(decode_block_light(in.packedLight)) / 15.0;
+    let frontPackedLight = in.packedLight & 0xffu;
+    let backPackedLight = (in.packedLight >> 8u) & 0xffu;
+    let isDoubleSidedMaterial = (materialMetadata[min(in.materialId, 65535u)].flags & 0x100u) != 0u;
+    let skyFront = decode_sky_light(frontPackedLight);
+    let blockFront = decode_block_light(frontPackedLight);
+    let skyBack = decode_sky_light(backPackedLight);
+    let blockBack = decode_block_light(backPackedLight);
+    let chosenSky = select(skyFront, max(skyFront, skyBack), isDoubleSidedMaterial);
+    let chosenBlock = select(blockFront, max(blockFront, blockBack), isDoubleSidedMaterial);
+    let skyLight = f32(chosenSky) / 15.0;
+    let blockLight = f32(chosenBlock) / 15.0;
     let dominantLight = max(skyLight, blockLight);
     let combinedLight = skyLight + blockLight;
     let blockTintWeight = select(0.0, blockLight / combinedLight, combinedLight > 0.0);
