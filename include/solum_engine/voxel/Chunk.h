@@ -45,8 +45,18 @@ private:
         std::vector<uint64_t> data;
     };
 
+    struct LightMipStorage {
+        uint8_t size = 0;
+        uint8_t uniformValue = 0;
+        std::vector<uint8_t> denseData;
+        std::vector<uint16_t> valueCounts;
+        uint16_t distinctValueCount = 0;
+
+        bool isUniform() const noexcept { return denseData.empty(); }
+    };
+
     std::array<MipStorage, MAX_MIP_LEVEL + 1> mips_{};
-    std::array<std::vector<uint8_t>, MAX_MIP_LEVEL + 1> lightMips_{};
+    std::array<LightMipStorage, MAX_MIP_LEVEL + 1> lightMips_{};
     uint8_t defaultPackedLight_ = packLight(0u, 0u);
     uint16_t solidVoxelCount_ = 0;
 
@@ -54,9 +64,21 @@ private:
     static uint32_t getPaletteIndex(const MipStorage& storage, uint16_t voxelIndex);
     static void setPaletteIndex(MipStorage& storage, uint16_t voxelIndex, uint32_t paletteIndex);
     static void resizeBitArray(MipStorage& storage, uint8_t newBitsPerBlock);
+    static size_t lightLevelVolume(const LightMipStorage& storage);
+    static uint8_t getPackedLightFromStorage(const LightMipStorage& storage, uint16_t voxelIndex);
+    static void compressLightToUniform(LightMipStorage& storage, uint8_t uniformPackedLight);
+    static void rebuildLightValueCounts(LightMipStorage& storage);
+    static bool setPackedLightInStorage(LightMipStorage& storage,
+                                        uint16_t voxelIndex,
+                                        uint8_t packedLight,
+                                        bool trackDistinctCounts);
+    static bool setPackedLightLevelFromArray(LightMipStorage& storage,
+                                             const uint8_t* packedLights,
+                                             size_t count,
+                                             bool trackDistinctCounts);
 
     static bool isSolid(BlockMaterial block);
-    static uint8_t downsamplePackedLightFromChildren(const std::vector<uint8_t>& childLevel,
+    static uint8_t downsamplePackedLightFromChildren(const LightMipStorage& childLevel,
                                                      uint8_t childSize,
                                                      uint8_t px,
                                                      uint8_t py,

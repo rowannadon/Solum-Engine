@@ -19,9 +19,9 @@ Chunk::Chunk() {
         storage.palette.assign(1, airBlock());
         storage.data.clear();
 
-        const uint8_t levelSize = mipSize(level);
-        const size_t levelVolume = static_cast<size_t>(levelSize) * static_cast<size_t>(levelSize) * static_cast<size_t>(levelSize);
-        lightMips_[level].assign(levelVolume, defaultPackedLight_);
+        LightMipStorage& lightStorage = lightMips_[level];
+        lightStorage.size = mipSize(level);
+        compressLightToUniform(lightStorage, defaultPackedLight_);
     }
     solidVoxelCount_ = 0;
 }
@@ -89,17 +89,14 @@ void Chunk::setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockI
 
 uint8_t Chunk::getPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel) const {
     const uint8_t level = std::min<uint8_t>(mipLevel, MAX_MIP_LEVEL);
-    const uint8_t size = mipSize(level);
+    const LightMipStorage& storage = lightMips_[level];
+    const uint8_t size = storage.size;
     if (x >= size || y >= size || z >= size) {
         return defaultPackedLight_;
     }
 
-    const std::vector<uint8_t>& lightLevel = lightMips_[level];
-    if (lightLevel.empty()) {
-        return defaultPackedLight_;
-    }
     const uint16_t voxelIndex = getVoxelIndex(x, y, z, size);
-    return lightLevel[voxelIndex];
+    return getPackedLightFromStorage(storage, voxelIndex);
 }
 
 void Chunk::setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight) {
@@ -107,16 +104,11 @@ void Chunk::setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight)
         return;
     }
 
-    std::vector<uint8_t>& baseLightLevel = lightMips_[0];
-    if (baseLightLevel.empty()) {
-        return;
-    }
-
+    LightMipStorage& baseLightLevel = lightMips_[0];
     const uint16_t voxelIndex = getVoxelIndex(x, y, z, static_cast<uint8_t>(SIZE));
-    if (baseLightLevel[voxelIndex] == packedLight) {
+    if (!setPackedLightInStorage(baseLightLevel, voxelIndex, packedLight, true)) {
         return;
     }
-    baseLightLevel[voxelIndex] = packedLight;
 
     uint8_t px = x;
     uint8_t py = y;
@@ -126,11 +118,6 @@ void Chunk::setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight)
         py >>= 1;
         pz >>= 1;
 
-        std::vector<uint8_t>& parentLevel = lightMips_[level];
-        if (parentLevel.empty()) {
-            break;
-        }
-
         const uint8_t parentLight = downsamplePackedLightFromChildren(
             lightMips_[level - 1],
             mipSize(level - 1),
@@ -139,41 +126,30 @@ void Chunk::setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight)
             pz
         );
         const uint16_t parentIndex = getVoxelIndex(px, py, pz, mipSize(level));
-        if (parentLevel[parentIndex] == parentLight) {
+        if (!setPackedLightInStorage(lightMips_[level], parentIndex, parentLight, false)) {
             break;
         }
-        parentLevel[parentIndex] = parentLight;
     }
 }
 
 void Chunk::setPackedLightVolume(const std::array<uint8_t, VOLUME>& packedLights) {
-    std::vector<uint8_t>& baseLightLevel = lightMips_[0];
-    if (baseLightLevel.size() != VOLUME) {
+    LightMipStorage& baseLightLevel = lightMips_[0];
+    if (!setPackedLightLevelFromArray(baseLightLevel, packedLights.data(), VOLUME, true)) {
         return;
     }
-
-    if (std::equal(baseLightLevel.begin(), baseLightLevel.end(), packedLights.begin(), packedLights.end())) {
-        return;
-    }
-
-    std::copy(packedLights.begin(), packedLights.end(), baseLightLevel.begin());
 
     for (uint8_t level = 1; level <= MAX_MIP_LEVEL; ++level) {
-        std::vector<uint8_t>& parentLevel = lightMips_[level];
-        if (parentLevel.empty()) {
-            continue;
-        }
-
         const uint8_t parentSize = mipSize(level);
         const uint8_t childSize = mipSize(level - 1);
-        const std::vector<uint8_t>& childLevel = lightMips_[level - 1];
+        const size_t parentVolume = static_cast<size_t>(parentSize) * static_cast<size_t>(parentSize) * static_cast<size_t>(parentSize);
+        std::vector<uint8_t> parentPackedLights(parentVolume, defaultPackedLight_);
 
         for (uint8_t pz = 0; pz < parentSize; ++pz) {
             for (uint8_t py = 0; py < parentSize; ++py) {
                 for (uint8_t px = 0; px < parentSize; ++px) {
                     const uint16_t parentIndex = getVoxelIndex(px, py, pz, parentSize);
-                    parentLevel[parentIndex] = downsamplePackedLightFromChildren(
-                        childLevel,
+                    parentPackedLights[parentIndex] = downsamplePackedLightFromChildren(
+                        lightMips_[level - 1],
                         childSize,
                         px,
                         py,
@@ -182,6 +158,8 @@ void Chunk::setPackedLightVolume(const std::array<uint8_t, VOLUME>& packedLights
                 }
             }
         }
+
+        setPackedLightLevelFromArray(lightMips_[level], parentPackedLights.data(), parentPackedLights.size(), false);
     }
 }
 
@@ -285,11 +263,174 @@ void Chunk::resizeBitArray(MipStorage& storage, uint8_t newBitsPerBlock) {
     }
 }
 
+size_t Chunk::lightLevelVolume(const LightMipStorage& storage) {
+    return static_cast<size_t>(storage.size) *
+           static_cast<size_t>(storage.size) *
+           static_cast<size_t>(storage.size);
+}
+
+uint8_t Chunk::getPackedLightFromStorage(const LightMipStorage& storage, uint16_t voxelIndex) {
+    if (storage.isUniform()) {
+        return storage.uniformValue;
+    }
+    if (voxelIndex >= storage.denseData.size()) {
+        return storage.uniformValue;
+    }
+    return storage.denseData[voxelIndex];
+}
+
+void Chunk::compressLightToUniform(LightMipStorage& storage, uint8_t uniformPackedLight) {
+    storage.uniformValue = uniformPackedLight;
+    std::vector<uint8_t>().swap(storage.denseData);
+    std::vector<uint16_t>().swap(storage.valueCounts);
+    storage.distinctValueCount = 0;
+}
+
+void Chunk::rebuildLightValueCounts(LightMipStorage& storage) {
+    storage.valueCounts.assign(256u, 0u);
+    storage.distinctValueCount = 0u;
+    for (uint8_t value : storage.denseData) {
+        uint16_t& count = storage.valueCounts[value];
+        if (count == 0u) {
+            ++storage.distinctValueCount;
+        }
+        ++count;
+    }
+}
+
+bool Chunk::setPackedLightInStorage(LightMipStorage& storage,
+                                    uint16_t voxelIndex,
+                                    uint8_t packedLight,
+                                    bool trackDistinctCounts) {
+    const size_t volume = lightLevelVolume(storage);
+    if (voxelIndex >= volume || volume == 0u) {
+        return false;
+    }
+
+    if (storage.isUniform()) {
+        if (storage.uniformValue == packedLight) {
+            return false;
+        }
+        if (volume == 1u) {
+            storage.uniformValue = packedLight;
+            return true;
+        }
+
+        const uint8_t previousUniformValue = storage.uniformValue;
+        storage.denseData.assign(volume, previousUniformValue);
+        storage.denseData[voxelIndex] = packedLight;
+
+        if (trackDistinctCounts) {
+            storage.valueCounts.assign(256u, 0u);
+            storage.valueCounts[previousUniformValue] = static_cast<uint16_t>(volume - 1u);
+            storage.valueCounts[packedLight] = static_cast<uint16_t>(storage.valueCounts[packedLight] + 1u);
+            storage.distinctValueCount = 2u;
+        } else {
+            std::vector<uint16_t>().swap(storage.valueCounts);
+            storage.distinctValueCount = 0u;
+        }
+        return true;
+    }
+
+    uint8_t& currentValue = storage.denseData[voxelIndex];
+    if (currentValue == packedLight) {
+        return false;
+    }
+
+    const uint8_t previousValue = currentValue;
+    currentValue = packedLight;
+
+    if (trackDistinctCounts) {
+        if (storage.valueCounts.size() != 256u) {
+            rebuildLightValueCounts(storage);
+        }
+
+        uint16_t& previousCount = storage.valueCounts[previousValue];
+        if (previousCount > 0u) {
+            --previousCount;
+            if (previousCount == 0u && storage.distinctValueCount > 0u) {
+                --storage.distinctValueCount;
+            }
+        }
+
+        uint16_t& nextCount = storage.valueCounts[packedLight];
+        if (nextCount == 0u) {
+            ++storage.distinctValueCount;
+        }
+        ++nextCount;
+
+        if (storage.distinctValueCount == 1u) {
+            for (size_t i = 0; i < storage.valueCounts.size(); ++i) {
+                if (storage.valueCounts[i] != 0u) {
+                    compressLightToUniform(storage, static_cast<uint8_t>(i));
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+
+    if (!storage.denseData.empty()) {
+        const uint8_t candidate = storage.denseData[0];
+        const bool allSame = std::all_of(
+            storage.denseData.begin() + 1,
+            storage.denseData.end(),
+            [candidate](uint8_t value) { return value == candidate; }
+        );
+        if (allSame) {
+            compressLightToUniform(storage, candidate);
+        }
+    }
+
+    return true;
+}
+
+bool Chunk::setPackedLightLevelFromArray(LightMipStorage& storage,
+                                         const uint8_t* packedLights,
+                                         size_t count,
+                                         bool trackDistinctCounts) {
+    if (packedLights == nullptr || count == 0u || count != lightLevelVolume(storage)) {
+        return false;
+    }
+
+    if (storage.isUniform()) {
+        if (std::all_of(packedLights, packedLights + count,
+                        [uniform = storage.uniformValue](uint8_t value) { return value == uniform; })) {
+            return false;
+        }
+    } else if (storage.denseData.size() == count &&
+               std::equal(storage.denseData.begin(), storage.denseData.end(), packedLights, packedLights + count)) {
+        return false;
+    }
+
+    const uint8_t firstValue = packedLights[0];
+    const bool allSame = std::all_of(
+        packedLights + 1,
+        packedLights + count,
+        [firstValue](uint8_t value) { return value == firstValue; }
+    );
+    if (allSame) {
+        compressLightToUniform(storage, firstValue);
+        return true;
+    }
+
+    storage.uniformValue = firstValue;
+    storage.denseData.assign(packedLights, packedLights + count);
+
+    if (trackDistinctCounts) {
+        rebuildLightValueCounts(storage);
+    } else {
+        std::vector<uint16_t>().swap(storage.valueCounts);
+        storage.distinctValueCount = 0u;
+    }
+    return true;
+}
+
 bool Chunk::isSolid(BlockMaterial block) {
     return block.unpack().id != 0u;
 }
 
-uint8_t Chunk::downsamplePackedLightFromChildren(const std::vector<uint8_t>& childLevel,
+uint8_t Chunk::downsamplePackedLightFromChildren(const LightMipStorage& childLevel,
                                                  uint8_t childSize,
                                                  uint8_t px,
                                                  uint8_t py,
@@ -307,11 +448,7 @@ uint8_t Chunk::downsamplePackedLightFromChildren(const std::vector<uint8_t>& chi
                 const uint8_t y = static_cast<uint8_t>(cy + dy);
                 const uint8_t z = static_cast<uint8_t>(cz + dz);
                 const uint16_t childIndex = getVoxelIndex(x, y, z, childSize);
-                if (childIndex >= childLevel.size()) {
-                    continue;
-                }
-
-                const uint8_t packed = childLevel[childIndex];
+                const uint8_t packed = getPackedLightFromStorage(childLevel, childIndex);
                 maxSky = std::max(maxSky, unpackSkyLight(packed));
                 maxBlock = std::max(maxBlock, unpackBlockLight(packed));
             }
