@@ -17,14 +17,14 @@ bool VoxelStreamingSystem::initialize(std::shared_ptr<const BlockModelLibrary> b
     blockModelLibrary_ = std::move(blockModelLibrary);
 
     World::Config worldConfig;
-    worldConfig.columnLoadRadius = 32;
+    worldConfig.columnLoadRadius = 8;
     worldConfig.jobConfig.worker_threads = 2;
 
     MeshManager::Config meshConfig;
     meshConfig.meshTileSizeChunks = 2;
     meshConfig.meshTileHeightChunks = 2;
     meshConfig.lodLevelCount = 4;
-    meshConfig.activeChunkRadius = 32;
+    meshConfig.activeChunkRadius = 8;
     meshConfig.lodSseTargetPixels = 8.0f;
     meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
     const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);

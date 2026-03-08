@@ -667,8 +667,7 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
 
         for (auto it = meshTiles_.begin(); it != meshTiles_.end();) {
-            if (tileInBounds(it->first, minTileX, maxTileX, minTileY, maxTileY) &&
-                reachableTileDepth.find(it->first) != reachableTileDepth.end()) {
+            if (tileInBounds(it->first, minTileX, maxTileX, minTileY, maxTileY)) {
                 ++it;
                 continue;
             }
@@ -716,7 +715,36 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
             return a < b;
         });
 
-        for (const MeshTileCoord& tileCoord : reachableOrdered) {
+        std::vector<MeshTileCoord> retainedInBoundsOrdered;
+        retainedInBoundsOrdered.reserve(meshTiles_.size());
+        for (const auto& [tileCoord, _] : meshTiles_) {
+            if (!tileInBounds(tileCoord, minTileX, maxTileX, minTileY, maxTileY)) {
+                continue;
+            }
+            if (reachableTileDepth.find(tileCoord) != reachableTileDepth.end()) {
+                continue;
+            }
+            retainedInBoundsOrdered.push_back(tileCoord);
+        }
+        std::sort(retainedInBoundsOrdered.begin(), retainedInBoundsOrdered.end(), [&](const MeshTileCoord& a, const MeshTileCoord& b) {
+            const int32_t adx = std::abs(a.x - centerTile.x);
+            const int32_t ady = std::abs(a.y - centerTile.y);
+            const int32_t bdx = std::abs(b.x - centerTile.x);
+            const int32_t bdy = std::abs(b.y - centerTile.y);
+            const int32_t aDistance = std::max(adx, ady);
+            const int32_t bDistance = std::max(bdx, bdy);
+            if (aDistance != bDistance) {
+                return aDistance < bDistance;
+            }
+            return a < b;
+        });
+
+        std::vector<MeshTileCoord> tilesToProcess;
+        tilesToProcess.reserve(reachableOrdered.size() + retainedInBoundsOrdered.size());
+        tilesToProcess.insert(tilesToProcess.end(), reachableOrdered.begin(), reachableOrdered.end());
+        tilesToProcess.insert(tilesToProcess.end(), retainedInBoundsOrdered.begin(), retainedInBoundsOrdered.end());
+
+        for (const MeshTileCoord& tileCoord : tilesToProcess) {
             MeshTileState& tileState = meshTiles_[tileCoord];
             // Drop any stale high LODs that can overlap neighboring tiles.
             for (auto lodIt = tileState.lodStates.begin(); lodIt != tileState.lodStates.end();) {
@@ -764,7 +792,10 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
             );
             const int32_t distanceChunks = distances.minDistanceChunks;
             const int32_t distanceSq = distanceChunks * distanceChunks;
-            const int32_t frontierDepth = reachableTileDepth.at(tileCoord);
+            const auto frontierIt = reachableTileDepth.find(tileCoord);
+            const int32_t frontierDepth = (frontierIt != reachableTileDepth.end())
+                ? frontierIt->second
+                : std::numeric_limits<int32_t>::max();
 
             const jobsystem::Priority primaryPriority =
                 primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
