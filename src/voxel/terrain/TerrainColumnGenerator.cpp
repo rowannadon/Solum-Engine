@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -34,15 +33,214 @@ int wrapIndex(int value, int size) {
 }
 
 std::string resolveHeightmapPath() {
-    const char* envPath = std::getenv("SOLUM_HEIGHTMAP_PATH");
-    if (envPath != nullptr && envPath[0] != '\0') {
-        return std::string(envPath);
-    }
     return std::string(RESOURCE_DIR) + "/height/heightmap6.png";
 }
 
 std::filesystem::path decorationConfigPath() {
     return std::filesystem::path(RESOURCE_DIR) / "decorations.json";
+}
+
+std::filesystem::path biomeConfigPath() {
+    return std::filesystem::path(RESOURCE_DIR) / "biomes.json";
+}
+
+bool listContains(const std::vector<std::string>& names, const std::string& name) {
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+bool parseStringArrayField(const json& object,
+                           const char* fieldName,
+                           std::vector<std::string>& outValues,
+                           size_t entryIndex,
+                           const char* contextLabel) {
+    if (!object.contains(fieldName)) {
+        outValues.clear();
+        return true;
+    }
+    if (!object[fieldName].is_array()) {
+        std::cerr << "TerrainGenerator: " << contextLabel << "[" << entryIndex << "] field '"
+                  << fieldName << "' must be an array of strings." << std::endl;
+        return false;
+    }
+
+    outValues.clear();
+    const json& values = object[fieldName];
+    outValues.reserve(values.size());
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (!values[i].is_string()) {
+            std::cerr << "TerrainGenerator: " << contextLabel << "[" << entryIndex << "]." << fieldName
+                      << "[" << i << "] must be a string." << std::endl;
+            return false;
+        }
+        outValues.push_back(values[i].get<std::string>());
+    }
+
+    return true;
+}
+
+terrain_internal::BiomeConfig loadBiomeConfig() {
+    terrain_internal::BiomeConfig config{};
+    config.name = terrain_internal::kActiveBiomeName;
+    config.abovegroundMaterial = MaterialRegistry::resolveBlockOr(
+        terrain_internal::kDefaultAbovegroundMaterial,
+        UnpackedBlockMaterial{2u, 0, Direction::PlusZ, 0}.pack()
+    );
+    config.undergroundMaterial = MaterialRegistry::resolveBlockOr(
+        terrain_internal::kDefaultUndergroundMaterial,
+        UnpackedBlockMaterial{1u, 0, Direction::PlusZ, 0}.pack()
+    );
+
+    const std::filesystem::path path = biomeConfigPath();
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        std::cerr << "TerrainGenerator: unable to open biome config '" << path.string()
+                  << "'. Using defaults for biome '" << config.name << "'." << std::endl;
+        return config;
+    }
+
+    json root;
+    try {
+        file >> root;
+    } catch (const std::exception& e) {
+        std::cerr << "TerrainGenerator: failed to parse biome config '" << path.string()
+                  << "': " << e.what() << ". Using defaults for biome '" << config.name << "'." << std::endl;
+        return config;
+    }
+
+    if (!root.is_array() || root.empty()) {
+        std::cerr << "TerrainGenerator: biome config '" << path.string()
+                  << "' must be a non-empty array. Using defaults for biome '" << config.name << "'." << std::endl;
+        return config;
+    }
+
+    const json* selectedBiome = nullptr;
+    size_t selectedIndex = 0;
+    for (size_t i = 0; i < root.size(); ++i) {
+        const json& candidate = root[i];
+        if (!candidate.is_object() || !candidate.contains("name") || !candidate["name"].is_string()) {
+            continue;
+        }
+        if (candidate["name"].get<std::string>() == terrain_internal::kActiveBiomeName) {
+            selectedBiome = &candidate;
+            selectedIndex = i;
+            break;
+        }
+    }
+    if (selectedBiome == nullptr) {
+        for (size_t i = 0; i < root.size(); ++i) {
+            if (root[i].is_object() && root[i].contains("name") && root[i]["name"].is_string()) {
+                selectedBiome = &root[i];
+                selectedIndex = i;
+                std::cerr << "TerrainGenerator: biome '" << terrain_internal::kActiveBiomeName
+                          << "' not found in '" << path.string() << "'. Falling back to '"
+                          << (*selectedBiome)["name"].get<std::string>() << "'." << std::endl;
+                break;
+            }
+        }
+    }
+    if (selectedBiome == nullptr) {
+        std::cerr << "TerrainGenerator: biome config '" << path.string()
+                  << "' has no valid biome entries. Using defaults for biome '" << config.name << "'." << std::endl;
+        return config;
+    }
+
+    config.name = (*selectedBiome)["name"].get<std::string>();
+
+    if (!parseStringArrayField(*selectedBiome, "structures", config.structureNames, selectedIndex, "biomes")) {
+        config.structureNames.clear();
+    }
+    if (!parseStringArrayField(*selectedBiome, "decorations", config.decorationNames, selectedIndex, "biomes")) {
+        config.decorationNames.clear();
+    }
+
+    if (selectedBiome->contains("noise")) {
+        const json& noise = (*selectedBiome)["noise"];
+        if (!noise.is_object()) {
+            std::cerr << "TerrainGenerator: biomes[" << selectedIndex << "] field 'noise' must be an object."
+                      << std::endl;
+        } else {
+            if (noise.contains("seed") && noise["seed"].is_number_integer()) {
+                config.noiseSeed = noise["seed"].get<int>();
+            }
+            if (noise.contains("horizontalFrequency") && noise["horizontalFrequency"].is_number()) {
+                config.noiseHorizontalFrequency = std::max(0.0f, noise["horizontalFrequency"].get<float>());
+            }
+            if (noise.contains("verticalFrequency") && noise["verticalFrequency"].is_number()) {
+                config.noiseVerticalFrequency = std::max(0.0f, noise["verticalFrequency"].get<float>());
+            }
+            if (noise.contains("maxStrengthBlocks") && noise["maxStrengthBlocks"].is_number()) {
+                config.noiseMaxStrengthBlocks = std::max(0.0f, noise["maxStrengthBlocks"].get<float>());
+            }
+            if (noise.contains("falloffBlocks") && noise["falloffBlocks"].is_number()) {
+                config.noiseFalloffBlocks = std::max(0.001f, noise["falloffBlocks"].get<float>());
+            }
+        }
+    }
+
+    if (selectedBiome->contains("materials")) {
+        const json& materials = (*selectedBiome)["materials"];
+        if (!materials.is_object()) {
+            std::cerr << "TerrainGenerator: biomes[" << selectedIndex << "] field 'materials' must be an object."
+                      << std::endl;
+        } else {
+            if (materials.contains("aboveground") && materials["aboveground"].is_string()) {
+                const std::string materialName = materials["aboveground"].get<std::string>();
+                BlockMaterial material{};
+                if (MaterialRegistry::tryResolveBlock(materialName, material)) {
+                    config.abovegroundMaterial = material;
+                } else {
+                    std::cerr << "TerrainGenerator: biomes[" << selectedIndex
+                              << "] references unknown aboveground material '" << materialName << "'."
+                              << std::endl;
+                }
+            }
+            if (materials.contains("underground") && materials["underground"].is_string()) {
+                const std::string materialName = materials["underground"].get<std::string>();
+                BlockMaterial material{};
+                if (MaterialRegistry::tryResolveBlock(materialName, material)) {
+                    config.undergroundMaterial = material;
+                } else {
+                    std::cerr << "TerrainGenerator: biomes[" << selectedIndex
+                              << "] references unknown underground material '" << materialName << "'."
+                              << std::endl;
+                }
+            }
+        }
+    }
+
+    if (selectedBiome->contains("flatnessThreshold") && (*selectedBiome)["flatnessThreshold"].is_number()) {
+        config.flatnessThreshold = std::clamp((*selectedBiome)["flatnessThreshold"].get<float>(), 0.0f, 1.0f);
+    }
+    if (selectedBiome->contains("decorationChance") && (*selectedBiome)["decorationChance"].is_number()) {
+        config.decorationChance = std::clamp((*selectedBiome)["decorationChance"].get<float>(), 0.0f, 1.0f);
+    }
+
+    if (selectedBiome->contains("structurePlacement")) {
+        const json& structurePlacement = (*selectedBiome)["structurePlacement"];
+        if (!structurePlacement.is_object()) {
+            std::cerr << "TerrainGenerator: biomes[" << selectedIndex
+                      << "] field 'structurePlacement' must be an object." << std::endl;
+        } else {
+            if (structurePlacement.contains("cellSize") && structurePlacement["cellSize"].is_number_integer()) {
+                config.structureCellSize = std::max<int32_t>(1, structurePlacement["cellSize"].get<int32_t>());
+            }
+            if (structurePlacement.contains("minDistance") && structurePlacement["minDistance"].is_number_integer()) {
+                config.structureMinDistance = std::max<int32_t>(1, structurePlacement["minDistance"].get<int32_t>());
+            }
+            if (structurePlacement.contains("cellOccupancy") && structurePlacement["cellOccupancy"].is_number()) {
+                config.structureCellOccupancy = std::clamp(
+                    structurePlacement["cellOccupancy"].get<float>(),
+                    0.0f,
+                    1.0f
+                );
+            }
+            if (structurePlacement.contains("seed") && structurePlacement["seed"].is_number_integer()) {
+                config.structureSeed = structurePlacement["seed"].get<uint32_t>();
+            }
+        }
+    }
+
+    return config;
 }
 
 uint64_t hashWorldPosition(int worldX, int worldY, int worldZ, uint64_t salt) {
@@ -67,7 +265,8 @@ float hashedUnitFloatForWorldPosition(int worldX, int worldY, int worldZ, uint64
 
 terrain_internal::TerrainDecorationConfig loadDecorationConfig() {
     terrain_internal::TerrainDecorationConfig config{};
-    config.placementChance = terrain_internal::kDefaultDecorationChance;
+    const terrain_internal::BiomeConfig& biome = terrain_internal::biomeConfig();
+    config.placementChance = biome.decorationChance;
 
     const std::filesystem::path path = decorationConfigPath();
     std::ifstream file(path);
@@ -99,8 +298,17 @@ terrain_internal::TerrainDecorationConfig loadDecorationConfig() {
             std::cerr << "TerrainGenerator: decorations[" << i << "] must be an object." << std::endl;
             continue;
         }
+        if (!entry.contains("name") || !entry["name"].is_string()) {
+            std::cerr << "TerrainGenerator: decorations[" << i << "] is missing string field 'name'." << std::endl;
+            continue;
+        }
         if (!entry.contains("material") || !entry["material"].is_string()) {
             std::cerr << "TerrainGenerator: decorations[" << i << "] is missing string field 'material'." << std::endl;
+            continue;
+        }
+
+        const std::string decorationName = entry["name"].get<std::string>();
+        if (!biome.decorationNames.empty() && !listContains(biome.decorationNames, decorationName)) {
             continue;
         }
 
@@ -129,6 +337,7 @@ terrain_internal::TerrainDecorationConfig loadDecorationConfig() {
         }
 
         config.definitions.push_back(terrain_internal::TerrainDecorationDefinition{
+            decorationName,
             material,
             selectionWeight
         });
@@ -260,6 +469,11 @@ const HeightmapData& heightmapData() {
     return kHeightmapData;
 }
 
+const BiomeConfig& biomeConfig() {
+    static const BiomeConfig kConfig = loadBiomeConfig();
+    return kConfig;
+}
+
 TerrainDecorationConfig decorationConfig() {
     static const TerrainDecorationConfig kConfig = loadDecorationConfig();
     return kConfig;
@@ -285,6 +499,7 @@ float sampleDensity(const FastNoise::SmartNode<>& fnGenerator,
                     int worldX,
                     int worldY,
                     int worldZ,
+                    const BiomeConfig& biome,
                     int terrainHeight) {
     const float baseDensity = static_cast<float>(terrainHeight - worldZ);
     if (!fnGenerator) {
@@ -292,20 +507,21 @@ float sampleDensity(const FastNoise::SmartNode<>& fnGenerator,
     }
 
     const float distanceFromSurface = std::abs(baseDensity);
-    if (distanceFromSurface >= kNoiseFalloffBlocks) {
+    const float noiseFalloff = std::max(0.001f, biome.noiseFalloffBlocks);
+    if (distanceFromSurface >= noiseFalloff) {
         return baseDensity;
     }
 
-    const float strengthT = 1.0f - (distanceFromSurface / kNoiseFalloffBlocks);
-    const float noiseStrength = kNoiseMaxStrengthBlocks * smoothstep01(strengthT);
+    const float strengthT = 1.0f - (distanceFromSurface / noiseFalloff);
+    const float noiseStrength = std::max(0.0f, biome.noiseMaxStrengthBlocks) * smoothstep01(strengthT);
     if (noiseStrength <= 0.0f) {
         return baseDensity;
     }
 
-    const float nx = static_cast<float>(worldX) * kNoiseHorizontalFrequency;
-    const float ny = static_cast<float>(worldY) * kNoiseHorizontalFrequency;
-    const float nz = static_cast<float>(worldZ) * kNoiseVerticalFrequency;
-    const float noise = fnGenerator->GenSingle3D(nx, ny, nz, kNoiseSeed);
+    const float nx = static_cast<float>(worldX) * std::max(0.0f, biome.noiseHorizontalFrequency);
+    const float ny = static_cast<float>(worldY) * std::max(0.0f, biome.noiseHorizontalFrequency);
+    const float nz = static_cast<float>(worldZ) * std::max(0.0f, biome.noiseVerticalFrequency);
+    const float noise = fnGenerator->GenSingle3D(nx, ny, nz, biome.noiseSeed);
 
     return baseDensity + (noise * noiseStrength);
 }
@@ -315,13 +531,11 @@ void generateTerrainColumn(const glm::ivec3& origin,
                            const FastNoise::SmartNode<>& fnGenerator,
                            const HeightmapData& heightmap,
                            const TerrainDecorationConfig& config) {
-    UnpackedBlockMaterial stone{1, 0, Direction::PlusZ, 0};
-    UnpackedBlockMaterial grass{2, 0, Direction::PlusZ, 0};
-    UnpackedBlockMaterial air{0, 0, Direction::PlusZ, 0};
-
-    const BlockMaterial stonePacked = stone.pack();
-    const BlockMaterial grassPacked = grass.pack();
-    const BlockMaterial airPacked = air.pack();
+    const BiomeConfig& biome = biomeConfig();
+    const BlockMaterial stonePacked = biome.undergroundMaterial;
+    const BlockMaterial grassPacked = biome.abovegroundMaterial;
+    const BlockMaterial airPacked = UnpackedBlockMaterial{0, 0, Direction::PlusZ, 0}.pack();
+    const uint16_t grassMaterialId = grassPacked.unpack().id;
 
     constexpr int kChunkSize = cfg::CHUNK_SIZE;
     constexpr int kColumnHeight = cfg::COLUMN_HEIGHT_BLOCKS;
@@ -365,7 +579,7 @@ void generateTerrainColumn(const glm::ivec3& origin,
             return -1.0f;
         }
         const int terrainHeight = cachedHeightAtWorld(worldX, worldY);
-        return sampleDensity(fnGenerator, worldX, worldY, worldZ, terrainHeight);
+        return sampleDensity(fnGenerator, worldX, worldY, worldZ, biome, terrainHeight);
     };
 
     std::vector<float> densityField(kColumnVoxelCount, 0.0f);
@@ -446,7 +660,7 @@ void generateTerrainColumn(const glm::ivec3& origin,
                 const float gradLenSq = (dx * dx) + (dy * dy) + (dz * dz);
                 const float flatness = (gradLenSq > 1e-6f) ? (std::abs(dz) / std::sqrt(gradLenSq)) : 1.0f;
 
-                col.setBlock(x, y, z, (flatness >= kGrassFlatnessThreshold) ? grassPacked : stonePacked);
+                col.setBlock(x, y, z, (flatness >= biome.flatnessThreshold) ? grassPacked : stonePacked);
             }
         }
     }
@@ -454,10 +668,10 @@ void generateTerrainColumn(const glm::ivec3& origin,
     for (int z = 0; z < (kColumnHeight - 1); ++z) {
         for (int y = 0; y < kChunkSize; ++y) {
             for (int x = 0; x < kChunkSize; ++x) {
-                if (col.getBlock(x, y, z).unpack().id != grass.id) {
+                if (col.getBlock(x, y, z).unpack().id != grassMaterialId) {
                     continue;
                 }
-                if (col.getBlock(x, y, z + 1).unpack().id != air.id) {
+                if (col.getBlock(x, y, z + 1).unpack().id != 0u) {
                     continue;
                 }
 

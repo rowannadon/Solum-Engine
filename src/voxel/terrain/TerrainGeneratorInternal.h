@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -12,13 +13,21 @@ namespace terrain_internal {
 
 inline constexpr int kHeightmapUpscaleFactor = 2;
 inline constexpr int kFallbackTerrainHeight = 100;
-inline constexpr int kNoiseSeed = 1337;
-inline constexpr float kNoiseHorizontalFrequency = 0.015f;
-inline constexpr float kNoiseVerticalFrequency = 0.04f;
-inline constexpr float kNoiseMaxStrengthBlocks = 64.0f;
-inline constexpr float kNoiseFalloffBlocks = 55.0f;
-inline constexpr float kGrassFlatnessThreshold = 0.75f;
+inline constexpr const char* kActiveBiomeName = "forest";
+
+inline constexpr int kDefaultNoiseSeed = 1337;
+inline constexpr float kDefaultNoiseHorizontalFrequency = 0.015f;
+inline constexpr float kDefaultNoiseVerticalFrequency = 0.04f;
+inline constexpr float kDefaultNoiseMaxStrengthBlocks = 64.0f;
+inline constexpr float kDefaultNoiseFalloffBlocks = 55.0f;
+inline constexpr float kDefaultFlatnessThreshold = 0.75f;
 inline constexpr float kDefaultDecorationChance = 0.25f;
+inline constexpr const char* kDefaultAbovegroundMaterial = "grass";
+inline constexpr const char* kDefaultUndergroundMaterial = "stone";
+inline constexpr int32_t kDefaultStructureCellSize = 14;
+inline constexpr int32_t kDefaultStructureMinDistance = 8;
+inline constexpr float kDefaultStructureCellOccupancy = 0.45f;
+inline constexpr uint32_t kDefaultStructureSeed = 0x51F15EEDu;
 
 struct HeightmapData {
     int width = 0;
@@ -28,8 +37,28 @@ struct HeightmapData {
 };
 
 struct TerrainDecorationDefinition {
+    std::string name;
     BlockMaterial material{};
     uint32_t selectionWeight = 1u;
+};
+
+struct BiomeConfig {
+    std::string name = kActiveBiomeName;
+    std::vector<std::string> structureNames;
+    std::vector<std::string> decorationNames;
+    int noiseSeed = kDefaultNoiseSeed;
+    float noiseHorizontalFrequency = kDefaultNoiseHorizontalFrequency;
+    float noiseVerticalFrequency = kDefaultNoiseVerticalFrequency;
+    float noiseMaxStrengthBlocks = kDefaultNoiseMaxStrengthBlocks;
+    float noiseFalloffBlocks = kDefaultNoiseFalloffBlocks;
+    BlockMaterial abovegroundMaterial = UnpackedBlockMaterial{2, 0, Direction::PlusZ, 0}.pack();
+    BlockMaterial undergroundMaterial = UnpackedBlockMaterial{1, 0, Direction::PlusZ, 0}.pack();
+    float flatnessThreshold = kDefaultFlatnessThreshold;
+    float decorationChance = kDefaultDecorationChance;
+    int32_t structureCellSize = kDefaultStructureCellSize;
+    int32_t structureMinDistance = kDefaultStructureMinDistance;
+    float structureCellOccupancy = kDefaultStructureCellOccupancy;
+    uint32_t structureSeed = kDefaultStructureSeed;
 };
 
 struct TerrainDecorationConfig {
@@ -39,12 +68,14 @@ struct TerrainDecorationConfig {
 };
 
 const HeightmapData& heightmapData();
+const BiomeConfig& biomeConfig();
 TerrainDecorationConfig decorationConfig();
 int sampleTerrainHeight(const HeightmapData& heightmap, int worldX, int worldY);
 float sampleDensity(const FastNoise::SmartNode<>& fnGenerator,
                     int worldX,
                     int worldY,
                     int worldZ,
+                    const BiomeConfig& biome,
                     int terrainHeight);
 void generateTerrainColumn(const glm::ivec3& origin,
                            Column& col,

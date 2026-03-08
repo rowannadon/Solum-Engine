@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -21,6 +22,10 @@ using json = nlohmann::json;
 
 std::filesystem::path structureConfigPath() {
     return std::filesystem::path(RESOURCE_DIR) / "structures.json";
+}
+
+bool listContains(const std::vector<std::string>& names, const std::string& name) {
+    return std::find(names.begin(), names.end(), name) != names.end();
 }
 
 bool parseOrigin(const json& originJson, glm::ivec3& outOrigin) {
@@ -66,6 +71,7 @@ bool parseColorRgba(const json& rgbaJson, uint8_t& outR, uint8_t& outG, uint8_t&
 
 std::vector<StructureManager::StructureDefinition> loadStructureDefinitions() {
     std::vector<StructureManager::StructureDefinition> definitions;
+    const terrain_internal::BiomeConfig& biome = terrain_internal::biomeConfig();
 
     const std::filesystem::path path = structureConfigPath();
     std::ifstream file(path);
@@ -117,6 +123,9 @@ std::vector<StructureManager::StructureDefinition> loadStructureDefinitions() {
 
         StructureManager::StructureDefinition definition{};
         definition.name = entry["name"].get<std::string>();
+        if (!biome.structureNames.empty() && !listContains(biome.structureNames, definition.name)) {
+            continue;
+        }
 
         glm::ivec3 origin{};
         if (!parseOrigin(entry["origin"], origin)) {
@@ -210,11 +219,12 @@ std::vector<StructureManager::StructureDefinition> loadStructureDefinitions() {
 
 const StructureManager& structureManager() {
     static const StructureManager kManager = [] {
+        const terrain_internal::BiomeConfig& biome = terrain_internal::biomeConfig();
         StructureManager::SamplerConfig sampler;
-        sampler.cellSize = 14;
-        sampler.minDistance = 8;
-        sampler.cellOccupancy = 0.45f;
-        sampler.seed = 0x51F15EEDu;
+        sampler.cellSize = biome.structureCellSize;
+        sampler.minDistance = biome.structureMinDistance;
+        sampler.cellOccupancy = biome.structureCellOccupancy;
+        sampler.seed = biome.structureSeed;
 
         StructureManager manager(sampler);
         const std::vector<StructureManager::StructureDefinition> definitions = loadStructureDefinitions();
@@ -228,9 +238,13 @@ const StructureManager& structureManager() {
 }
 
 template <typename DensityFn, typename HeightFn>
-int findSurfaceForStructure(int worldX, int worldY, const DensityFn& densityAtWorld, const HeightFn& heightAtWorld) {
+int findSurfaceForStructure(int worldX,
+                            int worldY,
+                            float noiseMaxStrengthBlocks,
+                            const DensityFn& densityAtWorld,
+                            const HeightFn& heightAtWorld) {
     constexpr int kColumnHeight = cfg::COLUMN_HEIGHT_BLOCKS;
-    constexpr int kSearchPadding = static_cast<int>(terrain_internal::kNoiseMaxStrengthBlocks) + 4;
+    const int kSearchPadding = static_cast<int>(std::ceil(std::max(0.0f, noiseMaxStrengthBlocks))) + 4;
 
     const int estimated = std::clamp(heightAtWorld(worldX, worldY), 0, kColumnHeight - 1);
     const int searchTop = std::clamp(estimated + kSearchPadding, 0, kColumnHeight - 2);
@@ -264,6 +278,7 @@ void placeColumnStructures(const glm::ivec3& origin,
                            const FastNoise::SmartNode<>& fnGenerator,
                            const HeightmapData& heightmap) {
     const StructureManager& manager = structureManager();
+    const BiomeConfig& biome = biomeConfig();
     if (!manager.hasStructures()) {
         return;
     }
@@ -301,7 +316,7 @@ void placeColumnStructures(const glm::ivec3& origin,
             return -1.0f;
         }
         const int terrainHeight = cachedHeightAtWorld(worldX, worldY);
-        return sampleDensity(fnGenerator, worldX, worldY, worldZ, terrainHeight);
+        return sampleDensity(fnGenerator, worldX, worldY, worldZ, biome, terrainHeight);
     };
 
     const int32_t placementPadding = std::max(0, manager.maxHorizontalReach());
@@ -324,6 +339,7 @@ void placeColumnStructures(const glm::ivec3& origin,
         const int32_t surfaceZ = findSurfaceForStructure(
             point.worldXY.x,
             point.worldXY.y,
+            biome.noiseMaxStrengthBlocks,
             densityAtWorld,
             cachedHeightAtWorld
         );

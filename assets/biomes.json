@@ -1,0 +1,26 @@
+[
+  {
+    "name": "forest",
+    "structures": ["aspen1", "aspen2", "aspen3"],
+    "decorations": ["tall_grass"],
+    "noise": {
+      "seed": 1337,
+      "horizontalFrequency": 0.015,
+      "verticalFrequency": 0.04,
+      "maxStrengthBlocks": 64.0,
+      "falloffBlocks": 55.0
+    },
+    "materials": {
+      "aboveground": "grass",
+      "underground": "stone"
+    },
+    "flatnessThreshold": 0.75,
+    "decorationChance": 0.25,
+    "structurePlacement": {
+      "cellSize": 14,
+      "minDistance": 8,
+      "cellOccupancy": 0.45,
+      "seed": 1374779117
+    }
+  }
+]
