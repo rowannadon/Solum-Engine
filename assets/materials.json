@@ -23,7 +23,7 @@
     "randomRotation": false,
     "randomOffsetDirections": "XYZ",
     "randomOffsetAmount": 0.06,
-    "blockLightOpacity": 0.15
+    "blockLightOpacity": 0.1
   },
   {
     "name": "glowstone",

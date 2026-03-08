@@ -27,6 +27,7 @@ public:
     struct Config {
         int32_t lodLevelCount = 7;
         int32_t meshTileSizeChunks = 4;
+        int32_t meshTileHeightChunks = 32;
         int32_t activeChunkRadius = 128;
         float lodSseTargetPixels = 8.0f;
         float lodSseHysteresisPixels = 0.25f;
@@ -64,7 +65,7 @@ private:
     };
 
     struct MeshTileState {
-        std::unordered_map<uint8_t, MeshTileLodState> lodStates;
+        std::unordered_map<uint8_t, std::unordered_map<int32_t, MeshTileLodState>> lodStates;
         int8_t desiredLod = -1;
         int8_t selectedLod = -1;
     };
@@ -80,8 +81,8 @@ private:
                              float sseProjectionScale,
                              const ChunkCoord* previousCenterChunk,
                              int32_t centerShiftChunks);
-    void scheduleRemeshForPlayerEditedColumns(const ColumnCoord& centerColumn);
-    void scheduleRemeshForLightingChangedColumns(const ColumnCoord& centerColumn);
+    void scheduleRemeshForPlayerEditedChunks(const ColumnCoord& centerColumn);
+    void scheduleRemeshForLightingChangedChunks(const ColumnCoord& centerColumn);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);
     void scheduleTileLodMeshing(const TileLodCoord& coord,
                                 jobsystem::Priority priority,
@@ -118,6 +119,7 @@ private:
     ChunkMeshOutput meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const;
 
     int32_t cellCountPerAxisForLod(uint8_t lodLevel) const;
+    int32_t cellCountPerZForLod(uint8_t lodLevel) const;
     int32_t maxConfiguredRadius() const;
 
     static bool tileInBounds(const MeshTileCoord& tileCoord,
@@ -136,6 +138,8 @@ private:
     jobsystem::JobSystem jobs_;
     jobsystem::JobSystem priorityJobs_;
     int32_t meshTileSizeChunks_ = 4;
+    int32_t meshTileHeightChunks_ = 32;
+    int32_t meshTileSliceCount_ = 1;
 
     mutable std::shared_mutex meshMutex_;
     std::unordered_set<TileLodCoord> pendingTileLodJobs_;

@@ -8,7 +8,7 @@
 #include "solum_engine/voxel/MeshTileTypes.h"
 
 struct MeshTileLodKey {
-    MeshTileCoord tile{};
+    MeshTileSliceCoord tile{};
     uint8_t lod = 0u;
 
     friend bool operator==(const MeshTileLodKey& a, const MeshTileLodKey& b) {
@@ -31,7 +31,7 @@ struct MeshTileLodUpload {
 };
 
 struct MeshTileSelectionEntry {
-    MeshTileCoord tile{};
+    MeshTileSliceCoord tile{};
     int8_t selectedLod = -1;
 };
 
@@ -51,7 +51,7 @@ struct hash<MeshTileLodKey> {
 #else
         constexpr size_t kGoldenRatio = 0x9e3779b9u;
 #endif
-        size_t seed = hash<MeshTileCoord>{}(key.tile);
+        size_t seed = hash<MeshTileSliceCoord>{}(key.tile);
         seed ^= hash<uint8_t>{}(key.lod) + kGoldenRatio + (seed << 6) + (seed >> 2);
         return seed;
     }

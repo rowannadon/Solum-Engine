@@ -358,6 +358,14 @@ uint64_t World::lightingRevision() const {
     return lightingRevision_.load(std::memory_order_acquire);
 }
 
+uint64_t World::playerEditChunkRevision() const {
+    return playerEditChunkRevision_.load(std::memory_order_acquire);
+}
+
+uint64_t World::lightingChunkRevision() const {
+    return lightingChunkRevision_.load(std::memory_order_acquire);
+}
+
 uint64_t World::copyGeneratedColumnsSince(uint64_t afterRevision,
                                           std::vector<ColumnCoord>& outColumns,
                                           std::size_t maxCount) const {
@@ -396,6 +404,25 @@ uint64_t World::copyPlayerEditedColumnsSince(uint64_t afterRevision,
     return clampedRevision + static_cast<uint64_t>(count);
 }
 
+uint64_t World::copyPlayerEditedChunksSince(uint64_t afterRevision,
+                                            std::vector<ChunkCoord>& outChunks,
+                                            std::size_t maxCount) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    const uint64_t currentRevision = static_cast<uint64_t>(playerEditedChunkHistory_.size());
+    const uint64_t clampedRevision = std::min(afterRevision, currentRevision);
+    const size_t startIndex = static_cast<size_t>(clampedRevision);
+    const size_t available = playerEditedChunkHistory_.size() - startIndex;
+    const size_t count = std::min(maxCount, available);
+
+    outChunks.clear();
+    outChunks.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        outChunks.push_back(playerEditedChunkHistory_[startIndex + i]);
+    }
+
+    return clampedRevision + static_cast<uint64_t>(count);
+}
+
 uint64_t World::copyLightingChangedColumnsSince(uint64_t afterRevision,
                                                 std::vector<ColumnCoord>& outColumns,
                                                 std::size_t maxCount) const {
@@ -410,6 +437,25 @@ uint64_t World::copyLightingChangedColumnsSince(uint64_t afterRevision,
     outColumns.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         outColumns.push_back(lightingChangedColumnHistory_[startIndex + i]);
+    }
+
+    return clampedRevision + static_cast<uint64_t>(count);
+}
+
+uint64_t World::copyLightingChangedChunksSince(uint64_t afterRevision,
+                                               std::vector<ChunkCoord>& outChunks,
+                                               std::size_t maxCount) const {
+    std::shared_lock<std::shared_mutex> lock(worldMutex_);
+    const uint64_t currentRevision = static_cast<uint64_t>(lightingChangedChunkHistory_.size());
+    const uint64_t clampedRevision = std::min(afterRevision, currentRevision);
+    const size_t startIndex = static_cast<size_t>(clampedRevision);
+    const size_t available = lightingChangedChunkHistory_.size() - startIndex;
+    const size_t count = std::min(maxCount, available);
+
+    outChunks.clear();
+    outChunks.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        outChunks.push_back(lightingChangedChunkHistory_[startIndex + i]);
     }
 
     return clampedRevision + static_cast<uint64_t>(count);
@@ -932,6 +978,35 @@ bool World::applyBlockEditLocked(const BlockCoord& coord,
         playerEditRevision_.fetch_add(1, std::memory_order_release);
         generatedColumnHistory_.push_back(dirtyColumn);
         generationRevision_.fetch_add(1, std::memory_order_release);
+    }
+
+    std::unordered_set<ChunkCoord> geometryDirtyChunks;
+    for (const ColumnCoord& dirtyColumn : geometryDirtyColumns) {
+        geometryDirtyChunks.insert(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z});
+    }
+    if (localZ == 0u) {
+        for (const ColumnCoord& dirtyColumn : geometryDirtyColumns) {
+            if (chunkCoord.v.z > 0) {
+                geometryDirtyChunks.insert(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z - 1});
+            }
+        }
+    } else if (localZ == static_cast<uint16_t>(cfg::CHUNK_SIZE - 1)) {
+        for (const ColumnCoord& dirtyColumn : geometryDirtyColumns) {
+            if (chunkCoord.v.z + 1 < cfg::COLUMN_HEIGHT) {
+                geometryDirtyChunks.insert(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z + 1});
+            }
+        }
+    }
+
+    for (const ChunkCoord& dirtyChunk : geometryDirtyChunks) {
+        if (dirtyChunk.v.z < 0 || dirtyChunk.v.z >= cfg::COLUMN_HEIGHT) {
+            continue;
+        }
+        if (!isColumnSkycastCompleteLocked(chunk_to_column(dirtyChunk))) {
+            continue;
+        }
+        playerEditedChunkHistory_.push_back(dirtyChunk);
+        playerEditChunkRevision_.fetch_add(1, std::memory_order_release);
     }
 
     for (int32_t oy = -1; oy <= 1; ++oy) {
@@ -1747,6 +1822,8 @@ bool World::propagateChunkLighting(const ChunkCoord& coord,
         if (chunkLightChanged && wasGenerated) {
             lightingChangedColumnHistory_.push_back(columnCoord);
             lightingRevision_.fetch_add(1, std::memory_order_release);
+            lightingChangedChunkHistory_.push_back(coord);
+            lightingChunkRevision_.fetch_add(1, std::memory_order_release);
         }
 
         auto queueDependent = [&](const ChunkCoord& dependentCoord) {

@@ -20,8 +20,24 @@ struct MeshTileCoord {
     }
 };
 
-struct TileLodCoord {
+struct MeshTileSliceCoord {
     MeshTileCoord tile{};
+    int32_t z = 0;
+
+    friend bool operator==(const MeshTileSliceCoord& a, const MeshTileSliceCoord& b) {
+        return a.tile == b.tile && a.z == b.z;
+    }
+
+    friend bool operator<(const MeshTileSliceCoord& a, const MeshTileSliceCoord& b) {
+        if (a.tile == b.tile) {
+            return a.z < b.z;
+        }
+        return a.tile < b.tile;
+    }
+};
+
+struct TileLodCoord {
+    MeshTileSliceCoord tile{};
     uint8_t lodLevel = 0;
 
     friend bool operator==(const TileLodCoord& a, const TileLodCoord& b) {
@@ -52,6 +68,20 @@ struct hash<MeshTileCoord> {
 };
 
 template <>
+struct hash<MeshTileSliceCoord> {
+    size_t operator()(const MeshTileSliceCoord& coord) const noexcept {
+#if SIZE_MAX > UINT32_MAX
+        constexpr size_t kGoldenRatio = 0x9e3779b97f4a7c15ull;
+#else
+        constexpr size_t kGoldenRatio = 0x9e3779b9u;
+#endif
+        size_t seed = hash<MeshTileCoord>{}(coord.tile);
+        seed ^= hash<int32_t>{}(coord.z) + kGoldenRatio + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
+
+template <>
 struct hash<TileLodCoord> {
     size_t operator()(const TileLodCoord& coord) const noexcept {
 #if SIZE_MAX > UINT32_MAX
@@ -59,7 +89,7 @@ struct hash<TileLodCoord> {
 #else
         constexpr size_t kGoldenRatio = 0x9e3779b9u;
 #endif
-        size_t seed = hash<MeshTileCoord>{}(coord.tile);
+        size_t seed = hash<MeshTileSliceCoord>{}(coord.tile);
         seed ^= hash<uint8_t>{}(coord.lodLevel) + kGoldenRatio + (seed << 6) + (seed >> 2);
         return seed;
     }

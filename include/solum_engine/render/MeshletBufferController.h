@@ -139,7 +139,7 @@ private:
     std::vector<FreeRange> quadFreeRanges_;
 
     std::unordered_map<MeshTileLodKey, AllocationRecord> allocations_;
-    std::unordered_map<MeshTileCoord, int8_t> tileSelection_;
+    std::unordered_map<MeshTileSliceCoord, int8_t> tileSelection_;
 
     std::vector<ActiveMeshletRangeGPU> activeRanges_;
     std::vector<MeshletAabb> activeMeshletBounds_;

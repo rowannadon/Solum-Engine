@@ -541,7 +541,7 @@ bool MeshletBufferController::buildActiveRanges() {
     activeMeshletBounds_.clear();
     activeSelectionMeshletCount_ = 0u;
 
-    std::vector<std::pair<MeshTileCoord, int8_t>> orderedSelection;
+    std::vector<std::pair<MeshTileSliceCoord, int8_t>> orderedSelection;
     orderedSelection.reserve(tileSelection_.size());
     for (const auto& [tile, lod] : tileSelection_) {
         orderedSelection.emplace_back(tile, lod);

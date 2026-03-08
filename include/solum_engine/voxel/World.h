@@ -96,15 +96,23 @@ public:
     uint64_t generationRevision() const;
     uint64_t playerEditRevision() const;
     uint64_t lightingRevision() const;
+    uint64_t playerEditChunkRevision() const;
+    uint64_t lightingChunkRevision() const;
     uint64_t copyGeneratedColumnsSince(uint64_t afterRevision,
                                        std::vector<ColumnCoord>& outColumns,
                                        std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     uint64_t copyPlayerEditedColumnsSince(uint64_t afterRevision,
                                           std::vector<ColumnCoord>& outColumns,
                                           std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
+    uint64_t copyPlayerEditedChunksSince(uint64_t afterRevision,
+                                         std::vector<ChunkCoord>& outChunks,
+                                         std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     uint64_t copyLightingChangedColumnsSince(uint64_t afterRevision,
                                              std::vector<ColumnCoord>& outColumns,
                                              std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
+    uint64_t copyLightingChangedChunksSince(uint64_t afterRevision,
+                                            std::vector<ChunkCoord>& outChunks,
+                                            std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     void copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const;
 
     WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent) const;
@@ -206,7 +214,9 @@ private:
     std::unordered_set<ColumnCoord> generatedColumns_;
     std::vector<ColumnCoord> generatedColumnHistory_;
     std::vector<ColumnCoord> playerEditedColumnHistory_;
+    std::vector<ChunkCoord> playerEditedChunkHistory_;
     std::vector<ColumnCoord> lightingChangedColumnHistory_;
+    std::vector<ChunkCoord> lightingChangedChunkHistory_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
     std::deque<ChunkPropagationTask> queuedChunkPropagationJobs_;
     std::unordered_map<ChunkCoord, uint64_t> pendingChunkPropagationJobs_;
@@ -219,6 +229,8 @@ private:
     std::atomic<uint64_t> generationRevision_{0};
     std::atomic<uint64_t> playerEditRevision_{0};
     std::atomic<uint64_t> lightingRevision_{0};
+    std::atomic<uint64_t> playerEditChunkRevision_{0};
+    std::atomic<uint64_t> lightingChunkRevision_{0};
     std::atomic<bool> shuttingDown_{false};
     std::size_t maxInFlightColumnJobs_ = 1;
     std::size_t maxInFlightChunkPropagationJobs_ = 1;
