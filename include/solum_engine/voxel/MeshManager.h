@@ -81,6 +81,8 @@ private:
                              float sseProjectionScale,
                              const ChunkCoord* previousCenterChunk,
                              int32_t centerShiftChunks);
+    void scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn,
+                                        const std::vector<ChunkCoord>& changedChunks);
     void scheduleRemeshForPlayerEditedChunks(const ColumnCoord& centerColumn);
     void scheduleRemeshForLightingChangedChunks(const ColumnCoord& centerColumn);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);

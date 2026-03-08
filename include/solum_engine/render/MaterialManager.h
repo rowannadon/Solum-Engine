@@ -54,6 +54,26 @@ public:
     std::shared_ptr<const BlockModelLibrary> blockModelLibrary() const;
 
 private:
+    struct LoadedMaterialAsset {
+        std::string name;
+        std::string textureRelativePath;
+        std::string modelRelativePath;
+        bool doubleSided = false;
+        bool randomTextureRotation = false;
+        bool randomRotation = false;
+        uint8_t randomRotationDirectionsMask = 0x7u;
+        uint8_t randomOffsetDirectionsMask = 0u;
+        float randomOffsetAmount = 0.0f;
+        float blockLightOpacity = 1.0f;
+        uint8_t emissiveLight = 0u;
+        bool aoOccluder = true;
+        std::vector<uint8_t> pixels;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        uint16_t materialId = 0u;
+        uint32_t textureLayer = 0u;
+    };
+
     struct MaterialConfigEntry {
         std::string name;
         std::string texture;
@@ -70,6 +90,13 @@ private:
     };
 
     bool buildDefaultMaterials(BufferManager& bufferManager, TextureManager& textureManager);
+    bool loadMaterialAssets(const std::vector<MaterialConfigEntry>& configMaterials,
+                            std::vector<LoadedMaterialAsset>& outLoadedMaterials);
+    bool buildMaterialModelLibrary(BufferManager& bufferManager,
+                                   const std::vector<LoadedMaterialAsset>& loadedMaterials);
+    bool uploadMaterialGpuResources(BufferManager& bufferManager,
+                                    TextureManager& textureManager,
+                                    const std::vector<LoadedMaterialAsset>& loadedMaterials);
     static bool loadMaterialConfig(const std::filesystem::path& path,
                                    std::vector<MaterialConfigEntry>& outMaterials);
     static bool loadPngRgba8(const std::filesystem::path& path,

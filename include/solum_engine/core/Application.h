@@ -1,37 +1,21 @@
 #pragma once
 
-// Application.h
-#include <webgpu/webgpu.hpp>
-#include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
-#include <glm/ext.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-
-
-
-#include <set>
-#include <queue>
-#include <iostream>
-#include <cassert>
-#include <vector>
-#include <filesystem>
-#include <fstream>
-#include <sstream>
-#include <string>
-#include <chrono>
-#include <array>
-#include <thread>
-#include <numeric>
-#include <mutex>
 #include <memory>
+#include <mutex>
+#include <vector>
+
+#include <glm/mat4x4.hpp>
 
 #include "solum_engine/render/Uniforms.h"
-#include "solum_engine/resources/Constants.h"
+#include "solum_engine/render/RuntimeTiming.h"
 #include "solum_engine/render/WebGPURenderer.h"
 #include "solum_engine/core/FramePacer.h"
 #include "solum_engine/ui/GuiManager.h"
 #include "solum_engine/core/Camera.h"
 #include "solum_engine/voxel/VoxelStreamingSystem.h"
+
+struct GLFWwindow;
+class BufferManager;
 
 class Application {
 public:
