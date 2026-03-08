@@ -258,14 +258,6 @@ WebGPUContext* WebGPURenderer::getContext() {
     return context.get();
 }
 
-PipelineManager* WebGPURenderer::getPipelineManager() {
-    return pipelineManager.get();
-}
-
-TextureManager* WebGPURenderer::getTextureManager() {
-    return textureManager.get();
-}
-
 BufferManager* WebGPURenderer::getBufferManager() {
     return bufferManager.get();
 }
@@ -287,10 +279,6 @@ void WebGPURenderer::setDebugWorld(const World* world) {
 
 void WebGPURenderer::queueMeshDelta(MeshStreamingDelta&& delta) {
     pendingMeshDelta_ = std::move(delta);
-}
-
-bool WebGPURenderer::isMeshUploadInProgress() const noexcept {
-    return pendingMeshDelta_.has_value();
 }
 
 uint64_t WebGPURenderer::uploadedMeshRevision() const noexcept {

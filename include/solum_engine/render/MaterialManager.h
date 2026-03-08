@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -52,8 +51,6 @@ public:
     bool initialize(BufferManager& bufferManager, TextureManager& textureManager);
     void terminate(BufferManager& bufferManager, TextureManager& textureManager);
 
-    std::optional<MaterialDefinition> getMaterial(uint16_t materialId) const;
-    uint32_t textureIndexForMaterial(uint16_t materialId) const;
     std::shared_ptr<const BlockModelLibrary> blockModelLibrary() const;
 
 private:

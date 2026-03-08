@@ -89,80 +89,6 @@ struct World::ChunkPropagationResult {
     uint64_t solveSignature = 0u;
 };
 
-WorldSection::WorldSection(const World& world,
-                           const BlockCoord& origin,
-                           const glm::ivec3& extent,
-                           uint8_t mipLevel)
-    : world_(world),
-      origin_(origin),
-      extent_(extent),
-      mipLevel_(std::min<uint8_t>(mipLevel, Chunk::MAX_MIP_LEVEL)) {}
-
-BlockMaterial WorldSection::getBlock(const BlockCoord& coord) const {
-    return world_.getBlock(coord, mipLevel_);
-}
-
-uint8_t WorldSection::getPackedLight(const BlockCoord& coord) const {
-    uint8_t packedLight = unlitPackedLight();
-    world_.tryGetPackedLight(coord, packedLight, mipLevel_);
-    return packedLight;
-}
-
-bool WorldSection::tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const {
-    return world_.tryGetBlock(coord, outBlock, mipLevel_);
-}
-
-bool WorldSection::tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const {
-    return world_.tryGetPackedLight(coord, outPackedLight, mipLevel_);
-}
-
-BlockMaterial WorldSection::getLocalBlock(int32_t x, int32_t y, int32_t z) const {
-    return world_.getBlock(BlockCoord{
-        origin_.v.x + x,
-        origin_.v.y + y,
-        origin_.v.z + z
-    }, mipLevel_);
-}
-
-bool WorldSection::tryGetLocalBlock(int32_t x, int32_t y, int32_t z, BlockMaterial& outBlock) const {
-    return world_.tryGetBlock(BlockCoord{
-        origin_.v.x + x,
-        origin_.v.y + y,
-        origin_.v.z + z
-    }, outBlock, mipLevel_);
-}
-
-void WorldSection::copySamples(std::vector<Sample>& outSamples) const {
-    if (extent_.x <= 0 || extent_.y <= 0 || extent_.z <= 0) {
-        outSamples.clear();
-        return;
-    }
-
-    const size_t yzArea = static_cast<size_t>(extent_.y) * static_cast<size_t>(extent_.z);
-    const size_t sampleCount = static_cast<size_t>(extent_.x) * yzArea;
-    outSamples.resize(sampleCount);
-
-    std::shared_lock<std::shared_mutex> lock(world_.worldMutex_);
-    for (int32_t x = 0; x < extent_.x; ++x) {
-        for (int32_t y = 0; y < extent_.y; ++y) {
-            for (int32_t z = 0; z < extent_.z; ++z) {
-                const size_t index =
-                    (static_cast<size_t>(x) * yzArea) +
-                    (static_cast<size_t>(y) * static_cast<size_t>(extent_.z)) +
-                    static_cast<size_t>(z);
-                Sample sample;
-                const BlockCoord coord{
-                    origin_.v.x + x,
-                    origin_.v.y + y,
-                    origin_.v.z + z
-                };
-                sample.known = world_.tryGetBlockLocked(coord, sample.block, mipLevel_);
-                outSamples[index] = sample;
-            }
-        }
-    }
-}
-
 World::World()
     : World(Config{}) {}
 
@@ -350,14 +276,6 @@ uint64_t World::generationRevision() const {
     return generationRevision_.load(std::memory_order_acquire);
 }
 
-uint64_t World::playerEditRevision() const {
-    return playerEditRevision_.load(std::memory_order_acquire);
-}
-
-uint64_t World::lightingRevision() const {
-    return lightingRevision_.load(std::memory_order_acquire);
-}
-
 uint64_t World::playerEditChunkRevision() const {
     return playerEditChunkRevision_.load(std::memory_order_acquire);
 }
@@ -385,25 +303,6 @@ uint64_t World::copyGeneratedColumnsSince(uint64_t afterRevision,
     return clampedRevision + static_cast<uint64_t>(count);
 }
 
-uint64_t World::copyPlayerEditedColumnsSince(uint64_t afterRevision,
-                                             std::vector<ColumnCoord>& outColumns,
-                                             std::size_t maxCount) const {
-    std::shared_lock<std::shared_mutex> lock(worldMutex_);
-    const uint64_t currentRevision = static_cast<uint64_t>(playerEditedColumnHistory_.size());
-    const uint64_t clampedRevision = std::min(afterRevision, currentRevision);
-    const size_t startIndex = static_cast<size_t>(clampedRevision);
-    const size_t available = playerEditedColumnHistory_.size() - startIndex;
-    const size_t count = std::min(maxCount, available);
-
-    outColumns.clear();
-    outColumns.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        outColumns.push_back(playerEditedColumnHistory_[startIndex + i]);
-    }
-
-    return clampedRevision + static_cast<uint64_t>(count);
-}
-
 uint64_t World::copyPlayerEditedChunksSince(uint64_t afterRevision,
                                             std::vector<ChunkCoord>& outChunks,
                                             std::size_t maxCount) const {
@@ -418,25 +317,6 @@ uint64_t World::copyPlayerEditedChunksSince(uint64_t afterRevision,
     outChunks.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         outChunks.push_back(playerEditedChunkHistory_[startIndex + i]);
-    }
-
-    return clampedRevision + static_cast<uint64_t>(count);
-}
-
-uint64_t World::copyLightingChangedColumnsSince(uint64_t afterRevision,
-                                                std::vector<ColumnCoord>& outColumns,
-                                                std::size_t maxCount) const {
-    std::shared_lock<std::shared_mutex> lock(worldMutex_);
-    const uint64_t currentRevision = static_cast<uint64_t>(lightingChangedColumnHistory_.size());
-    const uint64_t clampedRevision = std::min(afterRevision, currentRevision);
-    const size_t startIndex = static_cast<size_t>(clampedRevision);
-    const size_t available = lightingChangedColumnHistory_.size() - startIndex;
-    const size_t count = std::min(maxCount, available);
-
-    outColumns.clear();
-    outColumns.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        outColumns.push_back(lightingChangedColumnHistory_[startIndex + i]);
     }
 
     return clampedRevision + static_cast<uint64_t>(count);
@@ -553,16 +433,6 @@ bool World::tryGetPackedLightLocked(const BlockCoord& coord,
                                     uint8_t mipLevel) const {
     BlockMaterial ignoredBlock = airBlock();
     return tryGetBlockAndPackedLightLocked(coord, ignoredBlock, outPackedLight, mipLevel);
-}
-
-WorldSection World::createSection(const BlockCoord& origin, const glm::ivec3& extent) const {
-    return createSection(origin, extent, 0);
-}
-
-WorldSection World::createSection(const BlockCoord& origin,
-                                  const glm::ivec3& extent,
-                                  uint8_t mipLevel) const {
-    return WorldSection(*this, origin, extent, mipLevel);
 }
 
 void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
@@ -974,8 +844,6 @@ bool World::applyBlockEditLocked(const BlockCoord& coord,
             continue;
         }
         generatedColumns_.insert(dirtyColumn);
-        playerEditedColumnHistory_.push_back(dirtyColumn);
-        playerEditRevision_.fetch_add(1, std::memory_order_release);
         generatedColumnHistory_.push_back(dirtyColumn);
         generationRevision_.fetch_add(1, std::memory_order_release);
     }
@@ -1820,8 +1688,6 @@ bool World::propagateChunkLighting(const ChunkCoord& coord,
 
         const bool wasGenerated = generatedColumns_.find(columnCoord) != generatedColumns_.end();
         if (chunkLightChanged && wasGenerated) {
-            lightingChangedColumnHistory_.push_back(columnCoord);
-            lightingRevision_.fetch_add(1, std::memory_order_release);
             lightingChangedChunkHistory_.push_back(coord);
             lightingChunkRevision_.fetch_add(1, std::memory_order_release);
         }

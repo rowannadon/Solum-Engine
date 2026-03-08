@@ -84,9 +84,7 @@ public:
     bool initialize();
     bool initialize(const Config& config);
 
-    PipelineManager* getPipelineManager();
     BufferManager* getBufferManager();
-    TextureManager* getTextureManager();
     WebGPUContext* getContext();
     GLFWwindow* getWindow();
     std::shared_ptr<const BlockModelLibrary> getBlockModelLibrary() const;
@@ -101,7 +99,6 @@ public:
 
     void setDebugWorld(const World* world);
     void queueMeshDelta(MeshStreamingDelta&& delta);
-    bool isMeshUploadInProgress() const noexcept;
     uint64_t uploadedMeshRevision() const noexcept;
 
     void renderFrame(FrameUniforms& uniforms);

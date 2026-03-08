@@ -111,21 +111,6 @@ void MaterialManager::terminate(BufferManager& bufferManager, TextureManager& te
     initialized_ = false;
 }
 
-std::optional<MaterialDefinition> MaterialManager::getMaterial(uint16_t materialId) const {
-    const auto it = materials_.find(materialId);
-    if (it == materials_.end()) {
-        return std::nullopt;
-    }
-    return it->second;
-}
-
-uint32_t MaterialManager::textureIndexForMaterial(uint16_t materialId) const {
-    if (materialId >= materialMetadata_.size()) {
-        return 0u;
-    }
-    return materialMetadata_[materialId].textureIndex;
-}
-
 std::shared_ptr<const BlockModelLibrary> MaterialManager::blockModelLibrary() const {
     return blockModelLibrary_;
 }

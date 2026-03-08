@@ -22,36 +22,6 @@
 class Column;
 class Region;
 
-class World;
-
-class WorldSection : public IBlockSource {
-public:
-    struct Sample {
-        BlockMaterial block{};
-        bool known = false;
-    };
-
-    WorldSection(const World& world, const BlockCoord& origin, const glm::ivec3& extent, uint8_t mipLevel = 0);
-
-    const BlockCoord& origin() const { return origin_; }
-    const glm::ivec3& extent() const { return extent_; }
-    uint8_t mipLevel() const { return mipLevel_; }
-
-    BlockMaterial getBlock(const BlockCoord& coord) const override;
-    uint8_t getPackedLight(const BlockCoord& coord) const override;
-    bool tryGetBlock(const BlockCoord& coord, BlockMaterial& outBlock) const;
-    bool tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const;
-    BlockMaterial getLocalBlock(int32_t x, int32_t y, int32_t z) const;
-    bool tryGetLocalBlock(int32_t x, int32_t y, int32_t z, BlockMaterial& outBlock) const;
-    void copySamples(std::vector<Sample>& outSamples) const;
-
-private:
-    const World& world_;
-    BlockCoord origin_;
-    glm::ivec3 extent_;
-    uint8_t mipLevel_ = 0;
-};
-
 class World : public IBlockSource {
 public:
     struct Config {
@@ -94,29 +64,18 @@ public:
     bool isColumnGenerated(const ColumnCoord& coord) const;
     bool tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const;
     uint64_t generationRevision() const;
-    uint64_t playerEditRevision() const;
-    uint64_t lightingRevision() const;
     uint64_t playerEditChunkRevision() const;
     uint64_t lightingChunkRevision() const;
     uint64_t copyGeneratedColumnsSince(uint64_t afterRevision,
                                        std::vector<ColumnCoord>& outColumns,
                                        std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
-    uint64_t copyPlayerEditedColumnsSince(uint64_t afterRevision,
-                                          std::vector<ColumnCoord>& outColumns,
-                                          std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     uint64_t copyPlayerEditedChunksSince(uint64_t afterRevision,
                                          std::vector<ChunkCoord>& outChunks,
                                          std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
-    uint64_t copyLightingChangedColumnsSince(uint64_t afterRevision,
-                                             std::vector<ColumnCoord>& outColumns,
-                                             std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     uint64_t copyLightingChangedChunksSince(uint64_t afterRevision,
                                             std::vector<ChunkCoord>& outChunks,
                                             std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     void copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const;
-
-    WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent) const;
-    WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent, uint8_t mipLevel) const;
 
     bool hasPendingJobs() const;
 
@@ -140,7 +99,6 @@ private:
         ColumnCoord coord{};
         jobsystem::Priority priority = jobsystem::Priority::Low;
     };
-    friend class WorldSection;
 
     void enqueueColumnGenerationLocked(const ColumnCoord& coord);
     void refillQueuedColumnsLocked();
@@ -213,9 +171,7 @@ private:
     std::unordered_map<ChunkCoord, LightingChunkState> lightingChunkStates_;
     std::unordered_set<ColumnCoord> generatedColumns_;
     std::vector<ColumnCoord> generatedColumnHistory_;
-    std::vector<ColumnCoord> playerEditedColumnHistory_;
     std::vector<ChunkCoord> playerEditedChunkHistory_;
-    std::vector<ColumnCoord> lightingChangedColumnHistory_;
     std::vector<ChunkCoord> lightingChangedChunkHistory_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
     std::deque<ChunkPropagationTask> queuedChunkPropagationJobs_;
@@ -227,8 +183,6 @@ private:
         QueuedColumnEntryCompare
     > queuedColumnHeap_;
     std::atomic<uint64_t> generationRevision_{0};
-    std::atomic<uint64_t> playerEditRevision_{0};
-    std::atomic<uint64_t> lightingRevision_{0};
     std::atomic<uint64_t> playerEditChunkRevision_{0};
     std::atomic<uint64_t> lightingChunkRevision_{0};
     std::atomic<bool> shuttingDown_{false};
