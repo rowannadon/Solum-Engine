@@ -57,8 +57,8 @@ public:
 
 private:
     struct MeshTileLodState {
-        std::vector<Meshlet> culledMeshlets;
-        std::vector<Meshlet> doubleSidedMeshlets;
+        std::shared_ptr<const PackedMeshletData> culledPacked;
+        std::shared_ptr<const PackedMeshletData> doubleSidedPacked;
         bool resident = false;
         bool uploadQueued = false;
         uint64_t revision = 0u;

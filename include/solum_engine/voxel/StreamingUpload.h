@@ -2,9 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
-#include "solum_engine/render/MeshletTypes.h"
+#include "solum_engine/render/MeshletPacking.h"
 #include "solum_engine/voxel/MeshTileTypes.h"
 
 struct MeshTileLodKey {
@@ -25,8 +26,8 @@ struct MeshTileLodKey {
 
 struct MeshTileLodUpload {
     MeshTileLodKey key{};
-    std::vector<Meshlet> culledMeshlets;
-    std::vector<Meshlet> doubleSidedMeshlets;
+    std::shared_ptr<const PackedMeshletData> culledPacked;
+    std::shared_ptr<const PackedMeshletData> doubleSidedPacked;
     uint64_t revision = 0u;
 };
 

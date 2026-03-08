@@ -117,6 +117,10 @@ bool isPowerOfTwo(int32_t value) {
     return value > 0 && (value & (value - 1)) == 0;
 }
 
+bool hasRenderablePackedData(const std::shared_ptr<const PackedMeshletData>& packed) {
+    return packed != nullptr && !packed->metadata.empty();
+}
+
 int32_t floorPowerOfTwo(int32_t value) {
     if (value <= 1) {
         return 1;
@@ -490,8 +494,8 @@ std::vector<MeshTileLodUpload> MeshManager::consumePendingTileLodUploads(std::si
 
             MeshTileLodUpload upload{};
             upload.key = key;
-            upload.culledMeshlets = sliceIt->second.culledMeshlets;
-            upload.doubleSidedMeshlets = sliceIt->second.doubleSidedMeshlets;
+            upload.culledPacked = sliceIt->second.culledPacked;
+            upload.doubleSidedPacked = sliceIt->second.doubleSidedPacked;
             upload.revision = sliceIt->second.revision;
             sliceIt->second.uploadQueued = false;
             uploads.push_back(std::move(upload));
@@ -787,8 +791,8 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                         continue;
                     }
                     desiredAnyResident = true;
-                    if (!sliceIt->second.culledMeshlets.empty() ||
-                        !sliceIt->second.doubleSidedMeshlets.empty()) {
+                    if (hasRenderablePackedData(sliceIt->second.culledPacked) ||
+                        hasRenderablePackedData(sliceIt->second.doubleSidedPacked)) {
                         desiredAnyRenderable = true;
                     }
                 }
@@ -800,7 +804,8 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                     }
                     for (const auto& [_, lodState] : lodSlices) {
                         if (lodState.resident &&
-                            (!lodState.culledMeshlets.empty() || !lodState.doubleSidedMeshlets.empty())) {
+                            (hasRenderablePackedData(lodState.culledPacked) ||
+                             hasRenderablePackedData(lodState.doubleSidedPacked))) {
                             hasNonEmptyAlternateLod = true;
                             break;
                         }
@@ -1433,8 +1438,12 @@ void MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                     }
 
                     MeshTileLodState& lodState = tileIt->second.lodStates[coord.lodLevel][coord.tile.z];
-                    lodState.culledMeshlets = std::move(meshResult.meshOutput.culledMeshlets);
-                    lodState.doubleSidedMeshlets = std::move(meshResult.meshOutput.doubleSidedMeshlets);
+                    lodState.culledPacked = std::make_shared<PackedMeshletData>(
+                        packMeshletsForUpload(meshResult.meshOutput.culledMeshlets)
+                    );
+                    lodState.doubleSidedPacked = std::make_shared<PackedMeshletData>(
+                        packMeshletsForUpload(meshResult.meshOutput.doubleSidedMeshlets)
+                    );
                     lodState.resident = true;
                     lodState.revision = meshRevision_.fetch_add(1, std::memory_order_acq_rel) + 1u;
                     queueTileLodUploadLocked(MeshTileLodKey{coord.tile, coord.lodLevel}, usePriorityQueue);
@@ -1721,7 +1730,8 @@ int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileState& state)
             if (sliceIt == lodIt->second.end()) {
                 continue;
             }
-            if (!sliceIt->second.culledMeshlets.empty() || !sliceIt->second.doubleSidedMeshlets.empty()) {
+            if (hasRenderablePackedData(sliceIt->second.culledPacked) ||
+                hasRenderablePackedData(sliceIt->second.doubleSidedPacked)) {
                 return true;
             }
         }

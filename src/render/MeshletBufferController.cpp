@@ -29,118 +29,6 @@ std::string MeshletBufferController::prefixedName(const std::string& prefix, con
     return prefix + "_" + baseName;
 }
 
-MeshletAabb MeshletBufferController::computeMeshletAabb(const Meshlet& meshlet) {
-    const float voxelScale = static_cast<float>(std::max(meshlet.voxelScale, 1u));
-    const glm::vec3 meshletOrigin = glm::vec3(meshlet.origin);
-
-    if (meshlet.hasCustomBounds) {
-        return MeshletAabb{
-            meshletOrigin + (meshlet.localBoundsMin * voxelScale),
-            meshletOrigin + (meshlet.localBoundsMax * voxelScale)
-        };
-    }
-
-    if (meshlet.quadCount == 0u) {
-        return MeshletAabb{meshletOrigin, meshletOrigin};
-    }
-
-    static const std::array<std::array<glm::vec3, 4>, 6> kFaceCornerOffsets{{
-        {{glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 0.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{1.0f, 0.0f, 1.0f}, glm::vec3{0.0f, 1.0f, 1.0f}, glm::vec3{1.0f, 1.0f, 1.0f}}},
-        {{glm::vec3{0.0f, 0.0f, 0.0f}, glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 1.0f, 0.0f}}},
-    }};
-
-    const uint32_t safeFaceDirection = std::min(meshlet.faceDirection, 5u);
-
-    bool firstVertex = true;
-    glm::vec3 minCorner{0.0f};
-    glm::vec3 maxCorner{0.0f};
-
-    for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
-        const glm::uvec3 local = unpackMeshletLocalOffset(meshlet.packedQuadLocalOffsets[quadIndex]);
-        const glm::vec3 quadBase = meshletOrigin + (glm::vec3(local) * voxelScale);
-        for (const glm::vec3& cornerOffset : kFaceCornerOffsets[safeFaceDirection]) {
-            const glm::vec3 vertex = quadBase + (cornerOffset * voxelScale);
-            if (firstVertex) {
-                minCorner = vertex;
-                maxCorner = vertex;
-                firstVertex = false;
-                continue;
-            }
-            minCorner = glm::min(minCorner, vertex);
-            maxCorner = glm::max(maxCorner, vertex);
-        }
-    }
-
-    return MeshletAabb{minCorner, maxCorner};
-}
-
-MeshletAabbGPU MeshletBufferController::toGpuAabb(const MeshletAabb& aabb) {
-    return MeshletAabbGPU{
-        glm::vec4(aabb.minCorner, 0.0f),
-        glm::vec4(aabb.maxCorner, 0.0f)
-    };
-}
-
-MeshletBufferController::PackedTileLodData MeshletBufferController::packTileLodMeshlets(const std::vector<Meshlet>& meshlets) {
-    PackedTileLodData packed;
-
-    uint32_t totalMeshletCount = 0u;
-    uint32_t totalQuadWordCount = 0u;
-    for (const Meshlet& meshlet : meshlets) {
-        if (meshlet.quadCount == 0u) {
-            continue;
-        }
-        ++totalMeshletCount;
-        totalQuadWordCount += meshlet.quadCount * MESHLET_QUAD_DATA_WORD_STRIDE;
-    }
-
-    packed.metadata.reserve(totalMeshletCount);
-    packed.quadData.reserve(totalQuadWordCount);
-    packed.aabbGpu.reserve(totalMeshletCount);
-    packed.bounds.reserve(totalMeshletCount);
-
-    for (const Meshlet& meshlet : meshlets) {
-        if (meshlet.quadCount == 0u) {
-            continue;
-        }
-
-        MeshletMetadataGPU metadata{};
-        metadata.originX = meshlet.origin.x;
-        metadata.originY = meshlet.origin.y;
-        metadata.originZ = meshlet.origin.z;
-        metadata.quadCount = meshlet.quadCount;
-        metadata.faceDirection = meshlet.faceDirection;
-        metadata.dataOffset = static_cast<uint32_t>(packed.quadData.size());
-        metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
-        packed.metadata.push_back(metadata);
-
-        const MeshletAabb bounds = computeMeshletAabb(meshlet);
-        packed.bounds.push_back(bounds);
-        packed.aabbGpu.push_back(toGpuAabb(bounds));
-
-        for (uint32_t i = 0; i < meshlet.quadCount; ++i) {
-            packed.quadData.push_back(packMeshletQuadData(
-                meshlet.packedQuadLocalOffsets[i],
-                meshlet.quadMaterialIds[i]
-            ));
-            packed.quadData.push_back(packMeshletQuadLightData(
-                meshlet.quadLightData[i]
-            ));
-            packed.quadData.push_back(packMeshletQuadAuxData(
-                meshlet.quadAoData[i],
-                meshlet.quadModelQuadIndices[i],
-                meshlet.quadUsesVoxelAo[i] != 0u
-            ));
-        }
-    }
-
-    return packed;
-}
-
 bool MeshletBufferController::initialize(BufferManager* bufferManager) {
     bufferManager_ = bufferManager;
     allocations_.clear();
@@ -292,8 +180,13 @@ bool MeshletBufferController::writeAllocation(const AllocationRecord& record) {
         return false;
     }
 
-    if (!record.packed.metadata.empty()) {
-        std::vector<MeshletMetadataGPU> metadata = record.packed.metadata;
+    if (!record.packed) {
+        return true;
+    }
+    const PackedMeshletData& packed = *record.packed;
+
+    if (!packed.metadata.empty()) {
+        std::vector<MeshletMetadataGPU> metadata = packed.metadata;
         for (MeshletMetadataGPU& entry : metadata) {
             entry.dataOffset += record.quadOffset;
         }
@@ -308,17 +201,17 @@ bool MeshletBufferController::writeAllocation(const AllocationRecord& record) {
         bufferManager_->writeBuffer(
             meshAabbBufferName_,
             static_cast<uint64_t>(record.meshletOffset) * sizeof(MeshletAabbGPU),
-            record.packed.aabbGpu.data(),
-            record.packed.aabbGpu.size() * sizeof(MeshletAabbGPU)
+            packed.aabbGpu.data(),
+            packed.aabbGpu.size() * sizeof(MeshletAabbGPU)
         );
     }
 
-    if (!record.packed.quadData.empty()) {
+    if (!packed.quadData.empty()) {
         bufferManager_->writeBuffer(
             meshDataBufferName_,
             static_cast<uint64_t>(record.quadOffset) * sizeof(uint32_t),
-            record.packed.quadData.data(),
-            record.packed.quadData.size() * sizeof(uint32_t)
+            packed.quadData.data(),
+            packed.quadData.size() * sizeof(uint32_t)
         );
     }
 
@@ -331,8 +224,14 @@ void MeshletBufferController::releaseAllocation(const MeshTileLodKey& key) {
         return;
     }
 
-    freeRange(meshletFreeRanges_, it->second.meshletOffset, static_cast<uint32_t>(it->second.packed.metadata.size()));
-    freeRange(quadFreeRanges_, it->second.quadOffset, static_cast<uint32_t>(it->second.packed.quadData.size()));
+    const uint32_t meshletCount = it->second.packed
+        ? static_cast<uint32_t>(it->second.packed->metadata.size())
+        : 0u;
+    const uint32_t quadWordCount = it->second.packed
+        ? static_cast<uint32_t>(it->second.packed->quadData.size())
+        : 0u;
+    freeRange(meshletFreeRanges_, it->second.meshletOffset, meshletCount);
+    freeRange(quadFreeRanges_, it->second.quadOffset, quadWordCount);
     allocations_.erase(it);
 }
 
@@ -351,10 +250,16 @@ bool MeshletBufferController::repackExistingAllocations() {
     quadFreeRanges_ = {FreeRange{0u, quadWordCapacity_}};
 
     for (AllocationRecord& record : records) {
-        if (!allocateRange(meshletFreeRanges_, static_cast<uint32_t>(record.packed.metadata.size()), record.meshletOffset)) {
+        const uint32_t meshletCount = record.packed
+            ? static_cast<uint32_t>(record.packed->metadata.size())
+            : 0u;
+        const uint32_t quadWordCount = record.packed
+            ? static_cast<uint32_t>(record.packed->quadData.size())
+            : 0u;
+        if (!allocateRange(meshletFreeRanges_, meshletCount, record.meshletOffset)) {
             return false;
         }
-        if (!allocateRange(quadFreeRanges_, static_cast<uint32_t>(record.packed.quadData.size()), record.quadOffset)) {
+        if (!allocateRange(quadFreeRanges_, quadWordCount, record.quadOffset)) {
             return false;
         }
         if (!writeAllocation(record)) {
@@ -435,8 +340,8 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
     }
 
     for (const MeshTileLodUpload& upsert : delta.upserts) {
-        const std::vector<Meshlet>& meshlets = selectMeshletsForVariant(upsert);
-        if (meshlets.empty()) {
+        const std::shared_ptr<const PackedMeshletData>& packed = selectPackedForVariant(upsert);
+        if (!packed || packed->metadata.empty()) {
             releaseAllocation(upsert.key);
             result.deltaApplied = true;
             continue;
@@ -444,20 +349,14 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
 
         AllocationRecord record{};
         record.key = upsert.key;
-        record.packed = packTileLodMeshlets(meshlets);
-
-        if (record.packed.metadata.empty()) {
-            releaseAllocation(upsert.key);
-            result.deltaApplied = true;
-            continue;
-        }
+        record.packed = packed;
 
         const bool hasPrevious = allocations_.find(upsert.key) != allocations_.end();
 
         uint32_t meshletOffset = 0u;
         uint32_t quadOffset = 0u;
-        const uint32_t requiredMeshletWords = static_cast<uint32_t>(record.packed.metadata.size());
-        const uint32_t requiredQuadWords = static_cast<uint32_t>(record.packed.quadData.size());
+        const uint32_t requiredMeshletWords = static_cast<uint32_t>(record.packed->metadata.size());
+        const uint32_t requiredQuadWords = static_cast<uint32_t>(record.packed->quadData.size());
         const bool meshletAllocated = allocateRange(meshletFreeRanges_, requiredMeshletWords, meshletOffset);
         const bool quadAllocated = meshletAllocated && allocateRange(quadFreeRanges_, requiredQuadWords, quadOffset);
         if (!meshletAllocated || !quadAllocated) {
@@ -469,8 +368,8 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
             }
 
             bool recreated = false;
-            const uint32_t requiredMeshlets = meshletCapacity_ + static_cast<uint32_t>(record.packed.metadata.size()) + 64u;
-            const uint32_t requiredQuadWords = quadWordCapacity_ + static_cast<uint32_t>(record.packed.quadData.size()) + 1024u;
+            const uint32_t requiredMeshlets = meshletCapacity_ + static_cast<uint32_t>(record.packed->metadata.size()) + 64u;
+            const uint32_t requiredQuadWords = quadWordCapacity_ + static_cast<uint32_t>(record.packed->quadData.size()) + 1024u;
             const uint32_t requiredRanges = std::max<uint32_t>(
                 rangeCapacity_,
                 static_cast<uint32_t>(tileSelection_.size() + 64u)
@@ -489,16 +388,22 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
         record.meshletOffset = meshletOffset;
         record.quadOffset = quadOffset;
         if (!writeAllocation(record)) {
-            freeRange(meshletFreeRanges_, meshletOffset, static_cast<uint32_t>(record.packed.metadata.size()));
-            freeRange(quadFreeRanges_, quadOffset, static_cast<uint32_t>(record.packed.quadData.size()));
+            freeRange(meshletFreeRanges_, meshletOffset, static_cast<uint32_t>(record.packed->metadata.size()));
+            freeRange(quadFreeRanges_, quadOffset, static_cast<uint32_t>(record.packed->quadData.size()));
             continue;
         }
 
         if (hasPrevious) {
             const auto currentOldIt = allocations_.find(upsert.key);
             if (currentOldIt != allocations_.end()) {
-                freeRange(meshletFreeRanges_, currentOldIt->second.meshletOffset, static_cast<uint32_t>(currentOldIt->second.packed.metadata.size()));
-                freeRange(quadFreeRanges_, currentOldIt->second.quadOffset, static_cast<uint32_t>(currentOldIt->second.packed.quadData.size()));
+                const uint32_t previousMeshletCount = currentOldIt->second.packed
+                    ? static_cast<uint32_t>(currentOldIt->second.packed->metadata.size())
+                    : 0u;
+                const uint32_t previousQuadWordCount = currentOldIt->second.packed
+                    ? static_cast<uint32_t>(currentOldIt->second.packed->quadData.size())
+                    : 0u;
+                freeRange(meshletFreeRanges_, currentOldIt->second.meshletOffset, previousMeshletCount);
+                freeRange(quadFreeRanges_, currentOldIt->second.quadOffset, previousQuadWordCount);
                 allocations_.erase(currentOldIt);
             }
         }
@@ -560,8 +465,11 @@ bool MeshletBufferController::buildActiveRanges() {
         if (it == allocations_.end()) {
             continue;
         }
+        if (!it->second.packed) {
+            continue;
+        }
 
-        const uint32_t count = static_cast<uint32_t>(it->second.packed.metadata.size());
+        const uint32_t count = static_cast<uint32_t>(it->second.packed->metadata.size());
         if (count == 0u) {
             continue;
         }
@@ -576,8 +484,8 @@ bool MeshletBufferController::buildActiveRanges() {
 
         activeMeshletBounds_.insert(
             activeMeshletBounds_.end(),
-            it->second.packed.bounds.begin(),
-            it->second.packed.bounds.end()
+            it->second.packed->bounds.begin(),
+            it->second.packed->bounds.end()
         );
     }
 
@@ -677,9 +585,11 @@ MeshletBufferController::ActiveBindings MeshletBufferController::activeBindings(
     };
 }
 
-const std::vector<Meshlet>& MeshletBufferController::selectMeshletsForVariant(const MeshTileLodUpload& upload) const {
+const std::shared_ptr<const PackedMeshletData>& MeshletBufferController::selectPackedForVariant(
+    const MeshTileLodUpload& upload
+) const {
     if (geometryVariant_ == MeshletGeometryVariant::DoubleSided) {
-        return upload.doubleSidedMeshlets;
+        return upload.doubleSidedPacked;
     }
-    return upload.culledMeshlets;
+    return upload.culledPacked;
 }

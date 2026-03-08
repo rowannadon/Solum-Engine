@@ -35,7 +35,9 @@
     "randomRotation": true,
     "doubleSided": true,
     "blockLightOpacity": 0.0,
-    "randomRotationDirections": "Z"
+    "randomRotationDirections": "Z",
+    "randomOffsetDirections": "XY",
+    "randomOffsetAmount": 0.25
   },
   {
     "name": "glowstone",

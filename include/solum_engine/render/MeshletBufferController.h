@@ -2,11 +2,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "solum_engine/render/BufferManager.h"
+#include "solum_engine/render/MeshletPacking.h"
 #include "solum_engine/render/MeshletTypes.h"
 #include "solum_engine/voxel/StreamingUpload.h"
 
@@ -73,16 +75,9 @@ public:
     ActiveBindings activeBindings() const noexcept;
 
 private:
-    struct PackedTileLodData {
-        std::vector<MeshletMetadataGPU> metadata;
-        std::vector<uint32_t> quadData;
-        std::vector<MeshletAabbGPU> aabbGpu;
-        std::vector<MeshletAabb> bounds;
-    };
-
     struct AllocationRecord {
         MeshTileLodKey key{};
-        PackedTileLodData packed;
+        std::shared_ptr<const PackedMeshletData> packed;
         uint32_t meshletOffset = 0u;
         uint32_t quadOffset = 0u;
     };
@@ -104,10 +99,6 @@ private:
         kInitialMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
     static constexpr uint32_t kInitialRangeCapacity = 256u;
 
-    static MeshletAabb computeMeshletAabb(const Meshlet& meshlet);
-    static MeshletAabbGPU toGpuAabb(const MeshletAabb& aabb);
-    static PackedTileLodData packTileLodMeshlets(const std::vector<Meshlet>& meshlets);
-
     bool ensureBuffers(uint32_t requiredMeshlets, uint32_t requiredQuadWords, uint32_t requiredRanges, bool* recreated);
     bool recreateBuffers(uint32_t meshletCapacity, uint32_t quadWordCapacity, uint32_t rangeCapacity);
     bool repackExistingAllocations();
@@ -118,7 +109,7 @@ private:
     bool writeAllocation(const AllocationRecord& record);
     void releaseAllocation(const MeshTileLodKey& key);
 
-    const std::vector<Meshlet>& selectMeshletsForVariant(const MeshTileLodUpload& upload) const;
+    const std::shared_ptr<const PackedMeshletData>& selectPackedForVariant(const MeshTileLodUpload& upload) const;
     static std::string prefixedName(const std::string& prefix, const char* baseName);
 
     BufferManager* bufferManager_ = nullptr;
