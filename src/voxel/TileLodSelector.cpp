@@ -110,9 +110,11 @@ float MeshManager::tileDepthEstimateBlocks(const MeshTileCoord& tileCoord,
 float MeshManager::projectedSsePixels(uint8_t lodLevel, float depthBlocks, float sseProjectionScale) const {
     const float clampedDepthBlocks = std::max(config_.lodSseMinDepthBlocks, depthBlocks);
     const float clampedProjectionScale = std::max(1.0e-4f, sseProjectionScale);
+    const int32_t lodShift = std::clamp(static_cast<int32_t>(lodLevel), 0, 30);
+    const int32_t lodVoxelScale = (1 << lodShift);
     const float geometricErrorBlocks = (lodLevel == 0u)
         ? 0.0f
-        : (0.5f * static_cast<float>(chunkSpanForLod(lodLevel)));
+        : (0.5f * static_cast<float>(lodVoxelScale));
     return (geometricErrorBlocks * clampedProjectionScale) / clampedDepthBlocks;
 }
 

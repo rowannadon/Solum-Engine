@@ -16,7 +16,6 @@
 #include "solum_engine/voxel/World.h"
 
 namespace {
-constexpr int kChunkExtent = cfg::CHUNK_SIZE;
 constexpr int kPaddedChunkExtent = cfg::CHUNK_SIZE + 2;
 constexpr int kPaddedChunkArea = kPaddedChunkExtent * kPaddedChunkExtent;
 constexpr int kPaddedChunkVoxelCount = kPaddedChunkExtent * kPaddedChunkExtent * kPaddedChunkExtent;
@@ -131,15 +130,6 @@ int32_t floorPowerOfTwo(int32_t value) {
         floored <<= 1;
     }
     return floored;
-}
-
-int32_t integerLog2(int32_t value) {
-    int32_t result = 0;
-    while (value > 1) {
-        value >>= 1;
-        ++result;
-    }
-    return result;
 }
 
 int32_t pow2ClampedShift(int32_t shift) {
@@ -1540,19 +1530,21 @@ ChunkMeshOutput MeshManager::meshTileLod(const TileLodCoord& coord) const {
 
 ChunkMeshOutput MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const {
     const uint8_t mipLevel = std::min<uint8_t>(lodLevel, Chunk::MAX_MIP_LEVEL);
+    const int32_t spanChunks = std::max(1, chunkSpanForLod(lodLevel));
     const int32_t extraLodShift = std::max(
         0,
         static_cast<int32_t>(lodLevel) - static_cast<int32_t>(Chunk::MAX_MIP_LEVEL)
     );
     const int32_t sampleStrideMip = pow2ClampedShift(extraLodShift);
+    const int32_t chunkSizeAtMip = std::max(1, static_cast<int32_t>(Chunk::mipSize(mipLevel)));
     const uint32_t baseVoxelScale = static_cast<uint32_t>(1u << mipLevel);
     const uint32_t voxelScale = baseVoxelScale * static_cast<uint32_t>(sampleStrideMip);
 
     ChunkMesher mesher(blockModelLibrary_);
     const BlockCoord sectionOriginSample{
-        cellCoord.v.x * cfg::CHUNK_SIZE,
-        cellCoord.v.y * cfg::CHUNK_SIZE,
-        cellCoord.v.z * cfg::CHUNK_SIZE
+        cellCoord.v.x * spanChunks * chunkSizeAtMip,
+        cellCoord.v.y * spanChunks * chunkSizeAtMip,
+        cellCoord.v.z * spanChunks * chunkSizeAtMip
     };
     const BlockCoord paddedOriginSample{
         sectionOriginSample.v.x - 1,
@@ -1601,11 +1593,15 @@ ChunkMeshOutput MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lo
         }
     }
 
-    const glm::ivec3 sectionExtent{kChunkExtent, kChunkExtent, kChunkExtent};
+    const glm::ivec3 sectionExtent{
+        chunkSizeAtMip,
+        chunkSizeAtMip,
+        chunkSizeAtMip
+    };
     const glm::ivec3 meshletOrigin{
-        sectionOriginSample.v.x * static_cast<int32_t>(voxelScale),
-        sectionOriginSample.v.y * static_cast<int32_t>(voxelScale),
-        sectionOriginSample.v.z * static_cast<int32_t>(voxelScale)
+        sectionOriginSample.v.x * static_cast<int32_t>(baseVoxelScale),
+        sectionOriginSample.v.y * static_cast<int32_t>(baseVoxelScale),
+        sectionOriginSample.v.z * static_cast<int32_t>(baseVoxelScale)
     };
     return mesher.mesh(
         snapshot,
@@ -1832,7 +1828,11 @@ int32_t MeshManager::maxConfiguredRadius() const {
 }
 
 int32_t MeshManager::chunkSpanForLod(uint8_t lodLevel) {
-    return pow2ClampedShift(static_cast<int32_t>(lodLevel));
+    const int32_t extraShift = std::max(
+        0,
+        static_cast<int32_t>(lodLevel) - static_cast<int32_t>(Chunk::MAX_MIP_LEVEL)
+    );
+    return pow2ClampedShift(extraShift);
 }
 
 int32_t MeshManager::chunkZCountForLod(uint8_t lodLevel) {
@@ -1866,20 +1866,9 @@ void MeshManager::sanitizeConfig(Config& config) {
         config.meshTileHeightChunks >>= 1;
     }
 
-    const int32_t tileSizeLog2 = integerLog2(config.meshTileSizeChunks);
-    const int32_t tileHeightLog2 = integerLog2(config.meshTileHeightChunks);
-
     config.lodLevelCount = std::max(1, config.lodLevelCount);
-    // Cap to non-overlapping tile LODs: once chunk span exceeds tile span, adjacent tiles
-    // map to the same coarse cell and overlap.
-    const int32_t maxLodLevelCountForTileXY = tileSizeLog2 + 1;
-    const int32_t maxLodLevelCountForTileZ = tileHeightLog2 + 1;
     const int32_t maxLodLevelCountBySpan = kMaxLodShift + 1;
-    config.lodLevelCount = std::clamp(
-        config.lodLevelCount,
-        1,
-        std::min(std::min(maxLodLevelCountForTileXY, maxLodLevelCountForTileZ), maxLodLevelCountBySpan)
-    );
+    config.lodLevelCount = std::clamp(config.lodLevelCount, 1, maxLodLevelCountBySpan);
 
     config.activeChunkRadius = std::max(0, config.activeChunkRadius);
 
