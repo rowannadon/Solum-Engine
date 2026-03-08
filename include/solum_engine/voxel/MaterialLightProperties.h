@@ -14,12 +14,14 @@ public:
         std::array<uint8_t, kLookupEntryCount> blockLightStepLoss{};
         std::array<uint8_t, kLookupEntryCount> skyLightVerticalLoss{};
         std::array<uint8_t, kLookupEntryCount> blocksLightMask{};
+        std::array<uint8_t, kLookupEntryCount> emissiveLight{};
     };
 
     static float blockLightOpacity(uint16_t materialId);
     static uint8_t blockLightStepLoss(uint16_t materialId);
     static uint8_t skyLightVerticalLoss(uint16_t materialId);
     static bool blocksLight(uint16_t materialId);
+    static uint8_t emissiveLight(uint16_t materialId);
 
 private:
     static const LookupTables& lookup();

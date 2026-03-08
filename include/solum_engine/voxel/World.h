@@ -95,12 +95,16 @@ public:
     bool tryGetColumnEmptyChunkMask(const ColumnCoord& coord, uint32_t& outMask) const;
     uint64_t generationRevision() const;
     uint64_t playerEditRevision() const;
+    uint64_t lightingRevision() const;
     uint64_t copyGeneratedColumnsSince(uint64_t afterRevision,
                                        std::vector<ColumnCoord>& outColumns,
                                        std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     uint64_t copyPlayerEditedColumnsSince(uint64_t afterRevision,
                                           std::vector<ColumnCoord>& outColumns,
                                           std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
+    uint64_t copyLightingChangedColumnsSince(uint64_t afterRevision,
+                                             std::vector<ColumnCoord>& outColumns,
+                                             std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     void copyGeneratedColumns(std::vector<ColumnCoord>& outColumns) const;
 
     WorldSection createSection(const BlockCoord& origin, const glm::ivec3& extent) const;
@@ -111,9 +115,18 @@ public:
 private:
     struct ColumnGenerationResult;
     struct ChunkPropagationResult;
-    struct ColumnLightingState {
-        uint32_t propagatedChunkMask = 0u;
-        uint32_t queuedChunkMask = 0u;
+    struct ChunkPropagationTask {
+        ChunkCoord coord{};
+        uint64_t targetEpoch = 0u;
+        bool highPriority = false;
+    };
+    struct LightingChunkState {
+        uint64_t topologyEpoch = 1u;
+        uint64_t lightingEpoch = 0u;
+        uint64_t queuedEpoch = 0u;
+        uint64_t inFlightEpoch = 0u;
+        uint8_t dirtyFlags = 0u;
+        uint64_t lastSolveSignature = 0u;
     };
     struct ScheduledColumnJob {
         ColumnCoord coord{};
@@ -129,13 +142,22 @@ private:
     void dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsToSchedule);
     void pumpColumnGenerationQueue();
     void enqueueChunkPropagationCandidatesLocked(const ColumnCoord& coord);
-    void enqueueChunkPropagationIfReadyLocked(const ChunkCoord& coord);
-    void collectChunkPropagationJobsLocked(std::vector<ChunkCoord>& outChunks);
-    void dispatchChunkPropagationJobs(std::vector<ChunkCoord>&& chunksToSchedule);
+    void enqueueChunkPropagationIfReadyLocked(const ChunkCoord& coord, bool highPriority = false);
+    void collectChunkPropagationJobsLocked(std::vector<ChunkPropagationTask>& outChunks);
+    void dispatchChunkPropagationJobs(std::vector<ChunkPropagationTask>&& chunksToSchedule);
     void pumpChunkPropagationQueue();
+    void bumpChunkTopologyEpochLocked(const ChunkCoord& coord, bool highPriority, uint8_t dirtyFlags);
+    LightingChunkState* tryGetLightingChunkStateLocked(const ChunkCoord& coord);
+    const LightingChunkState* tryGetLightingChunkStateLocked(const ChunkCoord& coord) const;
+    bool isChunkKnownLocked(const ChunkCoord& coord) const;
+    uint64_t computeChunkSolveSignatureLocked(const ChunkCoord& coord) const;
+    bool tryApplyImmediateLightingAround(const ChunkCoord& centerChunk);
 
     void onColumnGenerated(const ColumnCoord& coord, Column&& column);
-    bool propagateChunkLighting(const ChunkCoord& coord);
+    bool propagateChunkLighting(const ChunkCoord& coord,
+                                uint64_t targetEpoch,
+                                bool* outLightChanged = nullptr,
+                                uint64_t* outSolveSignature = nullptr);
     bool applyBlockEditLocked(const BlockCoord& coord,
                               const BlockMaterial& newBlock,
                               bool requireCurrentAir,
@@ -180,14 +202,14 @@ private:
     mutable std::shared_mutex worldMutex_;
     std::unordered_map<RegionCoord, std::unique_ptr<Region>> regions_;
     std::unordered_set<ColumnCoord> skycastColumns_;
-    std::unordered_map<ColumnCoord, ColumnLightingState> columnLightingStates_;
+    std::unordered_map<ChunkCoord, LightingChunkState> lightingChunkStates_;
     std::unordered_set<ColumnCoord> generatedColumns_;
     std::vector<ColumnCoord> generatedColumnHistory_;
     std::vector<ColumnCoord> playerEditedColumnHistory_;
+    std::vector<ColumnCoord> lightingChangedColumnHistory_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
-    std::deque<ChunkCoord> queuedChunkPropagationJobs_;
-    std::unordered_set<ChunkCoord> priorityChunkPropagationJobs_;
-    std::unordered_set<ChunkCoord> pendingChunkPropagationJobs_;
+    std::deque<ChunkPropagationTask> queuedChunkPropagationJobs_;
+    std::unordered_map<ChunkCoord, uint64_t> pendingChunkPropagationJobs_;
     std::unordered_set<ColumnCoord> queuedColumnJobs_;
     std::priority_queue<
         QueuedColumnEntry,
@@ -196,6 +218,7 @@ private:
     > queuedColumnHeap_;
     std::atomic<uint64_t> generationRevision_{0};
     std::atomic<uint64_t> playerEditRevision_{0};
+    std::atomic<uint64_t> lightingRevision_{0};
     std::atomic<bool> shuttingDown_{false};
     std::size_t maxInFlightColumnJobs_ = 1;
     std::size_t maxInFlightChunkPropagationJobs_ = 1;

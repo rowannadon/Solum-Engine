@@ -42,6 +42,10 @@ void applyOpacity(MaterialLightProperties::LookupTables& lookup, uint16_t materi
     lookup.skyLightVerticalLoss[materialId] = toSkyVerticalLoss(clampedOpacity);
     lookup.blocksLightMask[materialId] = (clampedOpacity >= kOpaqueThreshold) ? 1u : 0u;
 }
+
+uint8_t toEmissiveLevel(int value) {
+    return static_cast<uint8_t>(std::clamp(value, 0, 15));
+}
 }  // namespace
 
 const MaterialLightProperties::LookupTables& MaterialLightProperties::lookup() {
@@ -51,6 +55,7 @@ const MaterialLightProperties::LookupTables& MaterialLightProperties::lookup() {
         lookup.blockLightStepLoss.fill(kOpaqueLightLoss);
         lookup.skyLightVerticalLoss.fill(15u);
         lookup.blocksLightMask.fill(1u);
+        lookup.emissiveLight.fill(0u);
 
         applyOpacity(lookup, 0u, 0.0f);  // Air is always fully transparent to light.
 
@@ -93,32 +98,42 @@ const MaterialLightProperties::LookupTables& MaterialLightProperties::lookup() {
                 continue;
             }
 
-            if (!entry.contains("blockLightOpacity")) {
-                continue;
-            }
-
-            if (!entry["blockLightOpacity"].is_number()) {
-                std::cerr << "MaterialLightProperties: materials[" << i
-                          << "] field 'blockLightOpacity' must be a number. "
-                          << "Using default 1.0 for this material." << std::endl;
-                continue;
-            }
-
-            float opacity = entry["blockLightOpacity"].get<float>();
-            if (!std::isfinite(opacity)) {
-                std::cerr << "MaterialLightProperties: materials[" << i
-                          << "] field 'blockLightOpacity' must be finite. "
-                          << "Using default 1.0 for this material." << std::endl;
-                continue;
-            }
-
-            if (opacity < 0.0f || opacity > 1.0f) {
-                std::cerr << "MaterialLightProperties: materials[" << i
-                          << "] field 'blockLightOpacity' is clamped to [0.0, 1.0]." << std::endl;
-            }
-
             const uint16_t materialId = static_cast<uint16_t>(i + 1u);
-            applyOpacity(lookup, materialId, opacity);
+            if (entry.contains("blockLightOpacity")) {
+                if (!entry["blockLightOpacity"].is_number()) {
+                    std::cerr << "MaterialLightProperties: materials[" << i
+                              << "] field 'blockLightOpacity' must be a number. "
+                              << "Using default 1.0 for this material." << std::endl;
+                } else {
+                    float opacity = entry["blockLightOpacity"].get<float>();
+                    if (!std::isfinite(opacity)) {
+                        std::cerr << "MaterialLightProperties: materials[" << i
+                                  << "] field 'blockLightOpacity' must be finite. "
+                                  << "Using default 1.0 for this material." << std::endl;
+                    } else {
+                        if (opacity < 0.0f || opacity > 1.0f) {
+                            std::cerr << "MaterialLightProperties: materials[" << i
+                                      << "] field 'blockLightOpacity' is clamped to [0.0, 1.0]." << std::endl;
+                        }
+                        applyOpacity(lookup, materialId, opacity);
+                    }
+                }
+            }
+
+            if (entry.contains("emissiveLight")) {
+                if (!entry["emissiveLight"].is_number_integer()) {
+                    std::cerr << "MaterialLightProperties: materials[" << i
+                              << "] field 'emissiveLight' must be an integer. "
+                              << "Using default 0 for this material." << std::endl;
+                } else {
+                    const int emissive = entry["emissiveLight"].get<int>();
+                    if (emissive < 0 || emissive > 15) {
+                        std::cerr << "MaterialLightProperties: materials[" << i
+                                  << "] field 'emissiveLight' is clamped to [0, 15]." << std::endl;
+                    }
+                    lookup.emissiveLight[materialId] = toEmissiveLevel(emissive);
+                }
+            }
         }
 
         return lookup;
@@ -141,4 +156,8 @@ uint8_t MaterialLightProperties::skyLightVerticalLoss(uint16_t materialId) {
 
 bool MaterialLightProperties::blocksLight(uint16_t materialId) {
     return lookup().blocksLightMask[materialId] != 0u;
+}
+
+uint8_t MaterialLightProperties::emissiveLight(uint16_t materialId) {
+    return lookup().emissiveLight[materialId];
 }

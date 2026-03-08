@@ -28,6 +28,7 @@ struct LoadedMaterialTexture {
     uint8_t randomOffsetDirectionsMask = 0u;
     float randomOffsetAmount = 0.0f;
     float blockLightOpacity = 1.0f;
+    uint8_t emissiveLight = 0u;
     std::vector<uint8_t> pixels;
     uint32_t width = 0u;
     uint32_t height = 0u;
@@ -155,6 +156,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         loaded.randomOffsetDirectionsMask = configMaterials[i].randomOffsetDirectionsMask;
         loaded.randomOffsetAmount = configMaterials[i].randomOffsetAmount;
         loaded.blockLightOpacity = configMaterials[i].blockLightOpacity;
+        loaded.emissiveLight = configMaterials[i].emissiveLight;
         loaded.materialId = static_cast<uint16_t>(kFirstMaterialId + static_cast<uint32_t>(i));
         loaded.textureLayer = static_cast<uint32_t>(i);
 
@@ -369,7 +371,8 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
                 material.randomRotation,
                 material.randomOffsetDirectionsMask,
                 material.randomOffsetAmount,
-                material.blockLightOpacity
+                material.blockLightOpacity,
+                material.emissiveLight
             }
         );
     }
@@ -467,6 +470,10 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
             std::cerr << "MaterialManager: materials[" << i << "] field 'blockLightOpacity' must be a number when present." << std::endl;
             return false;
         }
+        if (entry.contains("emissiveLight") && !entry["emissiveLight"].is_number_integer()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'emissiveLight' must be an integer when present." << std::endl;
+            return false;
+        }
         if (entry.contains("model")) {
             material.model = entry["model"].get<std::string>();
         }
@@ -500,6 +507,15 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
                           << "] field 'blockLightOpacity' must be within [0.0, 1.0]." << std::endl;
                 return false;
             }
+        }
+        if (entry.contains("emissiveLight")) {
+            const int emissive = entry["emissiveLight"].get<int>();
+            if (emissive < 0 || emissive > 15) {
+                std::cerr << "MaterialManager: materials[" << i
+                          << "] field 'emissiveLight' must be within [0, 15]." << std::endl;
+                return false;
+            }
+            material.emissiveLight = static_cast<uint8_t>(emissive);
         }
         outMaterials.push_back(std::move(material));
     }

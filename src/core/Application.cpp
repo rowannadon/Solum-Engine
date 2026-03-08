@@ -473,7 +473,7 @@ void Application::processBlockInteractions() {
     }
 
     if (mouseState.rightClickRequested) {
-        const BlockMaterial placementBlock = UnpackedBlockMaterial{1u, 0, Direction::PlusZ, 0}.pack();
+        const BlockMaterial placementBlock = UnpackedBlockMaterial{5u, 0, Direction::PlusZ, 0}.pack();
         voxelStreaming_.placeBlock(rayHit.placeCoord, placementBlock);
     }
 

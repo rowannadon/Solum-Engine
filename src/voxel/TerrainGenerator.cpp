@@ -266,7 +266,6 @@ uint8_t attenuateLight(uint8_t light, uint8_t loss) {
 
 void rebuildSimpleColumnLighting(Column& col) {
     constexpr uint8_t kMaxSkyLight = 15u;
-    constexpr uint8_t kBaseBlockLight = 0u;
     constexpr int kLevelArea = cfg::CHUNK_SIZE * cfg::CHUNK_SIZE;
     constexpr std::array<glm::ivec2, 4> kCardinalOffsets = {
         glm::ivec2{1, 0},
@@ -361,12 +360,18 @@ void rebuildSimpleColumnLighting(Column& col) {
                 const uint8_t sky = (blocksLightMask[static_cast<size_t>(idx)] != 0u)
                     ? 0u
                     : levelSky[static_cast<size_t>(idx)];
+                const BlockMaterial block = col.getBlock(
+                    static_cast<uint8_t>(x),
+                    static_cast<uint8_t>(y),
+                    static_cast<uint16_t>(z)
+                );
+                const uint8_t emissive = MaterialLightProperties::emissiveLight(block.unpack().id);
 
                 col.setPackedLight(
                     static_cast<uint8_t>(x),
                     static_cast<uint8_t>(y),
                     static_cast<uint16_t>(z),
-                    Chunk::packLight(sky, kBaseBlockLight)
+                    Chunk::packLight(sky, emissive)
                 );
                 skyFromAbove[static_cast<size_t>(idx)] = sky;
             }

@@ -211,9 +211,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
     let skyLight = f32(decode_sky_light(in.packedLight)) / 15.0;
     let blockLight = f32(decode_block_light(in.packedLight)) / 15.0;
-    let skyLightColor = vec3f(1.0, 1.0, 1.0) * skyLight;
-    let blockLightColor = vec3f(1.0, 0.92, 0.62) * blockLight;
-    let totalLightColor = max(vec3f(0.16, 0.16, 0.16), skyLightColor + blockLightColor);
+    let dominantLight = max(skyLight, blockLight);
+    let combinedLight = skyLight + blockLight;
+    let blockTintWeight = select(0.0, blockLight / combinedLight, combinedLight > 0.0);
+    let skyLightColor = vec3f(1.0, 1.0, 1.0);
+    let blockLightColor = vec3f(1.0, 0.92, 0.62);
+    let lightTint = mix(skyLightColor, blockLightColor, blockTintWeight);
+    let totalLightColor = max(vec3f(0.16), lightTint * dominantLight);
     let shaded = max(0.45, shade);
 
     let linearColor = baseColor * shaded * totalLightColor;

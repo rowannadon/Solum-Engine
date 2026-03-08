@@ -81,6 +81,7 @@ private:
                              const ChunkCoord* previousCenterChunk,
                              int32_t centerShiftChunks);
     void scheduleRemeshForPlayerEditedColumns(const ColumnCoord& centerColumn);
+    void scheduleRemeshForLightingChangedColumns(const ColumnCoord& centerColumn);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);
     void scheduleTileLodMeshing(const TileLodCoord& coord,
                                 jobsystem::Priority priority,
@@ -151,6 +152,7 @@ private:
 
     std::atomic<uint64_t> meshRevision_{0};
     std::atomic<uint64_t> processedWorldPlayerEditRevision_{0};
+    std::atomic<uint64_t> processedWorldLightingRevision_{0};
     std::atomic<uint64_t> processedWorldGenerationRevision_{0};
     std::atomic<bool> shuttingDown_{false};
 

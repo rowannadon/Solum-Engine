@@ -27,6 +27,7 @@
   },
   {
     "name": "glowstone",
-    "texture": "glowstone.png"
+    "texture": "glowstone.png",
+    "emissiveLight": 15
   }
 ]

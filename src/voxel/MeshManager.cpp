@@ -367,6 +367,7 @@ MeshManager::MeshManager(const World& world, Config config, std::shared_ptr<cons
     sanitizeConfig(config_);
     meshTileSizeChunks_ = std::max(1, config_.meshTileSizeChunks);
     processedWorldPlayerEditRevision_.store(world_.playerEditRevision(), std::memory_order_release);
+    processedWorldLightingRevision_.store(world_.lightingRevision(), std::memory_order_release);
     processedWorldGenerationRevision_.store(world_.generationRevision(), std::memory_order_release);
 }
 
@@ -425,6 +426,13 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
         processedWorldPlayerEditRevision_.load(std::memory_order_acquire);
     if (worldPlayerEditRevision != processedPlayerEditRevision) {
         scheduleRemeshForPlayerEditedColumns(centerColumn);
+    }
+
+    const uint64_t worldLightingRevision = world_.lightingRevision();
+    const uint64_t processedLightingRevision =
+        processedWorldLightingRevision_.load(std::memory_order_acquire);
+    if (worldLightingRevision != processedLightingRevision) {
+        scheduleRemeshForLightingChangedColumns(centerColumn);
     }
 
     scheduleTilesAround(
@@ -921,6 +929,116 @@ void MeshManager::scheduleRemeshForPlayerEditedColumns(const ColumnCoord& center
             if (targetLod < 0) {
                 continue;
             }
+            const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+                tile.x,
+                tile.y,
+                meshTileSizeChunks_,
+                centerChunk
+            );
+            const int32_t distanceChunks = distances.minDistanceChunks;
+            const int32_t distanceSq = distanceChunks * distanceChunks;
+
+            jobsToSchedule.push_back(ScheduledTileLod{
+                TileLodCoord{tile, static_cast<uint8_t>(targetLod)},
+                distanceSq,
+                jobsystem::Priority::Critical
+            });
+        }
+    }
+
+    std::stable_sort(jobsToSchedule.begin(), jobsToSchedule.end(), [](const ScheduledTileLod& a, const ScheduledTileLod& b) {
+        if (a.distanceSq != b.distanceSq) {
+            return a.distanceSq < b.distanceSq;
+        }
+        if (!(a.coord.tile == b.coord.tile)) {
+            return a.coord.tile < b.coord.tile;
+        }
+        if (a.coord.lodLevel != b.coord.lodLevel) {
+            return a.coord.lodLevel < b.coord.lodLevel;
+        }
+        return false;
+    });
+
+    for (const ScheduledTileLod& scheduled : jobsToSchedule) {
+        scheduleTileLodMeshing(
+            scheduled.coord,
+            scheduled.priority,
+            true,
+            meshTileSizeChunks_ + 2,
+            true
+        );
+    }
+}
+
+void MeshManager::scheduleRemeshForLightingChangedColumns(const ColumnCoord& centerColumn) {
+    struct ScheduledTileLod {
+        TileLodCoord coord{};
+        int32_t distanceSq = 0;
+        jobsystem::Priority priority = jobsystem::Priority::Critical;
+    };
+
+    const uint64_t processedRevision = processedWorldLightingRevision_.load(std::memory_order_acquire);
+    std::vector<ColumnCoord> changedColumns;
+    const uint64_t nextRevision = world_.copyLightingChangedColumnsSince(
+        processedRevision,
+        changedColumns,
+        kPlayerEditRevisionBatch
+    );
+    if (nextRevision == processedRevision) {
+        return;
+    }
+    processedWorldLightingRevision_.store(nextRevision, std::memory_order_release);
+
+    if (changedColumns.empty()) {
+        return;
+    }
+
+    std::unordered_set<MeshTileCoord> tilesToRemesh;
+    const int32_t remeshRadius = std::max(0, maxConfiguredRadius() + meshTileSizeChunks_ + 4);
+    for (const ColumnCoord& coord : changedColumns) {
+        const int32_t dx = std::abs(coord.v.x - centerColumn.v.x);
+        const int32_t dy = std::abs(coord.v.y - centerColumn.v.y);
+        if (dx > remeshRadius || dy > remeshRadius) {
+            continue;
+        }
+
+        const int32_t tileX = floor_div(coord.v.x, meshTileSizeChunks_);
+        const int32_t tileY = floor_div(coord.v.y, meshTileSizeChunks_);
+        tilesToRemesh.insert(MeshTileCoord{tileX, tileY});
+    }
+    if (tilesToRemesh.empty()) {
+        return;
+    }
+
+    const ChunkCoord centerChunk = hasLastScheduledCenter_
+        ? lastScheduledCenterChunk_
+        : ChunkCoord{centerColumn.v.x, centerColumn.v.y, 0};
+    const glm::vec3 playerWorldPosition = lastPlayerWorldPosition_;
+    const float sseProjectionScale = hasLastSseProjectionScale_
+        ? lastSseProjectionScale_
+        : config_.lodSseFallbackProjectionScale;
+
+    std::vector<ScheduledTileLod> jobsToSchedule;
+    jobsToSchedule.reserve(tilesToRemesh.size());
+
+    {
+        std::shared_lock<std::shared_mutex> lock(meshMutex_);
+        for (const MeshTileCoord& tile : tilesToRemesh) {
+            const auto tileIt = meshTiles_.find(tile);
+
+            const int8_t desired = (tileIt != meshTiles_.end() && tileIt->second.desiredLod >= 0)
+                ? tileIt->second.desiredLod
+                : desiredLodForTile(tile, centerChunk, playerWorldPosition, sseProjectionScale, 0);
+            if (desired < 0) {
+                continue;
+            }
+
+            const int8_t selected = (tileIt != meshTiles_.end()) ? tileIt->second.selectedLod : -1;
+            const int8_t targetLod = (selected >= 0) ? selected : desired;
+            if (targetLod < 0) {
+                continue;
+            }
+
             const FootprintDistanceRange distances = footprintDistanceRangeForCell(
                 tile.x,
                 tile.y,
