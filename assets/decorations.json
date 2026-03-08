@@ -1,0 +1,10 @@
+[
+  {
+    "material": "tall_grass",
+    "selectionWeight": 10
+  },
+  {
+    "material": "sprout",
+    "selectionWeight": 1
+  }
+]

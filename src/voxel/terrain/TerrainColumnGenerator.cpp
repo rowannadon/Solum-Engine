@@ -3,19 +3,23 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "lodepng/lodepng.h"
 #include "nlohmann_json/json.hpp"
 #include "solum_engine/resources/Constants.h"
+#include "solum_engine/voxel/MaterialRegistry.h"
 
 namespace {
+using json = nlohmann::json;
 
 int wrapIndex(int value, int size) {
     if (size <= 0) {
@@ -37,79 +41,13 @@ std::string resolveHeightmapPath() {
     return std::string(RESOURCE_DIR) + "/height/heightmap6.png";
 }
 
-uint16_t resolveTallGrassMaterialId() {
-    const std::filesystem::path materialPath = std::filesystem::path(RESOURCE_DIR) / "materials.json";
-    std::ifstream file(materialPath);
-    if (!file.is_open()) {
-        std::cerr << "TerrainGenerator: unable to open '" << materialPath.string()
-                  << "', defaulting tall grass material ID to "
-                  << terrain_internal::kFallbackTallGrassMaterialId << std::endl;
-        return terrain_internal::kFallbackTallGrassMaterialId;
-    }
-
-    nlohmann::json root;
-    try {
-        file >> root;
-    } catch (const std::exception& e) {
-        std::cerr << "TerrainGenerator: failed to parse '" << materialPath.string() << "': "
-                  << e.what() << ". Defaulting tall grass material ID to "
-                  << terrain_internal::kFallbackTallGrassMaterialId << std::endl;
-        return terrain_internal::kFallbackTallGrassMaterialId;
-    }
-
-    const nlohmann::json* materialsJson = nullptr;
-    if (root.is_array()) {
-        materialsJson = &root;
-    } else if (root.is_object() && root.contains("materials") && root["materials"].is_array()) {
-        materialsJson = &root["materials"];
-    }
-    if (materialsJson == nullptr) {
-        std::cerr << "TerrainGenerator: '" << materialPath.string()
-                  << "' does not contain a materials array. Defaulting tall grass material ID to "
-                  << terrain_internal::kFallbackTallGrassMaterialId << std::endl;
-        return terrain_internal::kFallbackTallGrassMaterialId;
-    }
-
-    for (size_t i = 0; i < materialsJson->size(); ++i) {
-        const nlohmann::json& entry = (*materialsJson)[i];
-        if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string()) {
-            continue;
-        }
-        if (entry["name"].get<std::string>() == "tall_grass") {
-            return static_cast<uint16_t>(i + 1u);
-        }
-    }
-
-    std::cerr << "TerrainGenerator: material 'tall_grass' not found in '" << materialPath.string()
-              << "', defaulting tall grass material ID to "
-              << terrain_internal::kFallbackTallGrassMaterialId << std::endl;
-    return terrain_internal::kFallbackTallGrassMaterialId;
+std::filesystem::path decorationConfigPath() {
+    return std::filesystem::path(RESOURCE_DIR) / "decorations.json";
 }
 
-float resolveTallGrassChance() {
-    const char* envChance = std::getenv("SOLUM_TALL_GRASS_CHANCE");
-    if (envChance == nullptr || envChance[0] == '\0') {
-        return terrain_internal::kDefaultTallGrassChance;
-    }
-
-    char* endPtr = nullptr;
-    const double parsed = std::strtod(envChance, &endPtr);
-    if (endPtr == envChance || *endPtr != '\0' || !std::isfinite(parsed)) {
-        std::cerr << "TerrainGenerator: invalid SOLUM_TALL_GRASS_CHANCE='" << envChance
-                  << "', using default " << terrain_internal::kDefaultTallGrassChance << std::endl;
-        return terrain_internal::kDefaultTallGrassChance;
-    }
-
-    if (parsed < 0.0 || parsed > 1.0) {
-        std::cerr << "TerrainGenerator: clamping SOLUM_TALL_GRASS_CHANCE='" << envChance
-                  << "' to [0, 1]" << std::endl;
-    }
-
-    return std::clamp(static_cast<float>(parsed), 0.0f, 1.0f);
-}
-
-float hashedUnitFloatForWorldPosition(int worldX, int worldY, int worldZ) {
+uint64_t hashWorldPosition(int worldX, int worldY, int worldZ, uint64_t salt) {
     uint64_t value = 0x9E3779B97F4A7C15ull;
+    value ^= salt + 0x517CC1B727220A95ull + (value << 6u) + (value >> 2u);
     value ^= static_cast<uint64_t>(static_cast<uint32_t>(worldX)) + 0x9E3779B9u + (value << 6u) + (value >> 2u);
     value ^= static_cast<uint64_t>(static_cast<uint32_t>(worldY)) + 0x85EBCA6Bu + (value << 6u) + (value >> 2u);
     value ^= static_cast<uint64_t>(static_cast<uint32_t>(worldZ)) + 0xC2B2AE35u + (value << 6u) + (value >> 2u);
@@ -118,9 +56,114 @@ float hashedUnitFloatForWorldPosition(int worldX, int worldY, int worldZ) {
     value ^= (value >> 33u);
     value *= 0xc4ceb9fe1a85ec53ull;
     value ^= (value >> 33u);
+    return value;
+}
 
-    const uint32_t topBits = static_cast<uint32_t>(value >> 40u);
+float hashedUnitFloatForWorldPosition(int worldX, int worldY, int worldZ, uint64_t salt) {
+    const uint64_t hashed = hashWorldPosition(worldX, worldY, worldZ, salt);
+    const uint32_t topBits = static_cast<uint32_t>(hashed >> 40u);
     return static_cast<float>(topBits) / static_cast<float>(0xFFFFFFu);
+}
+
+terrain_internal::TerrainDecorationConfig loadDecorationConfig() {
+    terrain_internal::TerrainDecorationConfig config{};
+    config.placementChance = terrain_internal::kDefaultDecorationChance;
+
+    const std::filesystem::path path = decorationConfigPath();
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        std::cerr << "TerrainGenerator: unable to open decoration config '" << path.string()
+                  << "'. No decorations will be placed." << std::endl;
+        return config;
+    }
+
+    json root;
+    try {
+        file >> root;
+    } catch (const std::exception& e) {
+        std::cerr << "TerrainGenerator: failed to parse decoration config '" << path.string()
+                  << "': " << e.what() << ". No decorations will be placed." << std::endl;
+        return config;
+    }
+
+    if (!root.is_array()) {
+        std::cerr << "TerrainGenerator: decoration config '" << path.string()
+                  << "' must be an array. No decorations will be placed." << std::endl;
+        return config;
+    }
+
+    config.definitions.reserve(root.size());
+    for (size_t i = 0; i < root.size(); ++i) {
+        const json& entry = root[i];
+        if (!entry.is_object()) {
+            std::cerr << "TerrainGenerator: decorations[" << i << "] must be an object." << std::endl;
+            continue;
+        }
+        if (!entry.contains("material") || !entry["material"].is_string()) {
+            std::cerr << "TerrainGenerator: decorations[" << i << "] is missing string field 'material'." << std::endl;
+            continue;
+        }
+
+        const std::string materialName = entry["material"].get<std::string>();
+        BlockMaterial material{};
+        if (!MaterialRegistry::tryResolveBlock(materialName, material)) {
+            std::cerr << "TerrainGenerator: decorations[" << i << "] references unknown material '"
+                      << materialName << "'." << std::endl;
+            continue;
+        }
+
+        uint32_t selectionWeight = 1u;
+        if (entry.contains("selectionWeight")) {
+            if (!entry["selectionWeight"].is_number_integer()) {
+                std::cerr << "TerrainGenerator: decorations[" << i
+                          << "] field 'selectionWeight' must be an integer." << std::endl;
+                continue;
+            }
+            const int64_t weight = entry["selectionWeight"].get<int64_t>();
+            if (weight <= 0) {
+                std::cerr << "TerrainGenerator: decorations[" << i
+                          << "] field 'selectionWeight' must be greater than zero." << std::endl;
+                continue;
+            }
+            selectionWeight = static_cast<uint32_t>(std::min<int64_t>(weight, std::numeric_limits<uint32_t>::max()));
+        }
+
+        config.definitions.push_back(terrain_internal::TerrainDecorationDefinition{
+            material,
+            selectionWeight
+        });
+        config.totalSelectionWeight += static_cast<uint64_t>(selectionWeight);
+    }
+
+    if (config.definitions.empty()) {
+        std::cerr << "TerrainGenerator: decoration config '" << path.string()
+                  << "' contains no valid decoration definitions." << std::endl;
+    }
+
+    return config;
+}
+
+const terrain_internal::TerrainDecorationDefinition* pickDecorationForWorldPosition(
+    const terrain_internal::TerrainDecorationConfig& config,
+    int worldX,
+    int worldY,
+    int worldZ
+) {
+    if (config.definitions.empty() || config.totalSelectionWeight == 0u) {
+        return nullptr;
+    }
+
+    const uint64_t selector =
+        hashWorldPosition(worldX, worldY, worldZ, 0xC4B8A0D4F6E51923ull) % config.totalSelectionWeight;
+    uint64_t runningWeight = 0u;
+    for (const terrain_internal::TerrainDecorationDefinition& definition : config.definitions) {
+        runningWeight += static_cast<uint64_t>(std::max<uint32_t>(definition.selectionWeight, 1u));
+        if (selector < runningWeight) {
+            return &definition;
+        }
+    }
+
+    return &config.definitions.back();
 }
 
 terrain_internal::HeightmapData loadHeightmap() {
@@ -218,10 +261,7 @@ const HeightmapData& heightmapData() {
 }
 
 TerrainDecorationConfig decorationConfig() {
-    static const TerrainDecorationConfig kConfig{
-        resolveTallGrassChance(),
-        resolveTallGrassMaterialId()
-    };
+    static const TerrainDecorationConfig kConfig = loadDecorationConfig();
     return kConfig;
 }
 
@@ -277,12 +317,10 @@ void generateTerrainColumn(const glm::ivec3& origin,
                            const TerrainDecorationConfig& config) {
     UnpackedBlockMaterial stone{1, 0, Direction::PlusZ, 0};
     UnpackedBlockMaterial grass{2, 0, Direction::PlusZ, 0};
-    UnpackedBlockMaterial tallGrass{config.tallGrassMaterialId, 0, Direction::PlusZ, 0};
     UnpackedBlockMaterial air{0, 0, Direction::PlusZ, 0};
 
     const BlockMaterial stonePacked = stone.pack();
     const BlockMaterial grassPacked = grass.pack();
-    const BlockMaterial tallGrassPacked = tallGrass.pack();
     const BlockMaterial airPacked = air.pack();
 
     constexpr int kChunkSize = cfg::CHUNK_SIZE;
@@ -426,11 +464,18 @@ void generateTerrainColumn(const glm::ivec3& origin,
                 const int worldX = origin.x + x;
                 const int worldY = origin.y + y;
                 const int worldZ = origin.z + z + 1;
-                if (hashedUnitFloatForWorldPosition(worldX, worldY, worldZ) >= config.tallGrassChance) {
+                if (hashedUnitFloatForWorldPosition(worldX, worldY, worldZ, 0xAB4F12D8E91CC327ull) >=
+                    config.placementChance) {
                     continue;
                 }
 
-                col.setBlock(x, y, z + 1, tallGrassPacked);
+                const TerrainDecorationDefinition* decoration =
+                    pickDecorationForWorldPosition(config, worldX, worldY, worldZ);
+                if (decoration == nullptr) {
+                    continue;
+                }
+
+                col.setBlock(x, y, z + 1, decoration->material);
             }
         }
     }

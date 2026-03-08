@@ -15,6 +15,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "solum_engine/render/RuntimeTimingMerger.h"
+#include "solum_engine/voxel/MaterialRegistry.h"
 #include "solum_engine/voxel/World.h"
 
 bool Application::Initialize() {
@@ -480,7 +481,11 @@ void Application::processBlockInteractions() {
     }
 
     if (mouseState.rightClickRequested) {
-        const BlockMaterial placementBlock = UnpackedBlockMaterial{6u, 0, Direction::PlusZ, 0}.pack();
+        static const BlockMaterial kPlacementBlock = MaterialRegistry::resolveBlockOr(
+            "glowstone",
+            UnpackedBlockMaterial{6u, 0, Direction::PlusZ, 0}.pack()
+        );
+        const BlockMaterial placementBlock = kPlacementBlock;
         voxelStreaming_.placeBlock(rayHit.placeCoord, placementBlock);
     }
 

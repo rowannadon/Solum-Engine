@@ -18,8 +18,7 @@ inline constexpr float kNoiseVerticalFrequency = 0.04f;
 inline constexpr float kNoiseMaxStrengthBlocks = 64.0f;
 inline constexpr float kNoiseFalloffBlocks = 55.0f;
 inline constexpr float kGrassFlatnessThreshold = 0.75f;
-inline constexpr float kDefaultTallGrassChance = 0.25f;
-inline constexpr uint16_t kFallbackTallGrassMaterialId = 5u;
+inline constexpr float kDefaultDecorationChance = 0.25f;
 
 struct HeightmapData {
     int width = 0;
@@ -28,9 +27,15 @@ struct HeightmapData {
     bool valid = false;
 };
 
+struct TerrainDecorationDefinition {
+    BlockMaterial material{};
+    uint32_t selectionWeight = 1u;
+};
+
 struct TerrainDecorationConfig {
-    float tallGrassChance = kDefaultTallGrassChance;
-    uint16_t tallGrassMaterialId = kFallbackTallGrassMaterialId;
+    float placementChance = kDefaultDecorationChance;
+    std::vector<TerrainDecorationDefinition> definitions;
+    uint64_t totalSelectionWeight = 0u;
 };
 
 const HeightmapData& heightmapData();

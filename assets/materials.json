@@ -40,6 +40,18 @@
     "randomOffsetAmount": 0.25
   },
   {
+    "name": "sprout",
+    "texture": "sprout.png",
+    "model": "grass_model_small_2.obj",
+    "aoOccluder": false,
+    "randomRotation": true,
+    "doubleSided": true,
+    "blockLightOpacity": 0.0,
+    "randomRotationDirections": "Z",
+    "randomOffsetDirections": "XY",
+    "randomOffsetAmount": 0.25
+  },
+  {
     "name": "glowstone",
     "texture": "glowstone.png",
     "emissiveLight": 15
