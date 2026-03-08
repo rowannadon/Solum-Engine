@@ -28,6 +28,7 @@ struct MaterialDefinition {
     float randomOffsetAmount = 0.0f;
     float blockLightOpacity = 1.0f;
     uint8_t emissiveLight = 0u;
+    bool aoOccluder = true;
 };
 
 class MaterialManager {
@@ -68,6 +69,7 @@ private:
         float randomOffsetAmount = 0.0f;
         float blockLightOpacity = 1.0f;
         uint8_t emissiveLight = 0u;
+        bool aoOccluder = true;
     };
 
     bool buildDefaultMaterials(BufferManager& bufferManager, TextureManager& textureManager);

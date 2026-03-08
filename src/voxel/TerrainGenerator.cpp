@@ -8,11 +8,15 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include "lodepng/lodepng.h"
+#include "nlohmann_json/json.hpp"
 
 namespace {
 
@@ -24,6 +28,8 @@ constexpr float kNoiseVerticalFrequency = 0.04f;
 constexpr float kNoiseMaxStrengthBlocks = 64.0f;
 constexpr float kNoiseFalloffBlocks = 55.0f;
 constexpr float kGrassFlatnessThreshold = 0.75f;
+constexpr float kDefaultTallGrassChance = 0.25f;
+constexpr uint16_t kFallbackTallGrassMaterialId = 5u;
 
 struct HeightmapData {
     int width = 0;
@@ -50,6 +56,91 @@ std::string resolveHeightmapPath() {
         return std::string(envPath);
     }
     return std::string(RESOURCE_DIR) + "/height/heightmap6.png";
+}
+
+uint16_t resolveTallGrassMaterialId() {
+    const std::filesystem::path materialPath = std::filesystem::path(RESOURCE_DIR) / "materials.json";
+    std::ifstream file(materialPath);
+    if (!file.is_open()) {
+        std::cerr << "TerrainGenerator: unable to open '" << materialPath.string()
+                  << "', defaulting tall grass material ID to " << kFallbackTallGrassMaterialId << std::endl;
+        return kFallbackTallGrassMaterialId;
+    }
+
+    nlohmann::json root;
+    try {
+        file >> root;
+    } catch (const std::exception& e) {
+        std::cerr << "TerrainGenerator: failed to parse '" << materialPath.string() << "': "
+                  << e.what() << ". Defaulting tall grass material ID to "
+                  << kFallbackTallGrassMaterialId << std::endl;
+        return kFallbackTallGrassMaterialId;
+    }
+
+    const nlohmann::json* materialsJson = nullptr;
+    if (root.is_array()) {
+        materialsJson = &root;
+    } else if (root.is_object() && root.contains("materials") && root["materials"].is_array()) {
+        materialsJson = &root["materials"];
+    }
+    if (materialsJson == nullptr) {
+        std::cerr << "TerrainGenerator: '" << materialPath.string()
+                  << "' does not contain a materials array. Defaulting tall grass material ID to "
+                  << kFallbackTallGrassMaterialId << std::endl;
+        return kFallbackTallGrassMaterialId;
+    }
+
+    for (size_t i = 0; i < materialsJson->size(); ++i) {
+        const nlohmann::json& entry = (*materialsJson)[i];
+        if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string()) {
+            continue;
+        }
+        if (entry["name"].get<std::string>() == "tall_grass") {
+            return static_cast<uint16_t>(i + 1u);
+        }
+    }
+
+    std::cerr << "TerrainGenerator: material 'tall_grass' not found in '" << materialPath.string()
+              << "', defaulting tall grass material ID to " << kFallbackTallGrassMaterialId << std::endl;
+    return kFallbackTallGrassMaterialId;
+}
+
+float resolveTallGrassChance() {
+    const char* envChance = std::getenv("SOLUM_TALL_GRASS_CHANCE");
+    if (envChance == nullptr || envChance[0] == '\0') {
+        return kDefaultTallGrassChance;
+    }
+
+    char* endPtr = nullptr;
+    const double parsed = std::strtod(envChance, &endPtr);
+    if (endPtr == envChance || *endPtr != '\0' || !std::isfinite(parsed)) {
+        std::cerr << "TerrainGenerator: invalid SOLUM_TALL_GRASS_CHANCE='" << envChance
+                  << "', using default " << kDefaultTallGrassChance << std::endl;
+        return kDefaultTallGrassChance;
+    }
+
+    if (parsed < 0.0 || parsed > 1.0) {
+        std::cerr << "TerrainGenerator: clamping SOLUM_TALL_GRASS_CHANCE='" << envChance
+                  << "' to [0, 1]" << std::endl;
+    }
+
+    return std::clamp(static_cast<float>(parsed), 0.0f, 1.0f);
+}
+
+float hashedUnitFloatForWorldPosition(int worldX, int worldY, int worldZ) {
+    uint64_t value = 0x9E3779B97F4A7C15ull;
+    value ^= static_cast<uint64_t>(static_cast<uint32_t>(worldX)) + 0x9E3779B9u + (value << 6u) + (value >> 2u);
+    value ^= static_cast<uint64_t>(static_cast<uint32_t>(worldY)) + 0x85EBCA6Bu + (value << 6u) + (value >> 2u);
+    value ^= static_cast<uint64_t>(static_cast<uint32_t>(worldZ)) + 0xC2B2AE35u + (value << 6u) + (value >> 2u);
+    value ^= (value >> 33u);
+    value *= 0xff51afd7ed558ccdull;
+    value ^= (value >> 33u);
+    value *= 0xc4ceb9fe1a85ec53ull;
+    value ^= (value >> 33u);
+
+    // Use high entropy bits and normalize to [0, 1].
+    const uint32_t topBits = static_cast<uint32_t>(value >> 40u);
+    return static_cast<float>(topBits) / static_cast<float>(0xFFFFFFu);
 }
 
 HeightmapData loadHeightmap() {
@@ -411,13 +502,17 @@ int findSurfaceForStructure(int worldX, int worldY, const DensityFn& densityAtWo
 
 void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
     const HeightmapData& heightmap = getHeightmapData();
+    static const float kTallGrassChance = resolveTallGrassChance();
+    static const uint16_t kTallGrassMaterialId = resolveTallGrassMaterialId();
 
     UnpackedBlockMaterial stone{1, 0, Direction::PlusZ, 0};
     UnpackedBlockMaterial grass{2, 0, Direction::PlusZ, 0};
+    UnpackedBlockMaterial tallGrass{kTallGrassMaterialId, 0, Direction::PlusZ, 0};
     UnpackedBlockMaterial air{0, 0, Direction::PlusZ, 0};
 
     const BlockMaterial stonePacked = stone.pack();
     const BlockMaterial grassPacked = grass.pack();
+    const BlockMaterial tallGrassPacked = tallGrass.pack();
     const BlockMaterial airPacked = air.pack();
 
     constexpr int kChunkSize = cfg::CHUNK_SIZE;
@@ -544,6 +639,29 @@ void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
                 const float flatness = (gradLenSq > 1e-6f) ? (std::abs(dz) / std::sqrt(gradLenSq)) : 1.0f;
 
                 col.setBlock(x, y, z, (flatness >= kGrassFlatnessThreshold) ? grassPacked : stonePacked);
+            }
+        }
+    }
+
+    // Decorate grass surfaces with tall grass using deterministic per-voxel hashing.
+    for (int z = 0; z < (kColumnHeight - 1); ++z) {
+        for (int y = 0; y < kChunkSize; ++y) {
+            for (int x = 0; x < kChunkSize; ++x) {
+                if (col.getBlock(x, y, z).unpack().id != grass.id) {
+                    continue;
+                }
+                if (col.getBlock(x, y, z + 1).unpack().id != air.id) {
+                    continue;
+                }
+
+                const int worldX = origin.x + x;
+                const int worldY = origin.y + y;
+                const int worldZ = origin.z + z + 1;
+                if (hashedUnitFloatForWorldPosition(worldX, worldY, worldZ) >= kTallGrassChance) {
+                    continue;
+                }
+
+                col.setBlock(x, y, z + 1, tallGrassPacked);
             }
         }
     }

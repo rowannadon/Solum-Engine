@@ -23,6 +23,7 @@ struct BlockModelLibrary {
 
     std::array<uint16_t, kMaterialEntryCount> materialToModel{};
     std::array<uint8_t, kMaterialEntryCount> materialDoubleSided{};
+    std::array<uint8_t, kMaterialEntryCount> materialAoOccluder{};
     std::vector<BlockModelDefinition> models{};
     std::vector<BlockModelQuadRef> quadRefs{};
     uint16_t fallbackModelIndex = 0u;
@@ -41,5 +42,9 @@ struct BlockModelLibrary {
 
     bool isMaterialDoubleSided(uint16_t materialId) const {
         return materialDoubleSided[materialId] != 0u;
+    }
+
+    bool isMaterialAoOccluder(uint16_t materialId) const {
+        return materialAoOccluder[materialId] != 0u;
     }
 };

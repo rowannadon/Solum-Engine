@@ -25,13 +25,16 @@
     "randomRotationDirections": "XYZ",
     "randomOffsetDirections": "XYZ",
     "randomOffsetAmount": 0.1,
-    "blockLightOpacity": 0.0
+    "blockLightOpacity": 0.25
   },
   {
-    "name": "grass",
-    "texture": "sprout.png",
+    "name": "tall_grass",
+    "texture": "short_grass.png",
     "model": "grass_model_small_2.obj",
+    "aoOccluder": false,
     "randomRotation": true,
+    "doubleSided": true,
+    "blockLightOpacity": 0.0,
     "randomRotationDirections": "Z"
   },
   {

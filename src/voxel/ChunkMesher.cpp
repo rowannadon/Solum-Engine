@@ -12,10 +12,6 @@ namespace {
     constexpr int kPaddedPlaneArea = kChunkSizePadded * kChunkSizePadded;
     constexpr int kPaddedBlockCount = kChunkSizePadded * kChunkSizePadded * kChunkSizePadded;
 
-    inline bool IsSolidForCulling(BlockMaterial blockID) {
-        return blockID.unpack().id != kAirBlockId;
-    }
-
     uint8_t maxPackedLight(uint8_t a, uint8_t b) {
         return Chunk::packLight(
             std::max(Chunk::unpackSkyLight(a), Chunk::unpackSkyLight(b)),
@@ -54,6 +50,16 @@ namespace {
             return false;
         }
         return blockModelLibrary->isMaterialDoubleSided(materialId);
+    }
+
+    bool isMaterialAoOccluder(const BlockModelLibrary* blockModelLibrary, uint16_t materialId) {
+        if (materialId == kAirBlockId) {
+            return false;
+        }
+        if (blockModelLibrary == nullptr) {
+            return true;
+        }
+        return blockModelLibrary->isMaterialAoOccluder(materialId);
     }
 
     bool isNeighborTransparentForMeshing(const BlockModelLibrary* blockModelLibrary, BlockMaterial neighborBlockID) {
@@ -283,8 +289,9 @@ ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
         activeMeshlet.quadCount += 1;
     };
 
-    auto isSolidAtPadded = [&paddedBlockData, &paddedIndex](const glm::ivec3& coord) {
-        return IsSolidForCulling(paddedBlockData[paddedIndex(coord.x, coord.y, coord.z)]);
+    auto isSolidAtPadded = [&paddedBlockData, &paddedIndex, blockModelLibrary](const glm::ivec3& coord) {
+        const uint16_t materialId = paddedBlockData[paddedIndex(coord.x, coord.y, coord.z)].unpack().id;
+        return isMaterialAoOccluder(blockModelLibrary, materialId);
     };
 
     // Iterate through the actual chunk boundaries inside the padded array
@@ -460,8 +467,9 @@ ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,
         activeMeshlet.quadCount += 1;
     };
 
-    auto isSolidAtCoord = [&source](const glm::ivec3& coord) {
-        return IsSolidForCulling(source.getBlock(BlockCoord{coord.x, coord.y, coord.z}));
+    auto isSolidAtCoord = [&source, blockModelLibrary](const glm::ivec3& coord) {
+        const uint16_t materialId = source.getBlock(BlockCoord{coord.x, coord.y, coord.z}).unpack().id;
+        return isMaterialAoOccluder(blockModelLibrary, materialId);
     };
 
     for (int x = 0; x < sectionExtent.x; ++x) {

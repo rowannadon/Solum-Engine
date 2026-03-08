@@ -31,6 +31,7 @@ struct LoadedMaterialTexture {
     float randomOffsetAmount = 0.0f;
     float blockLightOpacity = 1.0f;
     uint8_t emissiveLight = 0u;
+    bool aoOccluder = true;
     std::vector<uint8_t> pixels;
     uint32_t width = 0u;
     uint32_t height = 0u;
@@ -166,6 +167,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         loaded.randomOffsetAmount = configMaterials[i].randomOffsetAmount;
         loaded.blockLightOpacity = configMaterials[i].blockLightOpacity;
         loaded.emissiveLight = configMaterials[i].emissiveLight;
+        loaded.aoOccluder = configMaterials[i].aoOccluder;
         loaded.materialId = static_cast<uint16_t>(kFirstMaterialId + static_cast<uint32_t>(i));
         loaded.textureLayer = static_cast<uint32_t>(i);
 
@@ -207,6 +209,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
     auto blockModels = std::make_shared<BlockModelLibrary>();
     blockModels->materialToModel.fill(0u);
     blockModels->materialDoubleSided.fill(0u);
+    blockModels->materialAoOccluder.fill(1u);
 
     std::unordered_map<std::string, uint16_t> modelIndexByName;
     auto appendModelToLibrary = [&](const std::string& modelName, uint16_t& outIndex) -> bool {
@@ -267,6 +270,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
     blockModels->fallbackModelIndex = fallbackModelIndex;
     blockModels->materialToModel[0] = fallbackModelIndex;
     blockModels->materialDoubleSided[0] = 0u;
+    blockModels->materialAoOccluder[0] = 0u;
 
     for (const LoadedMaterialTexture& material : loadedMaterials) {
         const std::string& modelName = material.modelRelativePath.empty()
@@ -278,6 +282,7 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         }
         blockModels->materialToModel[material.materialId] = modelIndex;
         blockModels->materialDoubleSided[material.materialId] = material.doubleSided ? 1u : 0u;
+        blockModels->materialAoOccluder[material.materialId] = material.aoOccluder ? 1u : 0u;
     }
     blockModelLibrary_ = std::move(blockModels);
 
@@ -398,7 +403,8 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
                 material.randomOffsetDirectionsMask,
                 material.randomOffsetAmount,
                 material.blockLightOpacity,
-                material.emissiveLight
+                material.emissiveLight,
+                material.aoOccluder
             }
         );
     }
@@ -508,6 +514,10 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
             std::cerr << "MaterialManager: materials[" << i << "] field 'emissiveLight' must be an integer when present." << std::endl;
             return false;
         }
+        if (entry.contains("aoOccluder") && !entry["aoOccluder"].is_boolean()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'aoOccluder' must be a boolean when present." << std::endl;
+            return false;
+        }
         if (entry.contains("model")) {
             material.model = entry["model"].get<std::string>();
         }
@@ -562,6 +572,9 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
                 return false;
             }
             material.emissiveLight = static_cast<uint8_t>(emissive);
+        }
+        if (entry.contains("aoOccluder")) {
+            material.aoOccluder = entry["aoOccluder"].get<bool>();
         }
         outMaterials.push_back(std::move(material));
     }
