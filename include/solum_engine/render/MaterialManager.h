@@ -21,7 +21,9 @@ struct MaterialDefinition {
     float roughness = 1.0f;
     float metallic = 0.0f;
     bool doubleSided = false;
+    bool randomTextureRotation = false;
     bool randomRotation = false;
+    uint8_t randomRotationDirectionsMask = 0x7u;
     uint8_t randomOffsetDirectionsMask = 0u;
     float randomOffsetAmount = 0.0f;
     float blockLightOpacity = 1.0f;
@@ -59,7 +61,9 @@ private:
         std::string texture;
         std::string model;
         bool doubleSided = false;
+        bool randomTextureRotation = false;
         bool randomRotation = false;
+        uint8_t randomRotationDirectionsMask = 0x7u;
         uint8_t randomOffsetDirectionsMask = 0u;
         float randomOffsetAmount = 0.0f;
         float blockLightOpacity = 1.0f;

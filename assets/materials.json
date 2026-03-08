@@ -7,7 +7,7 @@
   {
     "name": "grass",
     "texture": "grass.png",
-    "randomRotation": true,
+    "randomTextureRotation": true,
     "blockLightOpacity": 1.0
   },
   {
@@ -18,12 +18,13 @@
   {
     "name": "leaf",
     "texture": "oak_leaves.png",
-    
     "doubleSided": true,
-    "randomRotation": false,
+    "randomTextureRotation": false,
+    "randomRotation": true,
+    "randomRotationDirections": "XYZ",
     "randomOffsetDirections": "XYZ",
-    "randomOffsetAmount": 0.06,
-    "blockLightOpacity": 0.1
+    "randomOffsetAmount": 0.1,
+    "blockLightOpacity": 0.0
   },
   {
     "name": "glowstone",

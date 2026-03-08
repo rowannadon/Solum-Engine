@@ -19,6 +19,7 @@ struct ModelQuad {
 struct MeshletQuadVertexSample {
     worldPosition: vec3f,
     blockCoord: vec3i,
+    blockSize: f32,
     texCoord: vec2f,
     cornerOffset: vec3f,
     quadData: u32,
@@ -183,6 +184,7 @@ fn sample_meshlet_quad_vertex(
     var sample: MeshletQuadVertexSample;
     sample.worldPosition = worldPosition;
     sample.blockCoord = blockCoord;
+    sample.blockSize = voxelScale;
     sample.texCoord = texCoord;
     sample.cornerOffset = cornerOffset;
     sample.quadData = quadData;

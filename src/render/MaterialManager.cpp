@@ -24,7 +24,9 @@ struct LoadedMaterialTexture {
     std::string textureRelativePath;
     std::string modelRelativePath;
     bool doubleSided = false;
+    bool randomTextureRotation = false;
     bool randomRotation = false;
+    uint8_t randomRotationDirectionsMask = 0x7u;
     uint8_t randomOffsetDirectionsMask = 0u;
     float randomOffsetAmount = 0.0f;
     float blockLightOpacity = 1.0f;
@@ -36,10 +38,14 @@ struct LoadedMaterialTexture {
     uint32_t textureLayer = 0u;
 };
 
-constexpr uint32_t kRandomRotationFlagBit = 1u << 0u;
+constexpr uint32_t kRandomTextureRotationFlagBit = 1u << 0u;
 constexpr uint32_t kRandomOffsetXFlagBit = 1u << 1u;
 constexpr uint32_t kRandomOffsetYFlagBit = 1u << 2u;
 constexpr uint32_t kRandomOffsetZFlagBit = 1u << 3u;
+constexpr uint32_t kRandomModelRotationEnabledFlagBit = 1u << 4u;
+constexpr uint32_t kRandomModelRotationXFlagBit = 1u << 5u;
+constexpr uint32_t kRandomModelRotationYFlagBit = 1u << 6u;
+constexpr uint32_t kRandomModelRotationZFlagBit = 1u << 7u;
 
 bool parseDirectionMask(const std::string& value, uint8_t& outMask) {
     outMask = 0u;
@@ -152,7 +158,9 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
         loaded.textureRelativePath = textureRelativePath;
         loaded.modelRelativePath = configMaterials[i].model;
         loaded.doubleSided = configMaterials[i].doubleSided;
+        loaded.randomTextureRotation = configMaterials[i].randomTextureRotation;
         loaded.randomRotation = configMaterials[i].randomRotation;
+        loaded.randomRotationDirectionsMask = configMaterials[i].randomRotationDirectionsMask;
         loaded.randomOffsetDirectionsMask = configMaterials[i].randomOffsetDirectionsMask;
         loaded.randomOffsetAmount = configMaterials[i].randomOffsetAmount;
         loaded.blockLightOpacity = configMaterials[i].blockLightOpacity;
@@ -343,8 +351,20 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
 
     for (const LoadedMaterialTexture& material : loadedMaterials) {
         uint32_t flags = 0u;
+        if (material.randomTextureRotation) {
+            flags |= kRandomTextureRotationFlagBit;
+        }
         if (material.randomRotation) {
-            flags |= kRandomRotationFlagBit;
+            flags |= kRandomModelRotationEnabledFlagBit;
+        }
+        if ((material.randomRotationDirectionsMask & 0x1u) != 0u) {
+            flags |= kRandomModelRotationXFlagBit;
+        }
+        if ((material.randomRotationDirectionsMask & 0x2u) != 0u) {
+            flags |= kRandomModelRotationYFlagBit;
+        }
+        if ((material.randomRotationDirectionsMask & 0x4u) != 0u) {
+            flags |= kRandomModelRotationZFlagBit;
         }
         if ((material.randomOffsetDirectionsMask & 0x1u) != 0u) {
             flags |= kRandomOffsetXFlagBit;
@@ -368,7 +388,9 @@ bool MaterialManager::buildDefaultMaterials(BufferManager& bufferManager, Textur
                 1.0f,
                 0.0f,
                 material.doubleSided,
+                material.randomTextureRotation,
                 material.randomRotation,
+                material.randomRotationDirectionsMask,
                 material.randomOffsetDirectionsMask,
                 material.randomOffsetAmount,
                 material.blockLightOpacity,
@@ -454,8 +476,16 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
             std::cerr << "MaterialManager: materials[" << i << "] field 'doubleSided' must be a boolean when present." << std::endl;
             return false;
         }
+        if (entry.contains("randomTextureRotation") && !entry["randomTextureRotation"].is_boolean()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'randomTextureRotation' must be a boolean when present." << std::endl;
+            return false;
+        }
         if (entry.contains("randomRotation") && !entry["randomRotation"].is_boolean()) {
             std::cerr << "MaterialManager: materials[" << i << "] field 'randomRotation' must be a boolean when present." << std::endl;
+            return false;
+        }
+        if (entry.contains("randomRotationDirections") && !entry["randomRotationDirections"].is_string()) {
+            std::cerr << "MaterialManager: materials[" << i << "] field 'randomRotationDirections' must be a string when present." << std::endl;
             return false;
         }
         if (entry.contains("randomOffsetDirections") && !entry["randomOffsetDirections"].is_string()) {
@@ -480,8 +510,20 @@ bool MaterialManager::loadMaterialConfig(const std::filesystem::path& path,
         if (entry.contains("doubleSided")) {
             material.doubleSided = entry["doubleSided"].get<bool>();
         }
+        if (entry.contains("randomTextureRotation")) {
+            material.randomTextureRotation = entry["randomTextureRotation"].get<bool>();
+        }
         if (entry.contains("randomRotation")) {
             material.randomRotation = entry["randomRotation"].get<bool>();
+        }
+        if (entry.contains("randomRotationDirections")) {
+            const std::string directions = entry["randomRotationDirections"].get<std::string>();
+            if (!parseDirectionMask(directions, material.randomRotationDirectionsMask)) {
+                std::cerr << "MaterialManager: materials[" << i
+                          << "] field 'randomRotationDirections' contains invalid characters. "
+                          << "Use only combinations of X, Y, and Z." << std::endl;
+                return false;
+            }
         }
         if (entry.contains("randomOffsetDirections")) {
             const std::string directions = entry["randomOffsetDirections"].get<std::string>();

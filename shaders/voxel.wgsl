@@ -113,6 +113,55 @@ fn random_offset_for_block(blockCoord: vec3i, axisMask: u32, amount: f32) -> vec
     return offset;
 }
 
+fn rotate_x(v: vec3f, angle: f32) -> vec3f {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec3f(v.x, (v.y * c) - (v.z * s), (v.y * s) + (v.z * c));
+}
+
+fn rotate_y(v: vec3f, angle: f32) -> vec3f {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec3f((v.x * c) + (v.z * s), v.y, (-v.x * s) + (v.z * c));
+}
+
+fn rotate_z(v: vec3f, angle: f32) -> vec3f {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec3f((v.x * c) - (v.y * s), (v.x * s) + (v.y * c), v.z);
+}
+
+fn hash_to_angle(seed: u32) -> f32 {
+    let h = hash_u32(seed);
+    return (f32(h) / 4294967295.0) * 6.28318530718;
+}
+
+fn random_model_rotation_for_block(
+    blockCoord: vec3i,
+    enabled: bool,
+    axisMask: u32,
+    blockSize: f32,
+    localPosition: vec3f
+) -> vec3f {
+    if (!enabled || axisMask == 0u) {
+        return localPosition;
+    }
+
+    let center = vec3f(blockCoord) + vec3f(0.5 * blockSize);
+    var rotated = localPosition - center;
+    let baseHash = hash_block_coord(blockCoord);
+    if ((axisMask & 0x1u) != 0u) {
+        rotated = rotate_x(rotated, hash_to_angle(baseHash ^ 0x51633e2du));
+    }
+    if ((axisMask & 0x2u) != 0u) {
+        rotated = rotate_y(rotated, hash_to_angle(baseHash ^ 0x68bc21ebu));
+    }
+    if ((axisMask & 0x4u) != 0u) {
+        rotated = rotate_z(rotated, hash_to_angle(baseHash ^ 0x02e5be93u));
+    }
+    return rotated + center;
+}
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -141,11 +190,21 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let safeMaterialId = min(decodedMaterialId, 65535u);
     let material = materialMetadata[safeMaterialId];
     let flags = material.flags;
-    let directionMask = (flags >> 1u) & 0x7u;
+    let offsetDirectionMask = (flags >> 1u) & 0x7u;
+    let modelRotationEnabled = (flags & 0x10u) != 0u;
+    let modelRotationDirectionMask = (flags >> 5u) & 0x7u;
     let offsetAmount = clamp(material.randomOffsetAmount, 0.0, 1.0);
-    let offset = random_offset_for_block(sample.blockCoord, directionMask, offsetAmount);
+    let offset = random_offset_for_block(sample.blockCoord, offsetDirectionMask, offsetAmount);
+    var localPosition = sample.worldPosition + offset;
+    localPosition = random_model_rotation_for_block(
+        sample.blockCoord,
+        modelRotationEnabled,
+        modelRotationDirectionMask,
+        sample.blockSize,
+        localPosition
+    );
 
-    let worldSpacePosition = local_to_world_position(sample.worldPosition + offset);
+    let worldSpacePosition = local_to_world_position(localPosition);
     out.position = world_to_clip_position(worldSpacePosition);
 
     out.worldPosition = worldSpacePosition.xyz;
