@@ -57,13 +57,9 @@ std::size_t maxPendingMeshJobs(std::size_t workerCount) {
 void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                                       const glm::vec3& playerWorldPosition,
                                       float sseProjectionScale,
-                                      const ChunkCoord* previousCenterChunk,
                                       int32_t centerShiftChunks) {
     struct ScheduledTileLod {
         TileLodCoord coord{};
-        int32_t frontierDepth = std::numeric_limits<int32_t>::max();
-        int32_t distanceSq = 0;
-        uint8_t tier = 1u;
         bool forceRemesh = false;
         jobsystem::Priority priority = jobsystem::Priority::Low;
     };
@@ -82,73 +78,53 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
         meshTileSizeChunks_
     );
     const int32_t maxTileY = floor_div(centerChunk.v.y + scheduleOuterRadiusChunks, meshTileSizeChunks_);
-
-    // Build a contiguous generated-tile frontier rooted near the camera so meshing expands
-    // outward cleanly instead of jumping to disconnected generated islands.
-    std::unordered_set<MeshTileCoord> generatedTiles;
-    for (int32_t tileY = minTileY; tileY <= maxTileY; ++tileY) {
-        for (int32_t tileX = minTileX; tileX <= maxTileX; ++tileX) {
-            const MeshTileCoord tileCoord{tileX, tileY};
-            if (isTileFootprintGenerated(tileCoord)) {
-                generatedTiles.insert(tileCoord);
-            }
-        }
-    }
-
-    std::unordered_map<MeshTileCoord, int32_t> reachableTileDepth;
-    if (!generatedTiles.empty()) {
-        const MeshTileCoord centerTile{
-            floor_div(centerChunk.v.x, meshTileSizeChunks_),
-            floor_div(centerChunk.v.y, meshTileSizeChunks_)
-        };
-
-        MeshTileCoord seed = centerTile;
-        if (generatedTiles.find(seed) == generatedTiles.end()) {
-            int32_t bestDistance = std::numeric_limits<int32_t>::max();
-            for (const MeshTileCoord& tile : generatedTiles) {
-                const int32_t dx = std::abs(tile.x - centerTile.x);
-                const int32_t dy = std::abs(tile.y - centerTile.y);
-                const int32_t chebyshev = std::max(dx, dy);
-                if (chebyshev < bestDistance) {
-                    bestDistance = chebyshev;
-                    seed = tile;
-                }
-            }
-        }
-
-        std::queue<std::pair<MeshTileCoord, int32_t>> frontier;
-        frontier.push(std::make_pair(seed, 0));
-        reachableTileDepth.emplace(seed, 0);
-
-        static constexpr std::array<glm::ivec2, 4> kCardinalNeighbors{
-            glm::ivec2{1, 0},
-            glm::ivec2{-1, 0},
-            glm::ivec2{0, 1},
-            glm::ivec2{0, -1}
-        };
-
-        while (!frontier.empty()) {
-            const auto [current, depth] = frontier.front();
-            frontier.pop();
-
-            for (const glm::ivec2& n : kCardinalNeighbors) {
-                const MeshTileCoord neighbor{current.x + n.x, current.y + n.y};
-                if (generatedTiles.find(neighbor) == generatedTiles.end()) {
-                    continue;
-                }
-                if (!reachableTileDepth.emplace(neighbor, depth + 1).second) {
-                    continue;
-                }
-                frontier.push(std::make_pair(neighbor, depth + 1));
-            }
-        }
-    }
-
-    std::vector<ScheduledTileLod> jobsToSchedule;
-    jobsToSchedule.reserve(
-        static_cast<std::size_t>((maxTileX - minTileX + 1) * (maxTileY - minTileY + 1) * config_.lodLevelCount) *
-        static_cast<std::size_t>(meshTileSliceCount_)
+    const MeshTileCoord centerTile{
+        floor_div(centerChunk.v.x, meshTileSizeChunks_),
+        floor_div(centerChunk.v.y, meshTileSizeChunks_)
+    };
+    const int32_t maxRingRadius = std::max(
+        std::max(std::abs(centerTile.x - minTileX), std::abs(centerTile.x - maxTileX)),
+        std::max(std::abs(centerTile.y - minTileY), std::abs(centerTile.y - maxTileY))
     );
+
+    std::vector<MeshTileCoord> orderedGeneratedTiles;
+    orderedGeneratedTiles.reserve(static_cast<std::size_t>((maxTileX - minTileX + 1) * (maxTileY - minTileY + 1)));
+
+    auto appendGeneratedTile = [&](const MeshTileCoord& tileCoord) {
+        if (!tileInBounds(tileCoord, minTileX, maxTileX, minTileY, maxTileY)) {
+            return;
+        }
+        if (!isTileFootprintGenerated(tileCoord)) {
+            return;
+        }
+        orderedGeneratedTiles.push_back(tileCoord);
+    };
+
+    appendGeneratedTile(centerTile);
+    for (int32_t radius = 1; radius <= maxRingRadius; ++radius) {
+        const int32_t ringMinX = centerTile.x - radius;
+        const int32_t ringMaxX = centerTile.x + radius;
+        const int32_t ringMinY = centerTile.y - radius;
+        const int32_t ringMaxY = centerTile.y + radius;
+
+        for (int32_t x = ringMinX; x <= ringMaxX; ++x) {
+            appendGeneratedTile(MeshTileCoord{x, ringMinY});
+        }
+        for (int32_t x = ringMinX; x <= ringMaxX; ++x) {
+            appendGeneratedTile(MeshTileCoord{x, ringMaxY});
+        }
+        for (int32_t y = ringMinY + 1; y < ringMaxY; ++y) {
+            appendGeneratedTile(MeshTileCoord{ringMinX, y});
+        }
+        for (int32_t y = ringMinY + 1; y < ringMaxY; ++y) {
+            appendGeneratedTile(MeshTileCoord{ringMaxX, y});
+        }
+    }
+
+    std::vector<ScheduledTileLod> primaryJobs;
+    std::vector<ScheduledTileLod> fallbackJobs;
+    primaryJobs.reserve(orderedGeneratedTiles.size() * static_cast<std::size_t>(meshTileSliceCount_));
+    fallbackJobs.reserve(orderedGeneratedTiles.size() * static_cast<std::size_t>(meshTileSliceCount_));
 
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
@@ -174,64 +150,9 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
             selectionSnapshotDirty_ = true;
         }
 
-        const MeshTileCoord centerTile{
-            floor_div(centerChunk.v.x, meshTileSizeChunks_),
-            floor_div(centerChunk.v.y, meshTileSizeChunks_)
-        };
+        bool selectionChanged = false;
 
-        std::vector<MeshTileCoord> reachableOrdered;
-        reachableOrdered.reserve(reachableTileDepth.size());
-        for (const auto& [tileCoord, _] : reachableTileDepth) {
-            reachableOrdered.push_back(tileCoord);
-        }
-        std::sort(reachableOrdered.begin(), reachableOrdered.end(), [&](const MeshTileCoord& a, const MeshTileCoord& b) {
-            const int32_t aFrontierDepth = reachableTileDepth.at(a);
-            const int32_t bFrontierDepth = reachableTileDepth.at(b);
-            if (aFrontierDepth != bFrontierDepth) {
-                return aFrontierDepth < bFrontierDepth;
-            }
-            const int32_t adx = std::abs(a.x - centerTile.x);
-            const int32_t ady = std::abs(a.y - centerTile.y);
-            const int32_t bdx = std::abs(b.x - centerTile.x);
-            const int32_t bdy = std::abs(b.y - centerTile.y);
-            const int32_t aDistance = std::max(adx, ady);
-            const int32_t bDistance = std::max(bdx, bdy);
-            if (aDistance != bDistance) {
-                return aDistance < bDistance;
-            }
-            return a < b;
-        });
-
-        std::vector<MeshTileCoord> retainedInBoundsOrdered;
-        retainedInBoundsOrdered.reserve(meshTiles_.size());
-        for (const auto& [tileCoord, _] : meshTiles_) {
-            if (!tileInBounds(tileCoord, minTileX, maxTileX, minTileY, maxTileY)) {
-                continue;
-            }
-            if (reachableTileDepth.find(tileCoord) != reachableTileDepth.end()) {
-                continue;
-            }
-            retainedInBoundsOrdered.push_back(tileCoord);
-        }
-        std::sort(retainedInBoundsOrdered.begin(), retainedInBoundsOrdered.end(), [&](const MeshTileCoord& a, const MeshTileCoord& b) {
-            const int32_t adx = std::abs(a.x - centerTile.x);
-            const int32_t ady = std::abs(a.y - centerTile.y);
-            const int32_t bdx = std::abs(b.x - centerTile.x);
-            const int32_t bdy = std::abs(b.y - centerTile.y);
-            const int32_t aDistance = std::max(adx, ady);
-            const int32_t bDistance = std::max(bdx, bdy);
-            if (aDistance != bDistance) {
-                return aDistance < bDistance;
-            }
-            return a < b;
-        });
-
-        std::vector<MeshTileCoord> tilesToProcess;
-        tilesToProcess.reserve(reachableOrdered.size() + retainedInBoundsOrdered.size());
-        tilesToProcess.insert(tilesToProcess.end(), reachableOrdered.begin(), reachableOrdered.end());
-        tilesToProcess.insert(tilesToProcess.end(), retainedInBoundsOrdered.begin(), retainedInBoundsOrdered.end());
-
-        for (const MeshTileCoord& tileCoord : tilesToProcess) {
+        for (const MeshTileCoord& tileCoord : orderedGeneratedTiles) {
             MeshTileState& tileState = meshTiles_[tileCoord];
             // Drop any stale high LODs that can overlap neighboring tiles.
             for (auto lodIt = tileState.lodStates.begin(); lodIt != tileState.lodStates.end();) {
@@ -251,6 +172,23 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                 }
             }
 
+            auto lodFullyResident = [&](int32_t lodLevel) {
+                if (lodLevel < 0) {
+                    return false;
+                }
+                const auto lodIt = tileState.lodStates.find(static_cast<uint8_t>(lodLevel));
+                if (lodIt == tileState.lodStates.end()) {
+                    return false;
+                }
+                for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
+                    const auto sliceIt = lodIt->second.find(zSlice);
+                    if (sliceIt == lodIt->second.end() || !sliceIt->second.resident) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+
             const int8_t previousDesired = tileState.desiredLod;
             const int8_t candidateDesired = desiredLodForTile(
                 tileCoord,
@@ -267,6 +205,7 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                 sseProjectionScale
             );
             tileState.desiredLod = desired;
+            selectionChanged = refreshSelectedLodLocked(tileState) || selectionChanged;
             if (desired < 0) {
                 continue;
             }
@@ -278,15 +217,9 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                 centerChunk
             );
             const int32_t distanceChunks = distances.minDistanceChunks;
-            const int32_t distanceSq = distanceChunks * distanceChunks;
-            const auto frontierIt = reachableTileDepth.find(tileCoord);
-            const int32_t frontierDepth = (frontierIt != reachableTileDepth.end())
-                ? frontierIt->second
-                : std::numeric_limits<int32_t>::max();
-
             const jobsystem::Priority primaryPriority =
                 primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
-            const jobsystem::Priority secondaryPriority = demotePriority(primaryPriority);
+            const jobsystem::Priority fallbackPriority = demotePriority(primaryPriority);
 
             bool desiredNeedsRepair = false;
             const auto desiredLodIt = tileState.lodStates.find(static_cast<uint8_t>(desired));
@@ -344,74 +277,32 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                 }
             }
 
-            // Primary job: currently best-fit LOD for this tile.
-            for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-                jobsToSchedule.push_back(ScheduledTileLod{
-                    TileLodCoord{MeshTileSliceCoord{tileCoord, zSlice}, static_cast<uint8_t>(desired)},
-                    frontierDepth,
-                    distanceSq,
-                    0u,
-                    desiredNeedsRepair,
-                    primaryPriority
-                });
-            }
-
-            std::vector<int32_t> supplementalLods;
-            supplementalLods.reserve(static_cast<std::size_t>(config_.lodLevelCount - 1));
-            for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
-                if (lod == desired) {
-                    continue;
-                }
-                supplementalLods.push_back(lod);
-            }
-            std::stable_sort(
-                supplementalLods.begin(),
-                supplementalLods.end(),
-                [desired](int32_t a, int32_t b) {
-                    const int32_t ad = std::abs(a - desired);
-                    const int32_t bd = std::abs(b - desired);
-                    if (ad != bd) {
-                        return ad < bd;
-                    }
-                    // Prefer coarser supplemental LODs first.
-                    return a > b;
-                }
-            );
-
-            for (int32_t lod : supplementalLods) {
+            if (desiredNeedsRepair || !lodFullyResident(desired)) {
                 for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-                    jobsToSchedule.push_back(ScheduledTileLod{
-                        TileLodCoord{MeshTileSliceCoord{tileCoord, zSlice}, static_cast<uint8_t>(lod)},
-                        frontierDepth,
-                        distanceSq,
-                        1u,
+                    primaryJobs.push_back(ScheduledTileLod{
+                        TileLodCoord{MeshTileSliceCoord{tileCoord, zSlice}, static_cast<uint8_t>(desired)},
+                        desiredNeedsRepair,
+                        primaryPriority
+                    });
+                }
+            }
+
+            const int32_t fallbackLod = desired + 1;
+            if (tileState.selectedLod < 0 && fallbackLod < config_.lodLevelCount && !lodFullyResident(fallbackLod)) {
+                for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
+                    fallbackJobs.push_back(ScheduledTileLod{
+                        TileLodCoord{MeshTileSliceCoord{tileCoord, zSlice}, static_cast<uint8_t>(fallbackLod)},
                         false,
-                        secondaryPriority
+                        fallbackPriority
                     });
                 }
             }
         }
 
-        if (refreshSelectedLodsLocked()) {
+        if (selectionChanged) {
             selectionSnapshotDirty_ = true;
         }
     }
-
-    std::stable_sort(jobsToSchedule.begin(), jobsToSchedule.end(), [&](const ScheduledTileLod& a, const ScheduledTileLod& b) {
-        if (a.frontierDepth != b.frontierDepth) {
-            return a.frontierDepth < b.frontierDepth;
-        }
-        if (a.distanceSq != b.distanceSq) {
-            return a.distanceSq < b.distanceSq;
-        }
-        if (a.tier != b.tier) {
-            return a.tier < b.tier;
-        }
-        if (!(a.coord.tile == b.coord.tile)) {
-            return a.coord.tile < b.coord.tile;
-        }
-        return a.coord.lodLevel < b.coord.lodLevel;
-    });
 
     std::size_t pendingCount = 0u;
     {
@@ -419,21 +310,26 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
         pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
     }
     const std::size_t maxPending = maxPendingMeshJobs(jobs_.worker_count());
-    std::size_t jobIndex = 0u;
-    while (jobIndex < jobsToSchedule.size() && pendingCount < maxPending) {
-        const ScheduledTileLod& scheduled = jobsToSchedule[jobIndex++];
-        scheduleTileLodMeshing(
-            scheduled.coord,
-            scheduled.priority,
-            scheduled.forceRemesh,
-            prefetchChunks + meshTileSizeChunks_
-        );
+    std::size_t remainingBudget = (pendingCount < maxPending) ? (maxPending - pendingCount) : 0u;
+    const int32_t activeWindowExtraChunks = prefetchChunks + meshTileSizeChunks_;
 
-        std::shared_lock<std::shared_mutex> lock(meshMutex_);
-        pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
-    }
+    auto scheduleJobs = [&](const std::vector<ScheduledTileLod>& jobs) {
+        for (const ScheduledTileLod& scheduled : jobs) {
+            if (remainingBudget == 0u) {
+                return;
+            }
+            scheduleTileLodMeshing(
+                scheduled.coord,
+                scheduled.priority,
+                scheduled.forceRemesh,
+                activeWindowExtraChunks
+            );
+            --remainingBudget;
+        }
+    };
 
-    (void)previousCenterChunk;
+    scheduleJobs(primaryJobs);
+    scheduleJobs(fallbackJobs);
 }
 
 void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
@@ -622,4 +518,3 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
         pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
     }
 }
-

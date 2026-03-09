@@ -92,9 +92,22 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
     ChunkCoord previousCenterChunk{};
     bool hadPreviousCenter = false;
     bool centerChanged = false;
+    bool cameraUpdateRequired = false;
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
+        const BlockCoord previousPlayerBlock = hasLastPlayerWorldPosition_
+            ? BlockCoord{
+                static_cast<int32_t>(std::floor(lastPlayerWorldPosition_.x)),
+                static_cast<int32_t>(std::floor(lastPlayerWorldPosition_.y)),
+                static_cast<int32_t>(std::floor(lastPlayerWorldPosition_.z))
+            }
+            : playerBlock;
+        const bool blockChanged = !hasLastPlayerWorldPosition_ || !(previousPlayerBlock == playerBlock);
+        const bool projectionChanged =
+            !hasLastSseProjectionScale_ || std::abs(lastSseProjectionScale_ - safeSseProjectionScale) > 0.01f;
+
         lastPlayerWorldPosition_ = playerWorldPosition;
+        hasLastPlayerWorldPosition_ = true;
         lastSseProjectionScale_ = safeSseProjectionScale;
         hasLastSseProjectionScale_ = true;
 
@@ -105,6 +118,8 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
             hasLastScheduledCenter_ = true;
             centerChanged = true;
         }
+
+        cameraUpdateRequired = centerChanged || blockChanged || projectionChanged;
     }
 
     const int32_t centerShiftChunks = (centerChanged && hadPreviousCenter)
@@ -116,28 +131,37 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
     const uint64_t worldPlayerEditRevision = world_.playerEditChunkRevision();
     const uint64_t processedPlayerEditRevision =
         processedWorldPlayerEditRevision_.load(std::memory_order_acquire);
-    if (worldPlayerEditRevision != processedPlayerEditRevision) {
+    const bool hasPlayerEditChanges = worldPlayerEditRevision != processedPlayerEditRevision;
+    if (hasPlayerEditChanges) {
         scheduleRemeshForPlayerEditedChunks(centerColumn);
     }
 
     const uint64_t worldLightingRevision = world_.lightingChunkRevision();
     const uint64_t processedLightingRevision =
         processedWorldLightingRevision_.load(std::memory_order_acquire);
-    if (worldLightingRevision != processedLightingRevision) {
+    const bool hasLightingChanges = worldLightingRevision != processedLightingRevision;
+    if (hasLightingChanges) {
         scheduleRemeshForLightingChangedChunks(centerColumn);
     }
 
-    scheduleTilesAround(
-        centerChunk,
-        playerWorldPosition,
-        safeSseProjectionScale,
-        hadPreviousCenter ? &previousCenterChunk : nullptr,
-        centerShiftChunks
-    );
-
     const uint64_t worldRevision = world_.generationRevision();
     const uint64_t processedRevision = processedWorldGenerationRevision_.load(std::memory_order_acquire);
-    if (worldRevision != processedRevision) {
+    const bool hasGenerationChanges = worldRevision != processedRevision;
+
+    if (!cameraUpdateRequired && !hasPlayerEditChanges && !hasLightingChanges && !hasGenerationChanges) {
+        return;
+    }
+
+    if (cameraUpdateRequired) {
+        scheduleTilesAround(
+            centerChunk,
+            playerWorldPosition,
+            safeSseProjectionScale,
+            centerShiftChunks
+        );
+    }
+
+    if (hasGenerationChanges) {
         scheduleRemeshForNewColumns(centerColumn);
     }
 }
@@ -245,7 +269,7 @@ void MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                     queueTileLodUploadLocked(MeshTileLodKey{coord.tile, coord.lodLevel}, usePriorityQueue);
                     lodState.uploadQueued = true;
 
-                    if (refreshSelectedLodsLocked()) {
+                    if (refreshSelectedLodLocked(tileIt->second)) {
                         selectionSnapshotDirty_ = true;
                     }
 

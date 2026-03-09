@@ -79,7 +79,6 @@ private:
     void scheduleTilesAround(const ChunkCoord& centerChunk,
                              const glm::vec3& playerWorldPosition,
                              float sseProjectionScale,
-                             const ChunkCoord* previousCenterChunk,
                              int32_t centerShiftChunks);
     void scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn,
                                         const std::vector<ChunkCoord>& changedChunks);
@@ -115,7 +114,7 @@ private:
                          uint8_t lodLevel,
                          std::unordered_map<ColumnCoord, uint32_t>& emptyMaskCache) const;
     int8_t chooseRenderableLodForTileLocked(const MeshTileState& state) const;
-    bool refreshSelectedLodsLocked();
+    bool refreshSelectedLodLocked(MeshTileState& state) const;
 
     ChunkMeshOutput meshTileLod(const TileLodCoord& coord) const;
     ChunkMeshOutput meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const;
@@ -165,6 +164,7 @@ private:
     ChunkCoord lastScheduledCenterChunk_{0, 0, 0};
     bool hasLastScheduledCenter_ = false;
     glm::vec3 lastPlayerWorldPosition_{0.0f, 0.0f, 0.0f};
+    bool hasLastPlayerWorldPosition_ = false;
     float lastSseProjectionScale_ = 390.0f;
     bool hasLastSseProjectionScale_ = false;
 

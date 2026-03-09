@@ -213,16 +213,14 @@ int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileState& state)
     return -1;
 }
 
-bool MeshManager::refreshSelectedLodsLocked() {
-    bool changed = false;
-    for (auto& [_, tileState] : meshTiles_) {
-        const int8_t selected = chooseRenderableLodForTileLocked(tileState);
-        if (selected != tileState.selectedLod) {
-            tileState.selectedLod = selected;
-            changed = true;
-        }
+bool MeshManager::refreshSelectedLodLocked(MeshTileState& state) const {
+    const int8_t selected = chooseRenderableLodForTileLocked(state);
+    if (selected == state.selectedLod) {
+        return false;
     }
-    return changed;
+
+    state.selectedLod = selected;
+    return true;
 }
 
 bool MeshManager::hasPendingJobs() const {
