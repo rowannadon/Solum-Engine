@@ -3,7 +3,6 @@
     "name": "aspen1",
     "vox": "aspen_1.vox",
     "origin": [5, 5, 3],
-    "selectionWeight": 1,
     "colorMappings": [
       [[102, 51, 0, 255], "log"],
       [[0, 68, 0, 255], "leaf"]
@@ -13,7 +12,6 @@
     "name": "aspen2",
     "vox": "aspen_2.vox",
     "origin": [4, 5, 3],
-    "selectionWeight": 1,
     "colorMappings": [
       [[102, 51, 0, 255], "log"],
       [[0, 68, 0, 255], "leaf"]
@@ -23,7 +21,6 @@
     "name": "aspen3",
     "vox": "aspen_3.vox",
     "origin": [4, 3, 3],
-    "selectionWeight": 1,
     "colorMappings": [
       [[102, 51, 0, 255], "log"],
       [[0, 68, 0, 255], "leaf"]
@@ -33,7 +30,6 @@
     "name": "pine1",
     "vox": "pine_1.vox",
     "origin": [6, 5, 4],
-    "selectionWeight": 1,
     "colorMappings": [
       [[102, 51, 0, 255], "log"],
       [[0, 68, 0, 255], "leaf"]
@@ -43,7 +39,6 @@
     "name": "pine2",
     "vox": "pine_2.vox",
     "origin": [4, 3, 4],
-    "selectionWeight": 1,
     "colorMappings": [
       [[102, 51, 0, 255], "log"],
       [[0, 68, 0, 255], "leaf"]

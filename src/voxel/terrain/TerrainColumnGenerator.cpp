@@ -36,30 +36,22 @@ std::string resolveHeightmapPath() {
     return std::string(RESOURCE_DIR) + "/height/heightmap6.png";
 }
 
-std::filesystem::path decorationConfigPath() {
-    return std::filesystem::path(RESOURCE_DIR) / "decorations.json";
-}
-
 std::filesystem::path biomeConfigPath() {
     return std::filesystem::path(RESOURCE_DIR) / "biomes.json";
 }
 
-bool listContains(const std::vector<std::string>& names, const std::string& name) {
-    return std::find(names.begin(), names.end(), name) != names.end();
-}
-
-bool parseStringArrayField(const json& object,
-                           const char* fieldName,
-                           std::vector<std::string>& outValues,
-                           size_t entryIndex,
-                           const char* contextLabel) {
+bool parseWeightedSelectionField(const json& object,
+                                 const char* fieldName,
+                                 std::vector<terrain_internal::BiomeWeightedSelection>& outValues,
+                                 size_t entryIndex,
+                                 const char* contextLabel) {
     if (!object.contains(fieldName)) {
         outValues.clear();
         return true;
     }
     if (!object[fieldName].is_array()) {
         std::cerr << "TerrainGenerator: " << contextLabel << "[" << entryIndex << "] field '"
-                  << fieldName << "' must be an array of strings." << std::endl;
+                  << fieldName << "' must be an array of [name, selectionWeight] pairs." << std::endl;
         return false;
     }
 
@@ -67,12 +59,24 @@ bool parseStringArrayField(const json& object,
     const json& values = object[fieldName];
     outValues.reserve(values.size());
     for (size_t i = 0; i < values.size(); ++i) {
-        if (!values[i].is_string()) {
+        if (!values[i].is_array() || values[i].size() != 2 || !values[i][0].is_string() ||
+            !values[i][1].is_number_integer()) {
             std::cerr << "TerrainGenerator: " << contextLabel << "[" << entryIndex << "]." << fieldName
-                      << "[" << i << "] must be a string." << std::endl;
+                      << "[" << i << "] must be [\"name\", integer_weight]." << std::endl;
             return false;
         }
-        outValues.push_back(values[i].get<std::string>());
+
+        const int64_t rawWeight = values[i][1].get<int64_t>();
+        if (rawWeight <= 0) {
+            std::cerr << "TerrainGenerator: " << contextLabel << "[" << entryIndex << "]." << fieldName
+                      << "[" << i << "] weight must be greater than zero." << std::endl;
+            return false;
+        }
+
+        outValues.push_back(terrain_internal::BiomeWeightedSelection{
+            values[i][0].get<std::string>(),
+            static_cast<uint32_t>(std::min<int64_t>(rawWeight, std::numeric_limits<uint32_t>::max()))
+        });
     }
 
     return true;
@@ -146,11 +150,11 @@ terrain_internal::BiomeConfig loadBiomeConfig() {
 
     config.name = (*selectedBiome)["name"].get<std::string>();
 
-    if (!parseStringArrayField(*selectedBiome, "structures", config.structureNames, selectedIndex, "biomes")) {
-        config.structureNames.clear();
+    if (!parseWeightedSelectionField(*selectedBiome, "structures", config.structures, selectedIndex, "biomes")) {
+        config.structures.clear();
     }
-    if (!parseStringArrayField(*selectedBiome, "decorations", config.decorationNames, selectedIndex, "biomes")) {
-        config.decorationNames.clear();
+    if (!parseWeightedSelectionField(*selectedBiome, "decorations", config.decorations, selectedIndex, "biomes")) {
+        config.decorations.clear();
     }
 
     if (selectedBiome->contains("noise")) {
@@ -268,85 +272,26 @@ terrain_internal::TerrainDecorationConfig loadDecorationConfig() {
     const terrain_internal::BiomeConfig& biome = terrain_internal::biomeConfig();
     config.placementChance = biome.decorationChance;
 
-    const std::filesystem::path path = decorationConfigPath();
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        std::cerr << "TerrainGenerator: unable to open decoration config '" << path.string()
-                  << "'. No decorations will be placed." << std::endl;
-        return config;
-    }
-
-    json root;
-    try {
-        file >> root;
-    } catch (const std::exception& e) {
-        std::cerr << "TerrainGenerator: failed to parse decoration config '" << path.string()
-                  << "': " << e.what() << ". No decorations will be placed." << std::endl;
-        return config;
-    }
-
-    if (!root.is_array()) {
-        std::cerr << "TerrainGenerator: decoration config '" << path.string()
-                  << "' must be an array. No decorations will be placed." << std::endl;
-        return config;
-    }
-
-    config.definitions.reserve(root.size());
-    for (size_t i = 0; i < root.size(); ++i) {
-        const json& entry = root[i];
-        if (!entry.is_object()) {
-            std::cerr << "TerrainGenerator: decorations[" << i << "] must be an object." << std::endl;
-            continue;
-        }
-        if (!entry.contains("name") || !entry["name"].is_string()) {
-            std::cerr << "TerrainGenerator: decorations[" << i << "] is missing string field 'name'." << std::endl;
-            continue;
-        }
-        if (!entry.contains("material") || !entry["material"].is_string()) {
-            std::cerr << "TerrainGenerator: decorations[" << i << "] is missing string field 'material'." << std::endl;
-            continue;
-        }
-
-        const std::string decorationName = entry["name"].get<std::string>();
-        if (!biome.decorationNames.empty() && !listContains(biome.decorationNames, decorationName)) {
-            continue;
-        }
-
-        const std::string materialName = entry["material"].get<std::string>();
+    config.definitions.reserve(biome.decorations.size());
+    for (const terrain_internal::BiomeWeightedSelection& selection : biome.decorations) {
         BlockMaterial material{};
-        if (!MaterialRegistry::tryResolveBlock(materialName, material)) {
-            std::cerr << "TerrainGenerator: decorations[" << i << "] references unknown material '"
-                      << materialName << "'." << std::endl;
+        if (!MaterialRegistry::tryResolveBlock(selection.name, material)) {
+            std::cerr << "TerrainGenerator: biome '" << biome.name
+                      << "' references unknown decoration material '" << selection.name << "'." << std::endl;
             continue;
-        }
-
-        uint32_t selectionWeight = 1u;
-        if (entry.contains("selectionWeight")) {
-            if (!entry["selectionWeight"].is_number_integer()) {
-                std::cerr << "TerrainGenerator: decorations[" << i
-                          << "] field 'selectionWeight' must be an integer." << std::endl;
-                continue;
-            }
-            const int64_t weight = entry["selectionWeight"].get<int64_t>();
-            if (weight <= 0) {
-                std::cerr << "TerrainGenerator: decorations[" << i
-                          << "] field 'selectionWeight' must be greater than zero." << std::endl;
-                continue;
-            }
-            selectionWeight = static_cast<uint32_t>(std::min<int64_t>(weight, std::numeric_limits<uint32_t>::max()));
         }
 
         config.definitions.push_back(terrain_internal::TerrainDecorationDefinition{
-            decorationName,
+            selection.name,
             material,
-            selectionWeight
+            selection.selectionWeight
         });
-        config.totalSelectionWeight += static_cast<uint64_t>(selectionWeight);
+        config.totalSelectionWeight += static_cast<uint64_t>(selection.selectionWeight);
     }
 
     if (config.definitions.empty()) {
-        std::cerr << "TerrainGenerator: decoration config '" << path.string()
-                  << "' contains no valid decoration definitions." << std::endl;
+        std::cerr << "TerrainGenerator: biome '" << biome.name
+                  << "' has no valid decoration material definitions." << std::endl;
     }
 
     return config;

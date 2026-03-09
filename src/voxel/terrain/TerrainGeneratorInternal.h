@@ -42,10 +42,15 @@ struct TerrainDecorationDefinition {
     uint32_t selectionWeight = 1u;
 };
 
+struct BiomeWeightedSelection {
+    std::string name;
+    uint32_t selectionWeight = 1u;
+};
+
 struct BiomeConfig {
     std::string name = kActiveBiomeName;
-    std::vector<std::string> structureNames;
-    std::vector<std::string> decorationNames;
+    std::vector<BiomeWeightedSelection> structures;
+    std::vector<BiomeWeightedSelection> decorations;
     int noiseSeed = kDefaultNoiseSeed;
     float noiseHorizontalFrequency = kDefaultNoiseHorizontalFrequency;
     float noiseVerticalFrequency = kDefaultNoiseVerticalFrequency;
