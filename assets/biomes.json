@@ -1,8 +1,8 @@
 [
   {
     "name": "forest",
-    "structures": ["aspen1", "aspen2", "aspen3"],
-    "decorations": ["tall_grass"],
+    "structures": [["aspen1", 1], ["aspen2", 1], ["aspen3", 1], ["pine1", 1], ["pine2", 1]],
+    "decorations": [["tall_grass", 10], ["sprout", 1]],
     "noise": {
       "seed": 1337,
       "horizontalFrequency": 0.015,

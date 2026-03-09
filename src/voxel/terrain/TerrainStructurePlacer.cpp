@@ -24,8 +24,14 @@ std::filesystem::path structureConfigPath() {
     return std::filesystem::path(RESOURCE_DIR) / "structures.json";
 }
 
-bool listContains(const std::vector<std::string>& names, const std::string& name) {
-    return std::find(names.begin(), names.end(), name) != names.end();
+const terrain_internal::BiomeWeightedSelection* findWeightedSelection(
+    const std::vector<terrain_internal::BiomeWeightedSelection>& selections,
+    const std::string& name
+) {
+    const auto it = std::find_if(selections.begin(), selections.end(), [&](const auto& selection) {
+        return selection.name == name;
+    });
+    return (it == selections.end()) ? nullptr : &(*it);
 }
 
 bool parseOrigin(const json& originJson, glm::ivec3& outOrigin) {
@@ -123,9 +129,11 @@ std::vector<StructureManager::StructureDefinition> loadStructureDefinitions() {
 
         StructureManager::StructureDefinition definition{};
         definition.name = entry["name"].get<std::string>();
-        if (!biome.structureNames.empty() && !listContains(biome.structureNames, definition.name)) {
+        const terrain_internal::BiomeWeightedSelection* biomeSelection = findWeightedSelection(biome.structures, definition.name);
+        if (biomeSelection == nullptr) {
             continue;
         }
+        definition.selectionWeight = biomeSelection->selectionWeight;
 
         glm::ivec3 origin{};
         if (!parseOrigin(entry["origin"], origin)) {
@@ -141,22 +149,6 @@ std::vector<StructureManager::StructureDefinition> loadStructureDefinitions() {
                 ? relativeVoxPath
                 : (std::filesystem::path(RESOURCE_DIR) / "structures" / relativeVoxPath);
         definition.voxFilePath = resolvedVoxPath.string();
-
-        if (entry.contains("selectionWeight")) {
-            if (!entry["selectionWeight"].is_number_integer()) {
-                std::cerr << "TerrainGenerator: structures[" << i
-                          << "] field 'selectionWeight' must be an integer." << std::endl;
-                continue;
-            }
-            const int64_t selectionWeight = entry["selectionWeight"].get<int64_t>();
-            if (selectionWeight <= 0) {
-                std::cerr << "TerrainGenerator: structures[" << i
-                          << "] field 'selectionWeight' must be greater than zero." << std::endl;
-                continue;
-            }
-            definition.selectionWeight =
-                static_cast<uint32_t>(std::min<int64_t>(selectionWeight, std::numeric_limits<uint32_t>::max()));
-        }
 
         const json& colorMappings = entry["colorMappings"];
         definition.colorMappings.reserve(colorMappings.size());
