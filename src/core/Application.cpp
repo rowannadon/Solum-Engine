@@ -55,6 +55,10 @@ bool Application::Initialize() {
     uniforms.occlusionParams[1] = 0.01f;
     uniforms.occlusionParams[2] = 20.0f;
     uniforms.occlusionParams[3] = 1.0f;
+    uniforms.timeParams[0] = 0.25f;
+    uniforms.timeParams[1] = 12.0f;
+    uniforms.timeParams[2] = 0.0f;
+    uniforms.timeParams[3] = 0.0f;
 
     camera.position = glm::vec3(0.0, 0.0, 175.0);
     camera.updateCameraVectors();
@@ -146,7 +150,7 @@ void Application::MainLoop() {
     const RuntimeTimingSnapshot streamingTiming = voxelStreaming_.getRuntimeTimingSnapshot();
     runtimeTimingSnapshot_ = mergeRuntimeTimingSnapshots(gpuTiming, streamingTiming);
 
-    gui.renderImGUI(uniforms, frameTimes, camera, frameTime, runtimeTimingSnapshot_);
+    gui.renderImGUI(uniforms, deltaTime, frameTimes, camera, frameTime, runtimeTimingSnapshot_);
     const bool freezeCullingAfterUi = gui.isCullingCameraFrozen();
     updateCullingCameraMatrices(viewGPU, freezeCullingAfterUi);
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));

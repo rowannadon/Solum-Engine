@@ -19,8 +19,9 @@ class GuiManager {
         bool showMainWindow = true;
         float timeMultiplier = 0.5f;  // Multiplier for time (originally hardcoded as 0.5)
         bool pauseTime = false;       // Allow pausing time
-        float manualTime = 0.0f;      // Manual time override
+        float manualTime = 12.0f;     // Manual time override in hours [0, 24)
         bool useManualTime = false;   // Use manual time instead of automatic
+        float currentTimeHours = 12.0f;
 
         // Camera controls
         bool showCameraControls = true;
@@ -44,6 +45,7 @@ class GuiManager {
 public:
     bool initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::TextureFormat format);
     void renderImGUI(FrameUniforms& uniforms,
+                     float deltaTime,
                      const std::vector<float>& frameTimes,
                      FirstPersonCamera& camera,
                      float frameTime,

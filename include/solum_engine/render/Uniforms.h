@@ -39,6 +39,10 @@ struct FrameUniforms {
     // occlusionParams[2]: near-distance occlusion skip (world units)
     // occlusionParams[3]: minimum projected AABB span (pixels) before occlusion tests
     float occlusionParams[4] = { 1.0f, 0.01f, 20.0f, 1.0f };
+
+    // timeParams[0]: normalized day phase in [0, 1), with 0.0 = 06:00 sunrise, 0.25 = 12:00 noon
+    // timeParams[1]: current time of day in hours [0, 24)
+    float timeParams[4] = { 0.25f, 12.0f, 0.0f, 0.0f };
 };
 
 static_assert((sizeof(FrameUniforms) % 16) == 0, "FrameUniforms must remain 16-byte aligned for WGSL uniforms");

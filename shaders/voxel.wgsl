@@ -238,11 +238,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let dx = dpdx(in.worldPosition);
     let dy = dpdy(in.worldPosition);
     let normal = normalize(cross(dx, dy));
-
+    let dayPhase = fract(frameUniforms.timeParams.x);
+    let sunHeight = sin(dayPhase * 6.28318530718);
+    let daylight = smoothstep(-0.18, 0.12, sunHeight);
     let lightDir = normalize(vec3f(1.0, 0.5, 1.0));
     let ndotl = abs(dot(normal, lightDir));
-    let ambient = 0.3;
     let aoShade = mix(0.25, 1.0, clamp(in.ao, 0.0, 1.0));
+    let ambient = 0.3;
     let shade = (ambient * aoShade) + (1.0 - ambient) * ndotl;
 
     let meshletDebugEnabled = (frameUniforms.renderFlags.x & 0x1u) != 0u;
@@ -279,13 +281,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let chosenBlock = select(blockFront, max(blockFront, blockBack), isDoubleSidedMaterial);
     let skyLight = f32(chosenSky) / 15.0;
     let blockLight = f32(chosenBlock) / 15.0;
-    let dominantLight = max(skyLight, blockLight);
-    let combinedLight = skyLight + blockLight;
-    let blockTintWeight = select(0.0, blockLight / combinedLight, combinedLight > 0.0);
-    let skyLightColor = vec3f(1.0, 1.0, 1.0);
+    let skyLightColor = mix(vec3f(0.55, 0.6, 0.72), vec3f(1.0, 0.98, 0.95), daylight);
     let blockLightColor = vec3f(1.0, 0.92, 0.62);
-    let lightTint = mix(skyLightColor, blockLightColor, blockTintWeight);
-    let totalLightColor = max(vec3f(0.16), lightTint * dominantLight);
+    let skyContribution = skyLight * mix(0.45, 1.0, daylight);
+    let sunWashout = smoothstep(0.35, 1.0, skyLight * daylight);
+    let blockContribution = blockLight * (1.0 - sunWashout);
+    let totalLightColor = max(
+        vec3f(0.0, 0.0, 0.0),
+        (skyLightColor * skyContribution) + (blockLightColor * blockContribution)
+    );
     let shaded = max(0.45, shade);
 
     let linearColor = baseColor * shaded * totalLightColor;

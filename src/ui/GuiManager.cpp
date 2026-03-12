@@ -1,9 +1,28 @@
 #include "solum_engine/ui/GuiManager.h"
 
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <numeric>
 
 namespace { constexpr bool kEnableImGuiGamepadNav = false; }
+
+namespace {
+constexpr float kDayDurationSeconds = 300.0f;
+constexpr float kHoursPerDay = 24.0f;
+
+float wrapHours(float hours) {
+    float wrapped = std::fmod(hours, kHoursPerDay);
+    if (wrapped < 0.0f) {
+        wrapped += kHoursPerDay;
+    }
+    return wrapped;
+}
+
+float hoursToDayPhase(float hours) {
+    return wrapHours(hours - 6.0f) / kHoursPerDay;
+}
+}
 
 using namespace wgpu;
 
@@ -46,10 +65,24 @@ bool GuiManager::initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::Textur
 }
 
 void GuiManager::renderImGUI(FrameUniforms& uniforms,
+                             float deltaTime,
                              const std::vector<float>& frameTimes,
                              FirstPersonCamera& camera,
                              float frameTime,
                              const RuntimeTimingSnapshot& runtimeTiming) {
+    if (imguiState.useManualTime) {
+        imguiState.currentTimeHours = wrapHours(imguiState.manualTime);
+    } else {
+        imguiState.manualTime = wrapHours(imguiState.manualTime);
+        if (!imguiState.pauseTime) {
+            const float hoursPerSecond = (kHoursPerDay / kDayDurationSeconds) * imguiState.timeMultiplier;
+            imguiState.currentTimeHours = wrapHours(imguiState.currentTimeHours + (deltaTime * hoursPerSecond));
+        }
+    }
+
+    uniforms.timeParams[0] = hoursToDayPhase(imguiState.currentTimeHours);
+    uniforms.timeParams[1] = imguiState.currentTimeHours;
+
     // Main control window
     if (imguiState.showMainWindow) {
         ImGui::Begin("Engine Controls", &imguiState.showMainWindow);
@@ -68,10 +101,15 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
 
             ImGui::Checkbox("Use Manual Time", &imguiState.useManualTime);
             if (imguiState.useManualTime) {
-                ImGui::SliderFloat("Manual Time", &imguiState.manualTime, 0.0f, 100.0f, "%.2f");
+                ImGui::SliderFloat("Manual Time", &imguiState.manualTime, 0.0f, 24.0f, "%.2f h");
             }
 
-            //ImGui::Text("Current Time: %.2f", uniforms.time);
+            const int displayHour = static_cast<int>(imguiState.currentTimeHours);
+            const int displayMinute = std::min(
+                59,
+                static_cast<int>((imguiState.currentTimeHours - static_cast<float>(displayHour)) * 60.0f)
+            );
+            ImGui::Text("Current Time: %02d:%02d", displayHour, displayMinute);
         }
 
         // Camera Controls
