@@ -3,39 +3,19 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <iterator>
 #include <limits>
-#include <memory>
 #include <mutex>
 #include <queue>
 #include <utility>
 
-#include "solum_engine/voxel/mesh_manager/TileFootprintUtils.h"
 #include "solum_engine/voxel/World.h"
+#include "solum_engine/voxel/mesh_manager/TileFootprintUtils.h"
 
 namespace {
 constexpr std::size_t kWorldRevisionBatch = 2048u;
 
 using mesh_manager::tile_footprint::FootprintDistanceRange;
 using mesh_manager::tile_footprint::footprintDistanceRangeForCell;
-
-bool hasRenderablePackedData(const std::shared_ptr<const PackedMeshletData>& packed) {
-    return packed != nullptr && !packed->metadata.empty();
-}
-
-jobsystem::Priority demotePriority(jobsystem::Priority priority) {
-    switch (priority) {
-    case jobsystem::Priority::Critical:
-        return jobsystem::Priority::High;
-    case jobsystem::Priority::High:
-        return jobsystem::Priority::Normal;
-    case jobsystem::Priority::Normal:
-        return jobsystem::Priority::Low;
-    case jobsystem::Priority::Low:
-    default:
-        return jobsystem::Priority::Low;
-    }
-}
 
 jobsystem::Priority primaryPriorityForDistance(int32_t distanceChunks, int32_t tileSizeChunks) {
     const int32_t tileDistance = std::max(1, tileSizeChunks);
@@ -58,278 +38,636 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                                       const glm::vec3& playerWorldPosition,
                                       float sseProjectionScale,
                                       int32_t centerShiftChunks) {
-    struct ScheduledTileLod {
-        TileLodCoord coord{};
-        bool forceRemesh = false;
-        jobsystem::Priority priority = jobsystem::Priority::Low;
-    };
+    {
+        std::unique_lock<std::shared_mutex> lock(meshMutex_);
+        resetTileQueuesLocked(centerChunk, playerWorldPosition, sseProjectionScale, centerShiftChunks);
+    }
+    pumpTileQueues();
+}
 
+void MeshManager::resetTileQueuesLocked(const ChunkCoord& centerChunk,
+                                        const glm::vec3& playerWorldPosition,
+                                        float sseProjectionScale,
+                                        int32_t centerShiftChunks) {
     const int32_t maxRadiusChunks = std::max(0, maxConfiguredRadius());
-    const int32_t prefetchChunks = std::max(4, std::max(0, centerShiftChunks));
-    const int32_t scheduleOuterRadiusChunks = maxRadiusChunks + prefetchChunks;
+    planningPrefetchChunks_ = std::max(4, std::max(0, centerShiftChunks));
+    const int32_t scheduleOuterRadiusChunks = maxRadiusChunks + planningPrefetchChunks_;
 
-    const int32_t minTileX = floor_div(
+    planningMinTileX_ = floor_div(
         centerChunk.v.x - scheduleOuterRadiusChunks - (meshTileSizeChunks_ - 1),
         meshTileSizeChunks_
     );
-    const int32_t maxTileX = floor_div(centerChunk.v.x + scheduleOuterRadiusChunks, meshTileSizeChunks_);
-    const int32_t minTileY = floor_div(
+    planningMaxTileX_ = floor_div(centerChunk.v.x + scheduleOuterRadiusChunks, meshTileSizeChunks_);
+    planningMinTileY_ = floor_div(
         centerChunk.v.y - scheduleOuterRadiusChunks - (meshTileSizeChunks_ - 1),
         meshTileSizeChunks_
     );
-    const int32_t maxTileY = floor_div(centerChunk.v.y + scheduleOuterRadiusChunks, meshTileSizeChunks_);
-    const MeshTileCoord centerTile{
+    planningMaxTileY_ = floor_div(centerChunk.v.y + scheduleOuterRadiusChunks, meshTileSizeChunks_);
+    currentCenterTile_ = MeshTileCoord{
         floor_div(centerChunk.v.x, meshTileSizeChunks_),
         floor_div(centerChunk.v.y, meshTileSizeChunks_)
     };
-    const int32_t maxRingRadius = std::max(
-        std::max(std::abs(centerTile.x - minTileX), std::abs(centerTile.x - maxTileX)),
-        std::max(std::abs(centerTile.y - minTileY), std::abs(centerTile.y - maxTileY))
+    maxVisibleFrontierRing_ = std::max(
+        std::max(std::abs(currentCenterTile_.x - planningMinTileX_), std::abs(currentCenterTile_.x - planningMaxTileX_)),
+        std::max(std::abs(currentCenterTile_.y - planningMinTileY_), std::abs(currentCenterTile_.y - planningMaxTileY_))
     );
 
-    std::vector<MeshTileCoord> orderedGeneratedTiles;
-    orderedGeneratedTiles.reserve(static_cast<std::size_t>((maxTileX - minTileX + 1) * (maxTileY - minTileY + 1)));
+    ++tileQueueCenterVersion_;
+    ++tileQueueSequence_;
+    visibleFrontierRing_ = 0;
+    currentVisibleRingInitialized_ = false;
+    currentVisibleRingOutstandingTiles_.clear();
+    queuedVisibleTiles_.clear();
+    waitingVisibleTiles_.clear();
+    queuedVisibleTileHeap_ = decltype(queuedVisibleTileHeap_){};
+    queuedDeferredTileLods_.clear();
+    deferredTileLodHeap_ = decltype(deferredTileLodHeap_){};
 
-    auto appendGeneratedTile = [&](const MeshTileCoord& tileCoord) {
-        if (!tileInBounds(tileCoord, minTileX, maxTileX, minTileY, maxTileY)) {
-            return;
-        }
-        if (!isTileFootprintGenerated(tileCoord)) {
-            return;
-        }
-        orderedGeneratedTiles.push_back(tileCoord);
-    };
+    pruneMeshTilesOutsideWindowLocked();
 
-    appendGeneratedTile(centerTile);
-    for (int32_t radius = 1; radius <= maxRingRadius; ++radius) {
-        const int32_t ringMinX = centerTile.x - radius;
-        const int32_t ringMaxX = centerTile.x + radius;
-        const int32_t ringMinY = centerTile.y - radius;
-        const int32_t ringMaxY = centerTile.y + radius;
-
-        for (int32_t x = ringMinX; x <= ringMaxX; ++x) {
-            appendGeneratedTile(MeshTileCoord{x, ringMinY});
+    for (auto& [tileCoord, tileState] : meshTiles_) {
+        if (!tileInBounds(tileCoord, planningMinTileX_, planningMaxTileX_, planningMinTileY_, planningMaxTileY_)) {
+            continue;
         }
-        for (int32_t x = ringMinX; x <= ringMaxX; ++x) {
-            appendGeneratedTile(MeshTileCoord{x, ringMaxY});
-        }
-        for (int32_t y = ringMinY + 1; y < ringMaxY; ++y) {
-            appendGeneratedTile(MeshTileCoord{ringMinX, y});
-        }
-        for (int32_t y = ringMinY + 1; y < ringMaxY; ++y) {
-            appendGeneratedTile(MeshTileCoord{ringMaxX, y});
-        }
+        tileState.queuedVisibleLod = -1;
+        tileState.pendingVisibleSlices = 0u;
+        tileState.waitingForVisibleFootprint = false;
     }
 
-    std::vector<ScheduledTileLod> primaryJobs;
-    std::vector<ScheduledTileLod> fallbackJobs;
-    primaryJobs.reserve(orderedGeneratedTiles.size() * static_cast<std::size_t>(meshTileSliceCount_));
-    fallbackJobs.reserve(orderedGeneratedTiles.size() * static_cast<std::size_t>(meshTileSliceCount_));
+    (void)playerWorldPosition;
+    (void)sseProjectionScale;
+}
 
-    {
-        std::unique_lock<std::shared_mutex> lock(meshMutex_);
+void MeshManager::pruneMeshTilesOutsideWindowLocked() {
+    for (auto it = meshTiles_.begin(); it != meshTiles_.end();) {
+        if (tileInBounds(it->first, planningMinTileX_, planningMaxTileX_, planningMinTileY_, planningMaxTileY_)) {
+            ++it;
+            continue;
+        }
 
-        for (auto it = meshTiles_.begin(); it != meshTiles_.end();) {
-            if (tileInBounds(it->first, minTileX, maxTileX, minTileY, maxTileY)) {
-                ++it;
-                continue;
+        queuedVisibleTiles_.erase(it->first);
+        waitingVisibleTiles_.erase(it->first);
+        currentVisibleRingOutstandingTiles_.erase(it->first);
+
+        for (const auto& [lod, slices] : it->second.lodStates) {
+            for (const auto& [zSlice, lodState] : slices) {
+                if (!lodState.resident) {
+                    continue;
+                }
+                queuedDeferredTileLods_.erase(TileLodCoord{MeshTileSliceCoord{it->first, 0}, lod});
+                queueTileLodRemovalLocked(MeshTileLodKey{
+                    MeshTileSliceCoord{it->first, zSlice},
+                    lod
+                });
             }
+        }
+        it = meshTiles_.erase(it);
+        selectionSnapshotDirty_ = true;
+    }
+}
 
-            for (const auto& [lod, slices] : it->second.lodStates) {
-                for (const auto& [zSlice, lodState] : slices) {
+void MeshManager::ensureVisibleFrontierLocked() {
+    while (visibleFrontierRing_ <= maxVisibleFrontierRing_) {
+        if (!currentVisibleRingInitialized_) {
+            currentVisibleRingOutstandingTiles_.clear();
+            initializeVisibleRingLocked(visibleFrontierRing_);
+            currentVisibleRingInitialized_ = true;
+        }
+
+        if (!currentVisibleRingOutstandingTiles_.empty()) {
+            return;
+        }
+
+        ++visibleFrontierRing_;
+        currentVisibleRingInitialized_ = false;
+    }
+}
+
+bool MeshManager::initializeVisibleRingLocked(int32_t ring) {
+    bool anyTilesInRing = false;
+
+    auto processTile = [&](const MeshTileCoord& tileCoord) {
+        if (!tileInBounds(tileCoord, planningMinTileX_, planningMaxTileX_, planningMinTileY_, planningMaxTileY_)) {
+            return;
+        }
+
+        anyTilesInRing = true;
+        MeshTileState& tileState = meshTiles_[tileCoord];
+        tileState.queuedVisibleLod = -1;
+        tileState.pendingVisibleSlices = 0u;
+        tileState.waitingForVisibleFootprint = false;
+
+        for (auto lodIt = tileState.lodStates.begin(); lodIt != tileState.lodStates.end();) {
+            if (static_cast<int32_t>(lodIt->first) >= config_.lodLevelCount) {
+                for (const auto& [zSlice, lodState] : lodIt->second) {
                     if (!lodState.resident) {
                         continue;
                     }
                     queueTileLodRemovalLocked(MeshTileLodKey{
-                        MeshTileSliceCoord{it->first, zSlice},
-                        lod
+                        MeshTileSliceCoord{tileCoord, zSlice},
+                        lodIt->first
                     });
                 }
+                lodIt = tileState.lodStates.erase(lodIt);
+            } else {
+                ++lodIt;
             }
-            it = meshTiles_.erase(it);
-            selectionSnapshotDirty_ = true;
         }
 
-        bool selectionChanged = false;
+        const int8_t previousDesired = tileState.desiredLod;
+        const int8_t candidateDesired = desiredLodForTile(
+            tileCoord,
+            lastScheduledCenterChunk_,
+            lastPlayerWorldPosition_,
+            lastSseProjectionScale_,
+            0
+        );
+        const int8_t desired = applyLodHysteresis(
+            tileCoord,
+            candidateDesired,
+            previousDesired,
+            lastPlayerWorldPosition_,
+            lastSseProjectionScale_
+        );
+        tileState.desiredLod = desired;
+        if (refreshSelectedLodLocked(tileState)) {
+            selectionSnapshotDirty_ = true;
+        }
+        if (desired < 0) {
+            return;
+        }
 
-        for (const MeshTileCoord& tileCoord : orderedGeneratedTiles) {
-            MeshTileState& tileState = meshTiles_[tileCoord];
-            // Drop any stale high LODs that can overlap neighboring tiles.
-            for (auto lodIt = tileState.lodStates.begin(); lodIt != tileState.lodStates.end();) {
-                if (static_cast<int32_t>(lodIt->first) >= config_.lodLevelCount) {
-                    for (const auto& [zSlice, lodState] : lodIt->second) {
-                        if (!lodState.resident) {
-                            continue;
-                        }
-                        queueTileLodRemovalLocked(MeshTileLodKey{
-                            MeshTileSliceCoord{tileCoord, zSlice},
-                            lodIt->first
-                        });
-                    }
-                    lodIt = tileState.lodStates.erase(lodIt);
-                } else {
-                    ++lodIt;
+        if (isDesiredLodReadyLocked(tileCoord, tileState)) {
+            queueDeferredLodsForTileLocked(tileCoord);
+            return;
+        }
+
+        currentVisibleRingOutstandingTiles_.insert(tileCoord);
+
+        const uint8_t pendingDesired = pendingSliceCountForLodLocked(tileCoord, static_cast<uint8_t>(desired));
+        if (pendingDesired > 0u) {
+            tileState.queuedVisibleLod = desired;
+            tileState.pendingVisibleSlices = pendingDesired;
+            return;
+        }
+
+        if (!isTileFootprintGenerated(tileCoord)) {
+            tileState.waitingForVisibleFootprint = true;
+            waitingVisibleTiles_.insert(tileCoord);
+            return;
+        }
+
+        const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+            tileCoord.x,
+            tileCoord.y,
+            meshTileSizeChunks_,
+            lastScheduledCenterChunk_
+        );
+        const int32_t distanceChunks = distances.minDistanceChunks;
+        enqueueVisibleTileLocked(tileCoord, ring, distanceChunks * distanceChunks);
+    };
+
+    if (ring == 0) {
+        processTile(currentCenterTile_);
+        return anyTilesInRing;
+    }
+
+    const int32_t ringMinX = currentCenterTile_.x - ring;
+    const int32_t ringMaxX = currentCenterTile_.x + ring;
+    const int32_t ringMinY = currentCenterTile_.y - ring;
+    const int32_t ringMaxY = currentCenterTile_.y + ring;
+
+    for (int32_t x = ringMinX; x <= ringMaxX; ++x) {
+        processTile(MeshTileCoord{x, ringMinY});
+    }
+    for (int32_t x = ringMinX; x <= ringMaxX; ++x) {
+        processTile(MeshTileCoord{x, ringMaxY});
+    }
+    for (int32_t y = ringMinY + 1; y < ringMaxY; ++y) {
+        processTile(MeshTileCoord{ringMinX, y});
+    }
+    for (int32_t y = ringMinY + 1; y < ringMaxY; ++y) {
+        processTile(MeshTileCoord{ringMaxX, y});
+    }
+
+    return anyTilesInRing;
+}
+
+void MeshManager::enqueueVisibleTileLocked(const MeshTileCoord& tile, int32_t ring, int32_t distanceSq) {
+    if (!queuedVisibleTiles_.insert(tile).second) {
+        return;
+    }
+
+    MeshTileState& tileState = meshTiles_[tile];
+    tileState.waitingForVisibleFootprint = false;
+    waitingVisibleTiles_.erase(tile);
+    queuedVisibleTileHeap_.push(QueuedVisibleTileEntry{
+        tile,
+        ring,
+        distanceSq,
+        tileQueueCenterVersion_,
+        tileQueueSequence_++
+    });
+}
+
+void MeshManager::enqueueDeferredTileLodLocked(const MeshTileCoord& tile, uint8_t lodLevel, int32_t distanceSq) {
+    const TileLodCoord key{MeshTileSliceCoord{tile, 0}, lodLevel};
+    if (!queuedDeferredTileLods_.insert(key).second) {
+        return;
+    }
+
+    deferredTileLodHeap_.push(DeferredTileLodEntry{
+        tile,
+        lodLevel,
+        distanceSq,
+        tileQueueCenterVersion_,
+        tileQueueSequence_++
+    });
+}
+
+void MeshManager::queueDeferredLodsForTileLocked(const MeshTileCoord& tile) {
+    const auto tileIt = meshTiles_.find(tile);
+    if (tileIt == meshTiles_.end()) {
+        return;
+    }
+
+    const MeshTileState& tileState = tileIt->second;
+    if (tileState.desiredLod < 0) {
+        return;
+    }
+
+    const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+        tile.x,
+        tile.y,
+        meshTileSizeChunks_,
+        lastScheduledCenterChunk_
+    );
+    const int32_t distanceChunks = distances.minDistanceChunks;
+    const int32_t distanceSq = distanceChunks * distanceChunks;
+
+    for (int32_t lod = tileState.desiredLod + 1; lod < config_.lodLevelCount; ++lod) {
+        if (lodFullyResidentLocked(tileState, lod) ||
+            pendingSliceCountForLodLocked(tile, static_cast<uint8_t>(lod)) > 0u) {
+            continue;
+        }
+        enqueueDeferredTileLodLocked(tile, static_cast<uint8_t>(lod), distanceSq);
+    }
+
+    for (int32_t lod = tileState.desiredLod - 1; lod >= 0; --lod) {
+        if (lodFullyResidentLocked(tileState, lod) ||
+            pendingSliceCountForLodLocked(tile, static_cast<uint8_t>(lod)) > 0u) {
+            continue;
+        }
+        enqueueDeferredTileLodLocked(tile, static_cast<uint8_t>(lod), distanceSq);
+    }
+}
+
+void MeshManager::markVisibleTileReadyLocked(const MeshTileCoord& tile) {
+    currentVisibleRingOutstandingTiles_.erase(tile);
+    queuedVisibleTiles_.erase(tile);
+    waitingVisibleTiles_.erase(tile);
+
+    auto tileIt = meshTiles_.find(tile);
+    if (tileIt == meshTiles_.end()) {
+        return;
+    }
+
+    tileIt->second.queuedVisibleLod = -1;
+    tileIt->second.pendingVisibleSlices = 0u;
+    tileIt->second.waitingForVisibleFootprint = false;
+}
+
+void MeshManager::noteVisibleTileAttemptFinishedLocked(const MeshTileCoord& tile, uint8_t lodLevel) {
+    auto tileIt = meshTiles_.find(tile);
+    if (tileIt == meshTiles_.end()) {
+        return;
+    }
+
+    MeshTileState& tileState = tileIt->second;
+    if (tileState.queuedVisibleLod != static_cast<int8_t>(lodLevel)) {
+        return;
+    }
+
+    tileState.queuedVisibleLod = -1;
+    tileState.pendingVisibleSlices = 0u;
+
+    if (currentVisibleRingOutstandingTiles_.find(tile) == currentVisibleRingOutstandingTiles_.end()) {
+        tileState.waitingForVisibleFootprint = false;
+        waitingVisibleTiles_.erase(tile);
+        return;
+    }
+
+    if (tileState.desiredLod < 0 || isDesiredLodReadyLocked(tile, tileState)) {
+        markVisibleTileReadyLocked(tile);
+        return;
+    }
+
+    const uint8_t pendingDesired = pendingSliceCountForLodLocked(tile, static_cast<uint8_t>(tileState.desiredLod));
+    if (pendingDesired > 0u) {
+        tileState.queuedVisibleLod = tileState.desiredLod;
+        tileState.pendingVisibleSlices = pendingDesired;
+        tileState.waitingForVisibleFootprint = false;
+        waitingVisibleTiles_.erase(tile);
+        return;
+    }
+
+    if (!isTileFootprintGenerated(tile)) {
+        tileState.waitingForVisibleFootprint = true;
+        waitingVisibleTiles_.insert(tile);
+        return;
+    }
+
+    const int32_t ring = std::max(std::abs(tile.x - currentCenterTile_.x), std::abs(tile.y - currentCenterTile_.y));
+    const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+        tile.x,
+        tile.y,
+        meshTileSizeChunks_,
+        lastScheduledCenterChunk_
+    );
+    const int32_t distanceChunks = distances.minDistanceChunks;
+    enqueueVisibleTileLocked(tile, ring, distanceChunks * distanceChunks);
+}
+
+void MeshManager::wakeVisibleTilesForGeneratedColumns(const std::vector<ColumnCoord>& generatedColumns) {
+    std::unordered_set<MeshTileCoord> candidateTiles;
+    candidateTiles.reserve(generatedColumns.size());
+    for (const ColumnCoord& coord : generatedColumns) {
+        candidateTiles.insert(MeshTileCoord{
+            floor_div(coord.v.x, meshTileSizeChunks_),
+            floor_div(coord.v.y, meshTileSizeChunks_)
+        });
+    }
+
+    std::unique_lock<std::shared_mutex> lock(meshMutex_);
+    for (const MeshTileCoord& tile : candidateTiles) {
+        if (!tileInBounds(tile, planningMinTileX_, planningMaxTileX_, planningMinTileY_, planningMaxTileY_)) {
+            continue;
+        }
+        if (currentVisibleRingOutstandingTiles_.find(tile) == currentVisibleRingOutstandingTiles_.end()) {
+            continue;
+        }
+        if (queuedVisibleTiles_.find(tile) != queuedVisibleTiles_.end()) {
+            continue;
+        }
+
+        auto tileIt = meshTiles_.find(tile);
+        if (tileIt == meshTiles_.end() || tileIt->second.desiredLod < 0) {
+            continue;
+        }
+        if (pendingSliceCountForLodLocked(tile, static_cast<uint8_t>(tileIt->second.desiredLod)) > 0u) {
+            tileIt->second.queuedVisibleLod = tileIt->second.desiredLod;
+            continue;
+        }
+        if (!isTileFootprintGenerated(tile)) {
+            continue;
+        }
+
+        const int32_t ring = std::max(std::abs(tile.x - currentCenterTile_.x), std::abs(tile.y - currentCenterTile_.y));
+        const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+            tile.x,
+            tile.y,
+            meshTileSizeChunks_,
+            lastScheduledCenterChunk_
+        );
+        const int32_t distanceChunks = distances.minDistanceChunks;
+        enqueueVisibleTileLocked(tile, ring, distanceChunks * distanceChunks);
+    }
+}
+
+bool MeshManager::tryScheduleDeferredTileLodLocked(const DeferredTileLodEntry& entry,
+                                                   std::vector<TileLodCoord>& outCoords,
+                                                   std::vector<jobsystem::Priority>& outPriorities,
+                                                   std::vector<bool>& outForceRemesh,
+                                                   int32_t activeWindowExtraChunks) {
+    if (entry.centerVersion != tileQueueCenterVersion_) {
+        return false;
+    }
+    if (!tileInBounds(entry.tile, planningMinTileX_, planningMaxTileX_, planningMinTileY_, planningMaxTileY_)) {
+        return false;
+    }
+    if (!isTileWithinActiveWindowLocked(entry.tile, activeWindowExtraChunks)) {
+        return false;
+    }
+
+    const auto tileIt = meshTiles_.find(entry.tile);
+    if (tileIt == meshTiles_.end()) {
+        return false;
+    }
+    if (lodFullyResidentLocked(tileIt->second, entry.lodLevel)) {
+        return false;
+    }
+    if (pendingSliceCountForLodLocked(entry.tile, entry.lodLevel) > 0u) {
+        return false;
+    }
+    if (!isTileFootprintGenerated(entry.tile)) {
+        return false;
+    }
+
+    bool queuedAny = false;
+    const auto lodIt = tileIt->second.lodStates.find(entry.lodLevel);
+    for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
+        bool resident = false;
+        if (lodIt != tileIt->second.lodStates.end()) {
+            const auto sliceIt = lodIt->second.find(zSlice);
+            resident = sliceIt != lodIt->second.end() && sliceIt->second.resident;
+        }
+        if (resident) {
+            continue;
+        }
+
+        outCoords.push_back(TileLodCoord{MeshTileSliceCoord{entry.tile, zSlice}, entry.lodLevel});
+        outPriorities.push_back(priorityFromLodLevel(entry.lodLevel));
+        outForceRemesh.push_back(false);
+        queuedAny = true;
+    }
+    return queuedAny;
+}
+
+void MeshManager::pumpTileQueues() {
+    struct PendingDispatch {
+        TileLodCoord coord{};
+        jobsystem::Priority priority = jobsystem::Priority::Low;
+        bool forceRemesh = false;
+    };
+
+    std::vector<PendingDispatch> dispatches;
+    std::vector<std::pair<MeshTileCoord, uint8_t>> visibleAttempts;
+    bool repump = false;
+    const int32_t activeWindowExtraChunks = planningPrefetchChunks_ + meshTileSizeChunks_;
+
+    {
+        std::unique_lock<std::shared_mutex> lock(meshMutex_);
+        ensureVisibleFrontierLocked();
+
+        std::size_t pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
+        const std::size_t maxPending = maxPendingMeshJobs(jobs_.worker_count());
+        std::size_t remainingBudget = (pendingCount < maxPending) ? (maxPending - pendingCount) : 0u;
+
+        while (remainingBudget > 0u) {
+            ensureVisibleFrontierLocked();
+
+            bool queuedVisibleWork = false;
+            while (remainingBudget > 0u && !queuedVisibleTileHeap_.empty()) {
+                const QueuedVisibleTileEntry entry = queuedVisibleTileHeap_.top();
+                queuedVisibleTileHeap_.pop();
+
+                if (entry.centerVersion != tileQueueCenterVersion_) {
+                    continue;
                 }
+                if (queuedVisibleTiles_.erase(entry.tile) == 0u) {
+                    continue;
+                }
+                if (currentVisibleRingOutstandingTiles_.find(entry.tile) == currentVisibleRingOutstandingTiles_.end()) {
+                    continue;
+                }
+
+                auto tileIt = meshTiles_.find(entry.tile);
+                if (tileIt == meshTiles_.end()) {
+                    currentVisibleRingOutstandingTiles_.erase(entry.tile);
+                    continue;
+                }
+
+                MeshTileState& tileState = tileIt->second;
+                if (tileState.desiredLod < 0) {
+                    markVisibleTileReadyLocked(entry.tile);
+                    repump = true;
+                    continue;
+                }
+                if (isDesiredLodReadyLocked(entry.tile, tileState)) {
+                    markVisibleTileReadyLocked(entry.tile);
+                    queueDeferredLodsForTileLocked(entry.tile);
+                    repump = true;
+                    continue;
+                }
+
+                const uint8_t pendingDesired = pendingSliceCountForLodLocked(
+                    entry.tile,
+                    static_cast<uint8_t>(tileState.desiredLod)
+                );
+                if (pendingDesired > 0u) {
+                    tileState.queuedVisibleLod = tileState.desiredLod;
+                    tileState.pendingVisibleSlices = pendingDesired;
+                    continue;
+                }
+
+                if (!isTileFootprintGenerated(entry.tile)) {
+                    tileState.waitingForVisibleFootprint = true;
+                    waitingVisibleTiles_.insert(entry.tile);
+                    continue;
+                }
+
+                const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+                    entry.tile.x,
+                    entry.tile.y,
+                    meshTileSizeChunks_,
+                    lastScheduledCenterChunk_
+                );
+                const int32_t distanceChunks = distances.minDistanceChunks;
+                const jobsystem::Priority priority = primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
+
+                std::size_t beforeDispatchCount = dispatches.size();
+                const auto lodIt = tileState.lodStates.find(static_cast<uint8_t>(tileState.desiredLod));
+                for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
+                    const bool resident = lodIt != tileState.lodStates.end() &&
+                        lodIt->second.contains(zSlice) &&
+                        lodIt->second.at(zSlice).resident;
+                    if (resident) {
+                        continue;
+                    }
+                    dispatches.push_back(PendingDispatch{
+                        TileLodCoord{MeshTileSliceCoord{entry.tile, zSlice}, static_cast<uint8_t>(tileState.desiredLod)},
+                        priority,
+                        false
+                    });
+                }
+
+                const std::size_t added = dispatches.size() - beforeDispatchCount;
+                if (added == 0u) {
+                    if (isDesiredLodReadyLocked(entry.tile, tileState)) {
+                        markVisibleTileReadyLocked(entry.tile);
+                        queueDeferredLodsForTileLocked(entry.tile);
+                    } else {
+                        noteVisibleTileAttemptFinishedLocked(entry.tile, static_cast<uint8_t>(tileState.desiredLod));
+                    }
+                    repump = true;
+                    continue;
+                }
+
+                tileState.queuedVisibleLod = tileState.desiredLod;
+                tileState.pendingVisibleSlices = 0u;
+                tileState.waitingForVisibleFootprint = false;
+                waitingVisibleTiles_.erase(entry.tile);
+                visibleAttempts.emplace_back(entry.tile, static_cast<uint8_t>(tileState.desiredLod));
+                queuedVisibleWork = true;
+                remainingBudget = (added >= remainingBudget) ? 0u : (remainingBudget - added);
             }
 
-            auto lodFullyResident = [&](int32_t lodLevel) {
-                if (lodLevel < 0) {
-                    return false;
-                }
-                const auto lodIt = tileState.lodStates.find(static_cast<uint8_t>(lodLevel));
-                if (lodIt == tileState.lodStates.end()) {
-                    return false;
-                }
-                for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-                    const auto sliceIt = lodIt->second.find(zSlice);
-                    if (sliceIt == lodIt->second.end() || !sliceIt->second.resident) {
-                        return false;
-                    }
-                }
-                return true;
-            };
+            if (queuedVisibleWork || hasVisibleQueueWorkLocked()) {
+                break;
+            }
 
-            const int8_t previousDesired = tileState.desiredLod;
-            const int8_t candidateDesired = desiredLodForTile(
-                tileCoord,
-                centerChunk,
-                playerWorldPosition,
-                sseProjectionScale,
-                0
-            );
-            const int8_t desired = applyLodHysteresis(
-                tileCoord,
-                candidateDesired,
-                previousDesired,
-                playerWorldPosition,
-                sseProjectionScale
-            );
-            tileState.desiredLod = desired;
-            selectionChanged = refreshSelectedLodLocked(tileState) || selectionChanged;
-            if (desired < 0) {
+            bool queuedDeferredWork = false;
+            while (remainingBudget > 0u && !deferredTileLodHeap_.empty()) {
+                const DeferredTileLodEntry entry = deferredTileLodHeap_.top();
+                deferredTileLodHeap_.pop();
+                queuedDeferredTileLods_.erase(TileLodCoord{MeshTileSliceCoord{entry.tile, 0}, entry.lodLevel});
+
+                std::vector<TileLodCoord> coords;
+                std::vector<jobsystem::Priority> priorities;
+                std::vector<bool> forceRemesh;
+                if (!tryScheduleDeferredTileLodLocked(entry, coords, priorities, forceRemesh, activeWindowExtraChunks)) {
+                    continue;
+                }
+
+                for (std::size_t i = 0; i < coords.size(); ++i) {
+                    dispatches.push_back(PendingDispatch{coords[i], priorities[i], forceRemesh[i]});
+                }
+                queuedDeferredWork = !coords.empty();
+                remainingBudget = (coords.size() >= remainingBudget) ? 0u : (remainingBudget - coords.size());
+            }
+
+            if (!queuedDeferredWork) {
+                break;
+            }
+        }
+    }
+
+    for (const PendingDispatch& dispatch : dispatches) {
+        scheduleTileLodMeshing(
+            dispatch.coord,
+            dispatch.priority,
+            dispatch.forceRemesh,
+            activeWindowExtraChunks
+        );
+    }
+
+    if (!visibleAttempts.empty()) {
+        std::unique_lock<std::shared_mutex> lock(meshMutex_);
+        for (const auto& [tile, lodLevel] : visibleAttempts) {
+            auto tileIt = meshTiles_.find(tile);
+            if (tileIt == meshTiles_.end() || tileIt->second.queuedVisibleLod != static_cast<int8_t>(lodLevel)) {
                 continue;
             }
 
-            const FootprintDistanceRange distances = footprintDistanceRangeForCell(
-                tileCoord.x,
-                tileCoord.y,
-                meshTileSizeChunks_,
-                centerChunk
-            );
-            const int32_t distanceChunks = distances.minDistanceChunks;
-            const jobsystem::Priority primaryPriority =
-                primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
-            const jobsystem::Priority fallbackPriority = demotePriority(primaryPriority);
-
-            bool desiredNeedsRepair = false;
-            const auto desiredLodIt = tileState.lodStates.find(static_cast<uint8_t>(desired));
-            if (desiredLodIt != tileState.lodStates.end()) {
-                bool desiredAnyResident = false;
-                bool desiredAnyRenderable = false;
-                for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-                    const auto sliceIt = desiredLodIt->second.find(zSlice);
-                    if (sliceIt == desiredLodIt->second.end() || !sliceIt->second.resident) {
-                        continue;
-                    }
-                    desiredAnyResident = true;
-                    if (hasRenderablePackedData(sliceIt->second.culledPacked) ||
-                        hasRenderablePackedData(sliceIt->second.doubleSidedPacked)) {
-                        desiredAnyRenderable = true;
-                    }
-                }
-
-                bool hasNonEmptyAlternateLod = false;
-                for (const auto& [lodLevel, lodSlices] : tileState.lodStates) {
-                    if (lodLevel == static_cast<uint8_t>(desired)) {
-                        continue;
-                    }
-                    for (const auto& [_, lodState] : lodSlices) {
-                        if (lodState.resident &&
-                            (hasRenderablePackedData(lodState.culledPacked) ||
-                             hasRenderablePackedData(lodState.doubleSidedPacked))) {
-                            hasNonEmptyAlternateLod = true;
-                            break;
-                        }
-                    }
-                    if (hasNonEmptyAlternateLod) {
-                        break;
-                    }
-                }
-
-                if (desiredAnyResident && !desiredAnyRenderable && hasNonEmptyAlternateLod) {
-                    constexpr uint64_t kEmptyLodRepairCooldownRevisions = 32u;
-                    const uint64_t currentRevision = meshRevision_.load(std::memory_order_acquire);
-                    uint64_t oldestDesiredRevision = currentRevision;
-                    bool hasDesiredRevision = false;
-                    for (const auto& [_, lodState] : desiredLodIt->second) {
-                        if (!lodState.resident) {
-                            continue;
-                        }
-                        oldestDesiredRevision = hasDesiredRevision
-                            ? std::min(oldestDesiredRevision, lodState.revision)
-                            : lodState.revision;
-                        hasDesiredRevision = true;
-                    }
-                    if (hasDesiredRevision) {
-                        desiredNeedsRepair =
-                            currentRevision >= (oldestDesiredRevision + kEmptyLodRepairCooldownRevisions);
-                    }
-                }
+            const uint8_t pending = pendingSliceCountForLodLocked(tile, lodLevel);
+            tileIt->second.pendingVisibleSlices = pending;
+            if (pending > 0u) {
+                continue;
             }
 
-            if (desiredNeedsRepair || !lodFullyResident(desired)) {
-                for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-                    primaryJobs.push_back(ScheduledTileLod{
-                        TileLodCoord{MeshTileSliceCoord{tileCoord, zSlice}, static_cast<uint8_t>(desired)},
-                        desiredNeedsRepair,
-                        primaryPriority
-                    });
-                }
+            if (isDesiredLodReadyLocked(tile, tileIt->second)) {
+                markVisibleTileReadyLocked(tile);
+                queueDeferredLodsForTileLocked(tile);
+            } else {
+                noteVisibleTileAttemptFinishedLocked(tile, lodLevel);
             }
-
-            const int32_t fallbackLod = desired + 1;
-            if (tileState.selectedLod < 0 && fallbackLod < config_.lodLevelCount && !lodFullyResident(fallbackLod)) {
-                for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-                    fallbackJobs.push_back(ScheduledTileLod{
-                        TileLodCoord{MeshTileSliceCoord{tileCoord, zSlice}, static_cast<uint8_t>(fallbackLod)},
-                        false,
-                        fallbackPriority
-                    });
-                }
-            }
-        }
-
-        if (selectionChanged) {
-            selectionSnapshotDirty_ = true;
+            repump = true;
         }
     }
 
-    std::size_t pendingCount = 0u;
-    {
-        std::shared_lock<std::shared_mutex> lock(meshMutex_);
-        pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
+    if (repump) {
+        pumpTileQueues();
     }
-    const std::size_t maxPending = maxPendingMeshJobs(jobs_.worker_count());
-    std::size_t remainingBudget = (pendingCount < maxPending) ? (maxPending - pendingCount) : 0u;
-    const int32_t activeWindowExtraChunks = prefetchChunks + meshTileSizeChunks_;
-
-    auto scheduleJobs = [&](const std::vector<ScheduledTileLod>& jobs) {
-        for (const ScheduledTileLod& scheduled : jobs) {
-            if (remainingBudget == 0u) {
-                return;
-            }
-            scheduleTileLodMeshing(
-                scheduled.coord,
-                scheduled.priority,
-                scheduled.forceRemesh,
-                activeWindowExtraChunks
-            );
-            --remainingBudget;
-        }
-    };
-
-    scheduleJobs(primaryJobs);
-    scheduleJobs(fallbackJobs);
 }
 
 void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
@@ -356,6 +694,8 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
     if (generatedColumns.empty()) {
         return;
     }
+
+    wakeVisibleTilesForGeneratedColumns(generatedColumns);
 
     std::unordered_set<MeshTileCoord> tilesToRemesh;
     const int32_t remeshRadius = std::max(0, maxConfiguredRadius() + meshTileSizeChunks_ + 4);
@@ -517,4 +857,6 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
         std::shared_lock<std::shared_mutex> lock(meshMutex_);
         pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
     }
+
+    pumpTileQueues();
 }
