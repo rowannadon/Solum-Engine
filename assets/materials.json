@@ -53,6 +53,7 @@
   },
   {
     "name": "glowstone",
+    "aoOccluder": false,
     "texture": "glowstone.png",
     "emissiveLight": 15
   }

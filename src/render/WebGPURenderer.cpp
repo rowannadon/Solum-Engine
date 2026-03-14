@@ -122,6 +122,12 @@ bool WebGPURenderer::initialize(const Config& config) {
         return false;
     }
 
+    selectionOutlinePipeline_.emplace(*services_);
+    if (!selectionOutlinePipeline_->build()) {
+        std::cerr << "Failed to create selection outline pipeline and resources." << std::endl;
+        return false;
+    }
+
     debugBoundsManager_.reset();
     return true;
 }
@@ -275,6 +281,13 @@ RuntimeTimingSnapshot WebGPURenderer::getRuntimeTimingSnapshot() {
 
 void WebGPURenderer::setDebugWorld(const World* world) {
     debugBoundsManager_.setWorld(world);
+}
+
+void WebGPURenderer::setSelectionOutlineBlock(const std::optional<BlockCoord>& blockCoord) {
+    if (selectionOutlinePipeline_.has_value() &&
+        !selectionOutlinePipeline_->setSelectedBlock(blockCoord)) {
+        std::cerr << "Failed to upload selection outline vertices." << std::endl;
+    }
 }
 
 void WebGPURenderer::queueMeshDelta(MeshStreamingDelta&& delta) {
@@ -436,29 +449,21 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
     bool renderedBasePass = false;
     if (culledVoxelPipeline_.has_value()) {
         renderedBasePass = true;
-        if (!hasDoubleSidedMeshlets || !doubleSidedVoxelPipeline_.has_value()) {
-            culledVoxelPipeline_->render(
-                targetView,
-                encoder,
-                VoxelPipeline::RenderOptions{true, true},
-                [&](RenderPassEncoder& pass) {
-                    if (boundsDebugPipeline_.has_value()) {
-                        boundsDebugPipeline_->draw(pass);
-                    }
-                    ImGui::Render();
-                    ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
-                }
-            );
-        } else {
-            culledVoxelPipeline_->render(targetView, encoder, VoxelPipeline::RenderOptions{true, true});
-        }
+        culledVoxelPipeline_->render(targetView, encoder, VoxelPipeline::RenderOptions{true, true});
     }
 
     if (hasDoubleSidedMeshlets && doubleSidedVoxelPipeline_.has_value()) {
         doubleSidedVoxelPipeline_->render(
             targetView,
             encoder,
-            VoxelPipeline::RenderOptions{!renderedBasePass, !renderedBasePass},
+            VoxelPipeline::RenderOptions{!renderedBasePass, !renderedBasePass}
+        );
+    }
+
+    if (selectionOutlinePipeline_.has_value()) {
+        selectionOutlinePipeline_->render(
+            targetView,
+            encoder,
             [&](RenderPassEncoder& pass) {
                 if (boundsDebugPipeline_.has_value()) {
                     boundsDebugPipeline_->draw(pass);
@@ -610,6 +615,11 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 }
 
 void WebGPURenderer::terminate() {
+    if (selectionOutlinePipeline_.has_value()) {
+        selectionOutlinePipeline_->removeResources();
+        selectionOutlinePipeline_.reset();
+    }
+
     if (boundsDebugPipeline_.has_value()) {
         boundsDebugPipeline_->removeResources();
         boundsDebugPipeline_.reset();

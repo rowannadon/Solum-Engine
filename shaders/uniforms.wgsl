@@ -11,6 +11,7 @@ struct FrameUniforms {
     renderFlags: vec4u,
     occlusionParams: vec4f,
     timeParams: vec4f,
+    viewportParams: vec4f,
 };
 
 fn local_to_world_position(localPosition: vec3f) -> vec4f {

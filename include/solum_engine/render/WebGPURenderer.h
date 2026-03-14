@@ -10,6 +10,7 @@
 #include <optional>
 #include <utility>
 
+#include "solum_engine/resources/Coords.h"
 #include "solum_engine/platform/WebGPUContext.h"
 #include "solum_engine/render/BufferManager.h"
 #include "solum_engine/render/DebugBoundsManager.h"
@@ -23,6 +24,7 @@
 #include "solum_engine/render/pipelines/BoundsDebugPipeline.h"
 #include "solum_engine/render/pipelines/MeshletCullingPipeline.h"
 #include "solum_engine/render/pipelines/MeshletOcclusionPipeline.h"
+#include "solum_engine/render/pipelines/SelectionOutlinePipeline.h"
 #include "solum_engine/render/pipelines/VoxelPipeline.h"
 #include "solum_engine/voxel/StreamingUpload.h"
 
@@ -53,6 +55,7 @@ private:
     std::optional<MeshletCullingPipeline> culledMeshletCullingPipeline_;
     std::optional<MeshletCullingPipeline> doubleSidedMeshletCullingPipeline_;
     std::optional<BoundsDebugPipeline> boundsDebugPipeline_;
+    std::optional<SelectionOutlinePipeline> selectionOutlinePipeline_;
 
     DebugBoundsManager debugBoundsManager_;
     RuntimeTimingTracker timingTracker_;
@@ -98,6 +101,7 @@ public:
     RuntimeTimingSnapshot getRuntimeTimingSnapshot();
 
     void setDebugWorld(const World* world);
+    void setSelectionOutlineBlock(const std::optional<BlockCoord>& blockCoord);
     void queueMeshDelta(MeshStreamingDelta&& delta);
     uint64_t uploadedMeshRevision() const noexcept;
 

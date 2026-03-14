@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -37,7 +38,9 @@ private:
 
     void updateProjectionMatrix(int zoom);
     void updateViewMatrix();
+    void updateViewportUniforms();
     void processInput();
+    void updateTargetedBlockSelection(bool enabled);
     void processBlockInteractions();
     void updateCullingCameraMatrices(const glm::mat4& renderViewMatrix, bool freezeCullingCamera);
     struct VoxelRaycastHit {
@@ -94,4 +97,5 @@ private:
 
     std::vector<float> frameTimes;
     std::unique_ptr<FramePacer> framePacer_;
+    std::optional<VoxelRaycastHit> currentTargetBlockHit_;
 };

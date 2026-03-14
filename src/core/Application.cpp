@@ -59,9 +59,14 @@ bool Application::Initialize() {
     uniforms.timeParams[1] = 12.0f;
     uniforms.timeParams[2] = 0.0f;
     uniforms.timeParams[3] = 0.0f;
+    uniforms.viewportParams[0] = 1.0f;
+    uniforms.viewportParams[1] = 1.0f;
+    uniforms.viewportParams[2] = 2.0f;
+    uniforms.viewportParams[3] = 2.0f;
 
     camera.position = glm::vec3(0.0, 0.0, 175.0);
     camera.updateCameraVectors();
+    updateViewportUniforms();
     updateProjectionMatrix(camera.zoom);
     updateViewMatrix();
     cullingViewMatrix_ = uniforms.viewMatrix;
@@ -116,8 +121,9 @@ void Application::MainLoop() {
 
     if (!io.WantCaptureKeyboard && !io.WantCaptureMouse) {
         processInput();
-        processBlockInteractions();
     }
+    updateTargetedBlockSelection(cursorCaptured && !io.WantCaptureMouse);
+    processBlockInteractions();
 
     // Early exit if frame budget is already exceeded
     float frameStartTime = currentFrame;
@@ -153,6 +159,7 @@ void Application::MainLoop() {
     gui.renderImGUI(uniforms, deltaTime, frameTimes, camera, frameTime, runtimeTimingSnapshot_);
     const bool freezeCullingAfterUi = gui.isCullingCameraFrozen();
     updateCullingCameraMatrices(viewGPU, freezeCullingAfterUi);
+    updateViewportUniforms();
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
     
     gpu.renderFrame(uniforms);
@@ -237,6 +244,19 @@ void Application::updateProjectionMatrix(int zoom) {
     uniforms.inverseProjectionMatrix = glm::inverse(uniforms.projectionMatrix);
 
     buf->writeBuffer("uniform_buffer", offsetof(FrameUniforms, projectionMatrix), &uniforms.projectionMatrix, sizeof(FrameUniforms::projectionMatrix));
+}
+
+void Application::updateViewportUniforms() {
+    int width = 0;
+    int height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    width = std::max(width, 1);
+    height = std::max(height, 1);
+
+    uniforms.viewportParams[0] = static_cast<float>(width);
+    uniforms.viewportParams[1] = static_cast<float>(height);
+    uniforms.viewportParams[2] = 2.0f / uniforms.viewportParams[0];
+    uniforms.viewportParams[3] = 2.0f / uniforms.viewportParams[1];
 }
 
 void Application::updateViewMatrix() {
@@ -465,20 +485,32 @@ bool Application::raycastTargetBlock(float maxDistance, VoxelRaycastHit& outHit)
     return false;
 }
 
+void Application::updateTargetedBlockSelection(bool enabled) {
+    if (!enabled) {
+        currentTargetBlockHit_.reset();
+        gpu.setSelectionOutlineBlock(std::nullopt);
+        return;
+    }
+
+    VoxelRaycastHit rayHit{};
+    if (raycastTargetBlock(8.0f, rayHit) && rayHit.hit) {
+        currentTargetBlockHit_ = rayHit;
+        gpu.setSelectionOutlineBlock(rayHit.breakCoord);
+        return;
+    }
+
+    currentTargetBlockHit_.reset();
+    gpu.setSelectionOutlineBlock(std::nullopt);
+}
+
 void Application::processBlockInteractions() {
-    if (!cursorCaptured) {
+    if (!cursorCaptured || !currentTargetBlockHit_.has_value()) {
         mouseState.leftClickRequested = false;
         mouseState.rightClickRequested = false;
         return;
     }
 
-    VoxelRaycastHit rayHit{};
-    const bool hasHit = raycastTargetBlock(8.0f, rayHit);
-    if (!hasHit || !rayHit.hit) {
-        mouseState.leftClickRequested = false;
-        mouseState.rightClickRequested = false;
-        return;
-    }
+    const VoxelRaycastHit& rayHit = *currentTargetBlockHit_;
 
     if (mouseState.leftClickRequested) {
         voxelStreaming_.breakBlock(rayHit.breakCoord);

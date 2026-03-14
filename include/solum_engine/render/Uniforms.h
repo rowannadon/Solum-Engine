@@ -43,6 +43,12 @@ struct FrameUniforms {
     // timeParams[0]: normalized day phase in [0, 1), with 0.0 = 06:00 sunrise, 0.25 = 12:00 noon
     // timeParams[1]: current time of day in hours [0, 24)
     float timeParams[4] = { 0.25f, 12.0f, 0.0f, 0.0f };
+
+    // viewportParams[0]: framebuffer width in pixels
+    // viewportParams[1]: framebuffer height in pixels
+    // viewportParams[2]: 2.0 / framebuffer width
+    // viewportParams[3]: 2.0 / framebuffer height
+    float viewportParams[4] = { 1.0f, 1.0f, 2.0f, 2.0f };
 };
 
 static_assert((sizeof(FrameUniforms) % 16) == 0, "FrameUniforms must remain 16-byte aligned for WGSL uniforms");
