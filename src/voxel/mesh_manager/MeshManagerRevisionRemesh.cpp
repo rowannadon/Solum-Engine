@@ -129,8 +129,6 @@ void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn
     std::vector<ScheduledTileLod> jobsToSchedule;
     jobsToSchedule.reserve(jobsByCoord.size());
     std::unordered_set<MeshTileCoord> tilesNeedingFastLod0;
-    std::vector<PendingMeshDispatch> transitionRemeshDispatches;
-    std::unordered_set<TileLodCoord> transitionRemeshSeen;
 
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
@@ -175,11 +173,6 @@ void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn
             }
             if (refreshSelectedLodLocked(tile, tileIt->second)) {
                 selectionSnapshotDirty_ = true;
-                collectAdjacentLodTransitionRemeshesLocked(
-                    tile,
-                    transitionRemeshDispatches,
-                    transitionRemeshSeen
-                );
             }
         }
     }
@@ -207,15 +200,6 @@ void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn
             true,
             meshTileSizeChunks_ + 2,
             scheduled.usePriorityQueue
-        );
-    }
-    for (const PendingMeshDispatch& dispatch : transitionRemeshDispatches) {
-        scheduleTileLodMeshing(
-            dispatch.coord,
-            dispatch.priority,
-            dispatch.forceRemesh,
-            meshTileSizeChunks_ + 4,
-            dispatch.usePriorityQueue
         );
     }
 }

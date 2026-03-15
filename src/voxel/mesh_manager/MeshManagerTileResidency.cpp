@@ -147,49 +147,6 @@ bool MeshManager::refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshT
     return true;
 }
 
-void MeshManager::collectAdjacentLodTransitionRemeshesLocked(
-    const MeshTileCoord& changedTileCoord,
-    std::vector<PendingMeshDispatch>& outDispatches,
-    std::unordered_set<TileLodCoord>& seenCoords) const {
-    auto appendTileSelectedLod = [&](const MeshTileCoord& tileCoord) {
-        const auto tileIt = meshTiles_.find(tileCoord);
-        if (tileIt == meshTiles_.end()) {
-            return;
-        }
-
-        const int8_t selectedLod = tileIt->second.selectedLod;
-        if (selectedLod < 0) {
-            return;
-        }
-
-        const uint8_t lodLevel = static_cast<uint8_t>(selectedLod);
-        const bool usePriorityQueue = currentVisibleRingOutstandingTiles_.contains(tileCoord);
-        const jobsystem::Priority priority = usePriorityQueue
-            ? jobsystem::Priority::Critical
-            : priorityFromLodLevel(lodLevel);
-
-        for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-            const TileLodCoord coord{MeshTileSliceCoord{tileCoord, zSlice}, lodLevel};
-            if (!seenCoords.insert(coord).second) {
-                continue;
-            }
-
-            outDispatches.push_back(PendingMeshDispatch{
-                coord,
-                priority,
-                true,
-                usePriorityQueue
-            });
-        }
-    };
-
-    appendTileSelectedLod(changedTileCoord);
-    appendTileSelectedLod(MeshTileCoord{changedTileCoord.x + 1, changedTileCoord.y});
-    appendTileSelectedLod(MeshTileCoord{changedTileCoord.x - 1, changedTileCoord.y});
-    appendTileSelectedLod(MeshTileCoord{changedTileCoord.x, changedTileCoord.y + 1});
-    appendTileSelectedLod(MeshTileCoord{changedTileCoord.x, changedTileCoord.y - 1});
-}
-
 bool MeshManager::hasPendingJobs() const {
     std::shared_lock<std::shared_mutex> lock(meshMutex_);
     return !pendingTileLodJobs_.empty() ||

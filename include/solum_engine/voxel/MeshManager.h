@@ -145,23 +145,14 @@ private:
     void resetTileQueuesLocked(const ChunkCoord& centerChunk,
                                const glm::vec3& playerWorldPosition,
                                float sseProjectionScale,
-                               int32_t centerShiftChunks,
-                               std::vector<PendingMeshDispatch>& transitionRemeshDispatches,
-                               std::unordered_set<TileLodCoord>& transitionRemeshSeen);
+                               int32_t centerShiftChunks);
     void pruneMeshTilesOutsideWindowLocked();
-    void ensureVisibleFrontierLocked(std::vector<PendingMeshDispatch>& transitionRemeshDispatches,
-                                     std::unordered_set<TileLodCoord>& transitionRemeshSeen);
-    bool initializeVisibleRingLocked(int32_t ring,
-                                     std::vector<PendingMeshDispatch>& transitionRemeshDispatches,
-                                     std::unordered_set<TileLodCoord>& transitionRemeshSeen);
+    void ensureVisibleFrontierLocked();
+    bool initializeVisibleRingLocked(int32_t ring);
     void enqueueVisibleTileLocked(const MeshTileCoord& tile, int32_t ring, int32_t distanceSq);
     void markVisibleTileReadyLocked(const MeshTileCoord& tile);
     void noteVisibleTileAttemptFinishedLocked(const MeshTileCoord& tile);
     void waitVisibleTileForFootprintLocked(const MeshTileCoord& tile);
-    void collectAdjacentLodTransitionRemeshesLocked(
-        const MeshTileCoord& changedTileCoord,
-        std::vector<PendingMeshDispatch>& outDispatches,
-        std::unordered_set<TileLodCoord>& seenCoords) const;
     void advanceVisibleTileLocked(const MeshTileCoord& tile,
                                   bool dispatchNow,
                                   std::vector<PendingMeshDispatch>* dispatches,
