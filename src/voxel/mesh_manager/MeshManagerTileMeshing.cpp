@@ -211,20 +211,6 @@ bool trySamplePackedLightAtMip(const World& world,
     return world.tryGetPackedLight(worldMipCoord, outPackedLight, mipLevel);
 }
 
-bool trySampleBlockAndLightAtMip(const World& world,
-                                 const glm::ivec3& mesherCoord,
-                                 int32_t sampleStrideMip,
-                                 uint8_t mipLevel,
-                                 BlockMaterial& outBlock,
-                                 uint8_t& outPackedLight) {
-    const BlockCoord worldMipCoord{
-        mesherCoord.x * sampleStrideMip,
-        mesherCoord.y * sampleStrideMip,
-        mesherCoord.z * sampleStrideMip
-    };
-    return world.tryGetBlockAndPackedLight(worldMipCoord, outBlock, outPackedLight, mipLevel);
-}
-
 bool isSolidAtMip(const World& world,
                   const BlockModelLibrary* blockModelLibrary,
                   const glm::ivec3& mesherCoord,
@@ -294,9 +280,8 @@ void collectBoundarySideFaces(const std::vector<Meshlet>& meshlets,
 
 void appendTileSeamStrips(ChunkMeshOutput& meshOutput,
                           const World& world,
-                          const MeshTileSliceCoord& tile,
+                          const MeshTileCoord& tile,
                           int32_t meshTileSizeChunks,
-                          int32_t meshTileHeightChunks,
                           uint8_t lodLevel,
                           const BlockModelLibrary* blockModelLibrary) {
     if (lodLevel == 0u ||
@@ -304,16 +289,16 @@ void appendTileSeamStrips(ChunkMeshOutput& meshOutput,
         return;
     }
 
-    const uint8_t seamMipLevel = 0u;
-    const int32_t sampleStrideMip = 1;
-    const uint32_t seamVoxelScale = 1u;
-    const int32_t seamVoxelScaleI = static_cast<int32_t>(std::max(seamVoxelScale, 1u));
-    const int32_t tileMinX = tile.tile.x * meshTileSizeChunks * cfg::CHUNK_SIZE;
-    const int32_t tileMinY = tile.tile.y * meshTileSizeChunks * cfg::CHUNK_SIZE;
+    const uint8_t mipLevel = std::min<uint8_t>(lodLevel, Chunk::MAX_MIP_LEVEL);
+    const int32_t extraLodShift = std::max(
+        0,
+        static_cast<int32_t>(lodLevel) - static_cast<int32_t>(Chunk::MAX_MIP_LEVEL)
+    );
+    const int32_t sampleStrideMip = pow2ClampedShift(extraLodShift);
+    const int32_t tileMinX = tile.x * meshTileSizeChunks * cfg::CHUNK_SIZE;
+    const int32_t tileMinY = tile.y * meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMaxX = tileMinX + meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMaxY = tileMinY + meshTileSizeChunks * cfg::CHUNK_SIZE;
-    const int32_t tileMinZ = tile.z * meshTileHeightChunks * cfg::CHUNK_SIZE;
-    const int32_t tileMaxZ = tileMinZ + meshTileHeightChunks * cfg::CHUNK_SIZE;
 
     std::unordered_set<FaceCoordKey, FaceCoordKeyHash> existingBoundaryFaces;
     existingBoundaryFaces.reserve(meshOutput.culledMeshlets.size() + meshOutput.doubleSidedMeshlets.size());
@@ -323,116 +308,116 @@ void appendTileSeamStrips(ChunkMeshOutput& meshOutput,
     std::vector<Meshlet> culledSeamMeshlets;
     std::vector<Meshlet> doubleSidedSeamMeshlets;
 
-    auto appendBorderExposureSeams = [&](uint32_t faceDirection) {
-        const bool alongX = (faceDirection == Direction::MinusX || faceDirection == Direction::PlusX);
-        const int32_t fixedX = (faceDirection == Direction::MinusX)
-            ? tileMinX
-            : (faceDirection == Direction::PlusX ? (tileMaxX - seamVoxelScaleI) : tileMinX);
-        const int32_t fixedY = (faceDirection == Direction::MinusY)
-            ? tileMinY
-            : (faceDirection == Direction::PlusY ? (tileMaxY - seamVoxelScaleI) : tileMinY);
+    auto processMeshlets = [&](const std::vector<Meshlet>& meshlets) {
+        for (const Meshlet& meshlet : meshlets) {
+            if (meshlet.faceDirection != Direction::PlusZ || meshlet.quadCount == 0u) {
+                continue;
+            }
 
-        for (int32_t major = 0; major < (alongX ? (tileMaxY - tileMinY) : (tileMaxX - tileMinX)); major += seamVoxelScaleI) {
-            for (int32_t z = tileMinZ; z < tileMaxZ; z += seamVoxelScaleI) {
-                const int32_t worldX = alongX ? fixedX : (tileMinX + major);
-                const int32_t worldY = alongX ? (tileMinY + major) : fixedY;
-                const glm::ivec3 seamOrigin{worldX, worldY, z};
-                const FaceCoordKey key{seamOrigin, faceDirection};
-                if (existingBoundaryFaces.contains(key)) {
+            const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
+            const int32_t voxelScaleI = static_cast<int32_t>(voxelScale);
+            for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
+                if (meshlet.quadUsesVoxelAo[quadIndex] == 0u) {
                     continue;
                 }
 
+                const glm::uvec3 local = unpackMeshletLocalOffset(meshlet.packedQuadLocalOffsets[quadIndex]);
+                const uint16_t materialId = meshlet.quadMaterialIds[quadIndex];
+                const uint16_t fallbackLight = meshlet.quadLightData[quadIndex];
+                const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(local.x * voxelScale);
+                const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(local.y * voxelScale);
+                const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(local.z * voxelScale);
+                const glm::ivec3 seamOrigin{worldX, worldY, worldZ};
                 const glm::ivec3 blockCoordMesher{
-                    floor_div(worldX, seamVoxelScaleI),
-                    floor_div(worldY, seamVoxelScaleI),
-                    floor_div(z, seamVoxelScaleI)
+                    floor_div(worldX, voxelScaleI),
+                    floor_div(worldY, voxelScaleI),
+                    floor_div(worldZ, voxelScaleI)
                 };
 
-                BlockMaterial block = airBlock();
-                uint8_t centerPackedLight = kDefaultSeamPackedLight;
-                if (!trySampleBlockAndLightAtMip(
+                auto appendForDirection = [&](uint32_t faceDirection) {
+                    const FaceCoordKey key{seamOrigin, faceDirection};
+                    if (existingBoundaryFaces.contains(key)) {
+                        return;
+                    }
+
+                    const glm::ivec3 frontCoord = blockCoordMesher + ChunkMesher::directionOffsets[faceDirection];
+                    const glm::ivec3 backCoord = blockCoordMesher + ChunkMesher::directionOffsets[oppositeDirection(faceDirection)];
+                    const uint8_t fallbackFront = static_cast<uint8_t>(fallbackLight & 0xFFu);
+                    const uint8_t fallbackBack = static_cast<uint8_t>((fallbackLight >> 8u) & 0xFFu);
+                    uint8_t frontPackedLight = kDefaultSeamPackedLight;
+                    uint8_t backPackedLight = kDefaultSeamPackedLight;
+                    const bool frontLightKnown = trySamplePackedLightAtMip(
                         world,
+                        frontCoord,
+                        sampleStrideMip,
+                        mipLevel,
+                        frontPackedLight
+                    );
+                    const bool backLightKnown = trySamplePackedLightAtMip(
+                        world,
+                        backCoord,
+                        sampleStrideMip,
+                        mipLevel,
+                        backPackedLight
+                    );
+                    if (frontLightKnown) {
+                        frontPackedLight = maxPackedLight(frontPackedLight, fallbackFront);
+                    } else {
+                        frontPackedLight = maxPackedLight(kDefaultSeamPackedLight, fallbackFront);
+                    }
+                    if (backLightKnown) {
+                        backPackedLight = maxPackedLight(backPackedLight, fallbackBack);
+                    } else {
+                        backPackedLight = maxPackedLight(kDefaultSeamPackedLight, fallbackBack);
+                    }
+
+                    if (!isSolidAtMip(world, blockModelLibrary, frontCoord, sampleStrideMip, mipLevel)) {
+                        frontPackedLight = maxPackedLight(frontPackedLight, kDefaultSeamPackedLight);
+                    }
+                    const uint16_t packedLight = packMeshletQuadLightPair(frontPackedLight, backPackedLight);
+                    const uint16_t packedAoData = computeSeamPackedAoData(
+                        world,
+                        blockModelLibrary,
+                        faceDirection,
                         blockCoordMesher,
                         sampleStrideMip,
-                        seamMipLevel,
-                        block,
-                        centerPackedLight
-                    )) {
-                    continue;
+                        mipLevel
+                    );
+
+                    std::vector<Meshlet>& targetMeshlets =
+                        (blockModelLibrary != nullptr && blockModelLibrary->isMaterialDoubleSided(materialId))
+                        ? doubleSidedSeamMeshlets
+                        : culledSeamMeshlets;
+                    appendSeamQuad(
+                        targetMeshlets,
+                        faceDirection,
+                        seamOrigin,
+                        voxelScale,
+                        materialId,
+                        packedLight,
+                        packedAoData
+                    );
+                    existingBoundaryFaces.insert(key);
+                };
+
+                if (worldX == tileMinX) {
+                    appendForDirection(Direction::MinusX);
                 }
-
-                const uint16_t materialId = block.unpack().id;
-                if (materialId == 0u) {
-                    continue;
+                if ((worldX + voxelScaleI) == tileMaxX) {
+                    appendForDirection(Direction::PlusX);
                 }
-
-                const glm::ivec3 frontCoord = blockCoordMesher + ChunkMesher::directionOffsets[faceDirection];
-                BlockMaterial frontBlock = airBlock();
-                uint8_t frontPackedLight = kDefaultSeamPackedLight;
-                const bool frontKnown = trySampleBlockAndLightAtMip(
-                    world,
-                    frontCoord,
-                    sampleStrideMip,
-                    seamMipLevel,
-                    frontBlock,
-                    frontPackedLight
-                );
-                const uint16_t frontMaterialId = frontBlock.unpack().id;
-                const bool frontIsSolid = frontKnown && isMaterialAoOccluder(blockModelLibrary, frontMaterialId);
-                if (frontIsSolid) {
-                    continue;
+                if (worldY == tileMinY) {
+                    appendForDirection(Direction::MinusY);
                 }
-
-                const glm::ivec3 backCoord = blockCoordMesher + ChunkMesher::directionOffsets[oppositeDirection(faceDirection)];
-                uint8_t backPackedLight = kDefaultSeamPackedLight;
-                const bool backKnown = trySamplePackedLightAtMip(
-                    world,
-                    backCoord,
-                    sampleStrideMip,
-                    seamMipLevel,
-                    backPackedLight
-                );
-
-                frontPackedLight = frontKnown
-                    ? maxPackedLight(frontPackedLight, centerPackedLight)
-                    : maxPackedLight(kDefaultSeamPackedLight, centerPackedLight);
-                backPackedLight = backKnown
-                    ? maxPackedLight(backPackedLight, centerPackedLight)
-                    : maxPackedLight(kDefaultSeamPackedLight, centerPackedLight);
-                frontPackedLight = maxPackedLight(frontPackedLight, kDefaultSeamPackedLight);
-
-                const uint16_t packedLight = packMeshletQuadLightPair(frontPackedLight, backPackedLight);
-                const uint16_t packedAoData = computeSeamPackedAoData(
-                    world,
-                    blockModelLibrary,
-                    faceDirection,
-                    blockCoordMesher,
-                    sampleStrideMip,
-                    seamMipLevel
-                );
-
-                std::vector<Meshlet>& targetMeshlets =
-                    (blockModelLibrary != nullptr && blockModelLibrary->isMaterialDoubleSided(materialId))
-                    ? doubleSidedSeamMeshlets
-                    : culledSeamMeshlets;
-                appendSeamQuad(
-                    targetMeshlets,
-                    faceDirection,
-                    seamOrigin,
-                    seamVoxelScale,
-                    materialId,
-                    packedLight,
-                    packedAoData
-                );
-                existingBoundaryFaces.insert(key);
+                if ((worldY + voxelScaleI) == tileMaxY) {
+                    appendForDirection(Direction::PlusY);
+                }
             }
         }
     };
 
-    appendBorderExposureSeams(Direction::MinusX);
-    appendBorderExposureSeams(Direction::PlusX);
-    appendBorderExposureSeams(Direction::MinusY);
-    appendBorderExposureSeams(Direction::PlusY);
+    processMeshlets(meshOutput.culledMeshlets);
+    processMeshlets(meshOutput.doubleSidedMeshlets);
 
     meshOutput.culledMeshlets.insert(
         meshOutput.culledMeshlets.end(),
@@ -496,15 +481,7 @@ ChunkMeshOutput MeshManager::meshTileLod(const TileLodCoord& coord) const {
         }
     }
 
-    appendTileSeamStrips(
-        meshOutput,
-        world_,
-        coord.tile,
-        meshTileSizeChunks_,
-        meshTileHeightChunks_,
-        lodLevel,
-        blockModelLibrary_.get()
-    );
+    appendTileSeamStrips(meshOutput, world_, coord.tile.tile, meshTileSizeChunks_, lodLevel, blockModelLibrary_.get());
     return meshOutput;
 }
 
