@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <utility>
 
@@ -15,6 +16,16 @@ constexpr uint32_t kInvalidIndex = ResidentTileLodHandle::kInvalidSlot;
 
 glm::vec4 toVec4(const glm::vec3& value) {
     return glm::vec4(value, 0.0f);
+}
+
+const char* variantLabel(MeshletGeometryVariant variant) {
+    switch (variant) {
+    case MeshletGeometryVariant::DoubleSided:
+        return "double-sided";
+    case MeshletGeometryVariant::Culled:
+    default:
+        return "culled";
+    }
 }
 }  // namespace
 
@@ -117,6 +128,9 @@ bool MeshletBufferController::initialize(BufferManager* bufferManager) {
     tileDirtyMask_.clear();
     dirtyVisibleIndices_.clear();
     visibleIndexDirtyMask_.clear();
+    warnedTileSlotCapacity_ = false;
+    warnedResidentSlotCapacity_ = false;
+    warnedArenaCapacity_ = false;
     activeSelectionMeshletCount_ = 0u;
     uploadedMeshRevision_ = 0u;
     activeMeshletBoundsCache_.clear();
@@ -283,6 +297,48 @@ bool MeshletBufferController::isHandleValid(ResidentTileLodHandle handle) const 
     return residentForHandle(handle) != nullptr;
 }
 
+ResidentTileLodHandle MeshletBufferController::chooseTileResidentHandle(const TileSlotState& tileSlot) const noexcept {
+    auto validHandleForLod = [this, &tileSlot](int32_t lod) -> ResidentTileLodHandle {
+        if (lod < 0 || static_cast<uint32_t>(lod) >= kMaxResidentLods) {
+            return {};
+        }
+
+        const ResidentTileLodHandle handle = tileSlot.lodHandles[static_cast<uint32_t>(lod)];
+        return isHandleValid(handle) ? handle : ResidentTileLodHandle{};
+    };
+
+    if (ResidentTileLodHandle desiredHandle = validHandleForLod(tileSlot.selectedLod); desiredHandle.valid()) {
+        return desiredHandle;
+    }
+
+    if (isHandleValid(tileSlot.selectedResident)) {
+        return tileSlot.selectedResident;
+    }
+
+    if (tileSlot.selectedLod >= 0) {
+        for (uint32_t offset = 1u; offset < kMaxResidentLods; ++offset) {
+            if (ResidentTileLodHandle lowerHandle =
+                    validHandleForLod(static_cast<int32_t>(tileSlot.selectedLod) - static_cast<int32_t>(offset));
+                lowerHandle.valid()) {
+                return lowerHandle;
+            }
+            if (ResidentTileLodHandle upperHandle =
+                    validHandleForLod(static_cast<int32_t>(tileSlot.selectedLod) + static_cast<int32_t>(offset));
+                upperHandle.valid()) {
+                return upperHandle;
+            }
+        }
+    }
+
+    for (const ResidentTileLodHandle& handle : tileSlot.lodHandles) {
+        if (isHandleValid(handle)) {
+            return handle;
+        }
+    }
+
+    return {};
+}
+
 MeshletBufferController::ResidentRecord* MeshletBufferController::residentForHandle(ResidentTileLodHandle handle) noexcept {
     if (!handle.valid() || handle.slot >= residentRecords_.size()) {
         return nullptr;
@@ -312,6 +368,13 @@ uint32_t MeshletBufferController::ensureTileSlot(const MeshTileSliceCoord& tile)
     }
 
     if (tileSlots_.size() >= config_.tileSlotCapacity) {
+        if (!warnedTileSlotCapacity_) {
+            warnedTileSlotCapacity_ = true;
+            std::cerr << "MeshletBufferController(" << variantLabel(geometryVariant_)
+                      << "): tile slot capacity exhausted at " << config_.tileSlotCapacity
+                      << " slots; additional tiles will not be tracked until capacity is increased."
+                      << std::endl;
+        }
         return kInvalidIndex;
     }
 
@@ -333,6 +396,13 @@ int32_t MeshletBufferController::allocateResidentSlot() {
         return static_cast<int32_t>(slot);
     }
     if (residentRecords_.size() >= config_.residentTileCapacity) {
+        if (!warnedResidentSlotCapacity_) {
+            warnedResidentSlotCapacity_ = true;
+            std::cerr << "MeshletBufferController(" << variantLabel(geometryVariant_)
+                      << "): resident TileLod slot capacity exhausted at " << config_.residentTileCapacity
+                      << " entries; eviction pressure is now coming entirely from the slot table."
+                      << std::endl;
+        }
         return -1;
     }
     residentRecords_.push_back(ResidentRecord{});
@@ -473,10 +543,7 @@ void MeshletBufferController::updateTileSelectedResident(uint32_t tileSlotIndex)
     }
 
     TileSlotState& tileSlot = tileSlots_[tileSlotIndex];
-    ResidentTileLodHandle nextHandle{};
-    if (tileSlot.selectedLod >= 0 && static_cast<uint32_t>(tileSlot.selectedLod) < kMaxResidentLods) {
-        nextHandle = tileSlot.lodHandles[static_cast<uint32_t>(tileSlot.selectedLod)];
-    }
+    const ResidentTileLodHandle nextHandle = chooseTileResidentHandle(tileSlot);
 
     tileSlot.selectedResident = nextHandle;
     TileSlotGPU& gpu = tileSlotsGpu_[tileSlotIndex];
@@ -572,47 +639,58 @@ void MeshletBufferController::clearResidentLod(const MeshTileSliceCoord& tile,
 }
 
 int32_t MeshletBufferController::chooseEvictionCandidate(const MeshTileLodKey* protectedKey) const {
-    int32_t bestIndex = -1;
-    uint64_t bestScore = 0u;
+    auto pickCandidate = [this, protectedKey](bool allowVisibleTiles) -> int32_t {
+        int32_t bestIndex = -1;
+        uint64_t bestScore = 0u;
 
-    for (uint32_t index = 0u; index < residentRecords_.size(); ++index) {
-        const ResidentRecord& record = residentRecords_[index];
-        if (!record.active) {
-            continue;
-        }
-        if (protectedKey != nullptr && record.key == *protectedKey) {
-            continue;
-        }
-
-        const auto tileSlotIt = tileSlotIndexByCoord_.find(record.key.tile);
-        if (tileSlotIt != tileSlotIndexByCoord_.end()) {
-            const TileSlotState& tileSlot = tileSlots_[tileSlotIt->second];
-            if (tileSlot.visible &&
-                tileSlot.selectedResident.slot == index &&
-                tileSlot.selectedResident.generation == record.generation) {
+        for (uint32_t index = 0u; index < residentRecords_.size(); ++index) {
+            const ResidentRecord& record = residentRecords_[index];
+            if (!record.active) {
                 continue;
+            }
+            if (protectedKey != nullptr && record.key == *protectedKey) {
+                continue;
+            }
+
+            const auto tileSlotIt = tileSlotIndexByCoord_.find(record.key.tile);
+            const TileSlotState* tileSlot = (tileSlotIt != tileSlotIndexByCoord_.end())
+                ? &tileSlots_[tileSlotIt->second]
+                : nullptr;
+            const bool visible = tileSlot != nullptr && tileSlot->visible;
+            if (!allowVisibleTiles && visible) {
+                continue;
+            }
+
+            const bool selectedResident = tileSlot != nullptr &&
+                tileSlot->selectedResident.slot == index &&
+                tileSlot->selectedResident.generation == record.generation;
+            if (selectedResident) {
+                continue;
+            }
+
+            const bool requestedLod = tileSlot != nullptr && tileSlot->selectedLod >= 0 &&
+                static_cast<uint32_t>(tileSlot->selectedLod) == static_cast<uint32_t>(record.key.lod);
+
+            uint64_t score = 0u;
+            score |= visible ? 0u : (1ull << 63);
+            score |= requestedLod ? 0u : (1ull << 62);
+            score |= static_cast<uint64_t>(record.key.lod) << 48;
+            score |= (std::numeric_limits<uint32_t>::max() - record.lastTouchedRevision);
+
+            if (bestIndex < 0 || score > bestScore) {
+                bestIndex = static_cast<int32_t>(index);
+                bestScore = score;
             }
         }
 
-        const auto tileSlotIt2 = tileSlotIndexByCoord_.find(record.key.tile);
-        const bool visible = tileSlotIt2 != tileSlotIndexByCoord_.end() && tileSlots_[tileSlotIt2->second].visible;
-        const bool selected = tileSlotIt2 != tileSlotIndexByCoord_.end() &&
-            tileSlots_[tileSlotIt2->second].selectedResident.slot == index &&
-            tileSlots_[tileSlotIt2->second].selectedResident.generation == record.generation;
+        return bestIndex;
+    };
 
-        uint64_t score = 0u;
-        score |= visible ? 0u : (1ull << 63);
-        score |= selected ? 0u : (1ull << 62);
-        score |= static_cast<uint64_t>(record.key.lod) << 48;
-        score |= (std::numeric_limits<uint32_t>::max() - record.lastTouchedRevision);
-
-        if (bestIndex < 0 || score > bestScore) {
-            bestIndex = static_cast<int32_t>(index);
-            bestScore = score;
-        }
+    if (const int32_t invisibleCandidate = pickCandidate(false); invisibleCandidate >= 0) {
+        return invisibleCandidate;
     }
 
-    return bestIndex;
+    return pickCandidate(true);
 }
 
 bool MeshletBufferController::evictForAllocation(uint32_t requiredMeshlets,
@@ -691,9 +769,21 @@ bool MeshletBufferController::upsertResidentTileLod(const MeshTileLodUpload& upl
 
     const uint32_t requiredMeshlets = static_cast<uint32_t>(packed->metadata.size());
     const uint32_t requiredQuadWords = static_cast<uint32_t>(packed->quadData.size());
+    if (requiredMeshlets > config_.meshletCapacity || requiredQuadWords > config_.quadWordCapacity) {
+        if (!warnedArenaCapacity_) {
+            warnedArenaCapacity_ = true;
+            std::cerr << "MeshletBufferController(" << variantLabel(geometryVariant_)
+                      << "): upload for tile lod exceeds fixed arena capacity (meshlets="
+                      << requiredMeshlets << "/" << config_.meshletCapacity
+                      << ", quadWords=" << requiredQuadWords << "/" << config_.quadWordCapacity << ")."
+                      << std::endl;
+        }
+        return false;
+    }
 
     ResidentRecord* record = nullptr;
     uint32_t residentSlot = kInvalidIndex;
+    bool createdNewSlot = false;
 
     const auto existingIt = residentSlotByKey_.find(upload.key);
     if (existingIt != residentSlotByKey_.end()) {
@@ -715,7 +805,7 @@ bool MeshletBufferController::upsertResidentTileLod(const MeshTileLodUpload& upl
         residentSlot = static_cast<uint32_t>(slot);
         record = &residentRecords_[residentSlot];
         record->generation = std::max(record->generation, 1u);
-        residentSlotByKey_[upload.key] = residentSlot;
+        createdNewSlot = true;
     }
 
     if (record == nullptr) {
@@ -737,6 +827,9 @@ bool MeshletBufferController::upsertResidentTileLod(const MeshTileLodUpload& upl
             record->quadPages = {};
         }
         if (!evictForAllocation(requiredMeshlets, requiredQuadWords, &upload.key)) {
+            if (createdNewSlot) {
+                freeResidentSlots_.push_back(residentSlot);
+            }
             return false;
         }
 
@@ -750,6 +843,9 @@ bool MeshletBufferController::upsertResidentTileLod(const MeshTileLodUpload& upl
             if (quadRun.valid()) {
                 quadPages_.release(quadRun);
             }
+            if (createdNewSlot) {
+                freeResidentSlots_.push_back(residentSlot);
+            }
             return false;
         }
         record->meshletPages = meshletRun;
@@ -759,6 +855,13 @@ bool MeshletBufferController::upsertResidentTileLod(const MeshTileLodUpload& upl
     const uint32_t meshletStart = meshletPages_.unitOffset(record->meshletPages);
     const uint32_t quadStart = quadPages_.unitOffset(record->quadPages);
     if (!writeAllocation(meshletStart, quadStart, *packed)) {
+        if (createdNewSlot) {
+            meshletPages_.release(record->meshletPages);
+            quadPages_.release(record->quadPages);
+            record->meshletPages = {};
+            record->quadPages = {};
+            freeResidentSlots_.push_back(residentSlot);
+        }
         return false;
     }
 
@@ -773,6 +876,9 @@ bool MeshletBufferController::upsertResidentTileLod(const MeshTileLodUpload& upl
     record->gpu.maxCorner = toVec4(record->tileAabb.maxCorner);
     record->lastTouchedRevision = static_cast<uint32_t>(std::min<uint64_t>(upload.revision, std::numeric_limits<uint32_t>::max()));
     record->active = true;
+    if (createdNewSlot) {
+        residentSlotByKey_[upload.key] = residentSlot;
+    }
 
     setResidentLod(upload.key.tile, upload.key.lod, ResidentTileLodHandle{residentSlot, record->generation});
     markResidentDirty(residentSlot);

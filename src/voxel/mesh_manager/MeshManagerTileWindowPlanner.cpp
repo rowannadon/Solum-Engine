@@ -107,6 +107,20 @@ void MeshManager::resetTileQueuesLocked(const ChunkCoord& centerChunk,
     }
 }
 
+void MeshManager::invalidateTileLodJobGenerationLocked(const TileLodCoord& coord) {
+    tileLodJobGeneration_.erase(coord);
+}
+
+void MeshManager::invalidateTileJobGenerationsLocked(const MeshTileCoord& tileCoord) {
+    for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
+        for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
+            invalidateTileLodJobGenerationLocked(
+                TileLodCoord{MeshTileSliceCoord{tileCoord, zSlice}, static_cast<uint8_t>(lod)}
+            );
+        }
+    }
+}
+
 void MeshManager::pruneMeshTilesOutsideWindowLocked() {
     for (auto it = meshTiles_.begin(); it != meshTiles_.end();) {
         if (tileInBounds(it->first, planningMinTileX_, planningMaxTileX_, planningMinTileY_, planningMaxTileY_)) {
@@ -117,6 +131,7 @@ void MeshManager::pruneMeshTilesOutsideWindowLocked() {
         queuedVisibleTiles_.erase(it->first);
         waitingVisibleTiles_.erase(it->first);
         currentVisibleRingOutstandingTiles_.erase(it->first);
+        invalidateTileJobGenerationsLocked(it->first);
 
         for (const auto& [lod, slices] : it->second.lodStates) {
             for (const auto& [zSlice, lodState] : slices) {
@@ -169,6 +184,9 @@ bool MeshManager::initializeVisibleRingLocked(int32_t ring) {
         for (auto lodIt = tileState.lodStates.begin(); lodIt != tileState.lodStates.end();) {
             if (static_cast<int32_t>(lodIt->first) >= config_.lodLevelCount) {
                 for (const auto& [zSlice, lodState] : lodIt->second) {
+                    invalidateTileLodJobGenerationLocked(
+                        TileLodCoord{MeshTileSliceCoord{tileCoord, zSlice}, lodIt->first}
+                    );
                     if (!lodState.resident) {
                         continue;
                     }

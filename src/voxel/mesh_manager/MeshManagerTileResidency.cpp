@@ -113,16 +113,37 @@ void MeshManager::queueTileLodRemovalLocked(const MeshTileLodKey& key) {
 
 int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileCoord& tileCoord,
                                                      const MeshTileState& state) const {
-    if (isTileDisplayReadyLocked(tileCoord, state)) {
-        if (canDisplayLod0DuringRemeshLocked(tileCoord, state)) {
-            return 0;
-        }
-        return state.desiredLod;
-    }
-
     if (canDisplayLod0DuringRemeshLocked(tileCoord, state)) {
         return 0;
     }
+    return bestResidentRenderableLodLocked(state);
+}
+
+int8_t MeshManager::bestResidentRenderableLodLocked(const MeshTileState& state) const {
+    if (state.desiredLod < 0) {
+        return -1;
+    }
+
+    if (lodFullyResidentLocked(state, state.desiredLod)) {
+        return state.desiredLod;
+    }
+
+    if (state.selectedLod >= 0 && lodFullyResidentLocked(state, state.selectedLod)) {
+        return state.selectedLod;
+    }
+
+    for (int32_t offset = 1; offset < config_.lodLevelCount; ++offset) {
+        const int32_t coarserLod = state.desiredLod + offset;
+        if (coarserLod < config_.lodLevelCount && lodFullyResidentLocked(state, coarserLod)) {
+            return static_cast<int8_t>(coarserLod);
+        }
+
+        const int32_t finerLod = state.desiredLod - offset;
+        if (finerLod >= 0 && lodFullyResidentLocked(state, finerLod)) {
+            return static_cast<int8_t>(finerLod);
+        }
+    }
+
     return -1;
 }
 

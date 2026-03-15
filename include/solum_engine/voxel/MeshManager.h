@@ -183,12 +183,15 @@ private:
     bool refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshTileState& state);
     bool lodFullyResidentLocked(const MeshTileState& state, int32_t lodLevel) const;
     bool allTileLodsResidentLocked(const MeshTileState& state) const;
+    int8_t bestResidentRenderableLodLocked(const MeshTileState& state) const;
     uint8_t pendingSliceCountForLodLocked(const MeshTileCoord& tileCoord, uint8_t lodLevel) const;
     bool canDisplayLod0DuringRemeshLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
     bool isTileDisplayReadyLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
     bool hasVisibleQueueWorkLocked() const;
     int32_t visibleRingForTileLocked(const MeshTileCoord& tileCoord) const;
     int32_t visibleDistanceSqForTileLocked(const MeshTileCoord& tileCoord) const;
+    void invalidateTileLodJobGenerationLocked(const TileLodCoord& coord);
+    void invalidateTileJobGenerationsLocked(const MeshTileCoord& tileCoord);
 
     ChunkMeshOutput meshTileLod(const TileLodCoord& coord) const;
     ChunkMeshOutput meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const;
@@ -220,6 +223,7 @@ private:
     std::unordered_set<TileLodCoord> pendingTileLodJobs_;
     std::unordered_set<TileLodCoord> pendingPriorityTileLodJobs_;
     std::unordered_set<TileLodCoord> deferredRemeshTileLods_;
+    std::unordered_map<TileLodCoord, uint64_t> tileLodJobGeneration_;
     std::unordered_map<MeshTileCoord, MeshTileState> meshTiles_;
     std::unordered_set<MeshTileCoord> currentVisibleRingOutstandingTiles_;
     std::unordered_set<MeshTileCoord> queuedVisibleTiles_;
@@ -253,6 +257,7 @@ private:
     bool hasLastSseProjectionScale_ = false;
     uint64_t tileQueueCenterVersion_ = 0u;
     uint64_t tileQueueSequence_ = 0u;
+    uint64_t nextTileLodJobGeneration_ = 0u;
     MeshTileCoord currentCenterTile_{0, 0};
     int32_t planningMinTileX_ = 0;
     int32_t planningMaxTileX_ = -1;

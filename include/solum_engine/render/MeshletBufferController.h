@@ -69,8 +69,8 @@ public:
         MeshletGeometryVariant geometryVariant = MeshletGeometryVariant::Culled;
         uint32_t meshletCapacity = 131072u;
         uint32_t quadWordCapacity = 16u * 1024u * 1024u;
-        uint32_t residentTileCapacity = 32768u;
-        uint32_t tileSlotCapacity = 16384u;
+        uint32_t residentTileCapacity = 131072u;
+        uint32_t tileSlotCapacity = 65536u;
         uint32_t meshletPageSize = 64u;
         uint32_t quadWordPageSize = 2048u;
         uint32_t maxResidentLodsPerTile = 16u;
@@ -198,6 +198,7 @@ private:
     bool isHandleValid(ResidentTileLodHandle handle) const noexcept;
     ResidentRecord* residentForHandle(ResidentTileLodHandle handle) noexcept;
     const ResidentRecord* residentForHandle(ResidentTileLodHandle handle) const noexcept;
+    ResidentTileLodHandle chooseTileResidentHandle(const TileSlotState& tileSlot) const noexcept;
 
     void updateTileSelectedResident(uint32_t tileSlotIndex);
     void updateTileResidentFlags(uint32_t tileSlotIndex);
@@ -246,6 +247,9 @@ private:
     std::vector<uint32_t> dirtyVisibleIndices_;
     std::vector<uint8_t> visibleIndexDirtyMask_;
     bool sceneParamsDirty_ = true;
+    bool warnedTileSlotCapacity_ = false;
+    bool warnedResidentSlotCapacity_ = false;
+    bool warnedArenaCapacity_ = false;
 
     uint32_t activeSelectionMeshletCount_ = 0u;
     uint64_t uploadedMeshRevision_ = 0u;

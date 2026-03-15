@@ -209,6 +209,7 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
     }
 
     bool scheduled = false;
+    uint64_t jobGeneration = 0u;
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
         if (!isTileWithinActiveWindowLocked(coord.tile.tile, activeWindowExtraChunks)) {
@@ -235,6 +236,8 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
         } else {
             pendingTileLodJobs_.insert(coord);
         }
+        jobGeneration = ++nextTileLodJobGeneration_;
+        tileLodJobGeneration_[coord] = jobGeneration;
         scheduled = true;
     }
 
@@ -256,7 +259,7 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
 
                 return MeshGenerationResult{coord, meshTileLod(coord), true};
             },
-            [this, coord, usePriorityQueue](jobsystem::JobResult<MeshGenerationResult>&& result) {
+            [this, coord, usePriorityQueue, jobGeneration](jobsystem::JobResult<MeshGenerationResult>&& result) {
                 bool rescheduleDeferred = false;
                 bool pumpQueues = false;
                 {
@@ -270,8 +273,12 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                     auto tileIt = meshTiles_.find(coord.tile.tile);
                     const bool isVisibleAttempt =
                         currentVisibleRingOutstandingTiles_.contains(coord.tile.tile);
+                    const auto jobGenerationIt = tileLodJobGeneration_.find(coord);
+                    const bool staleGeneration =
+                        jobGenerationIt == tileLodJobGeneration_.end() ||
+                        jobGenerationIt->second != jobGeneration;
 
-                    if (!result.success() || shuttingDown_.load(std::memory_order_acquire)) {
+                    if (staleGeneration || !result.success() || shuttingDown_.load(std::memory_order_acquire)) {
                         if (isVisibleAttempt) {
                             noteVisibleTileAttemptFinishedLocked(coord.tile.tile);
                             pumpQueues = true;
