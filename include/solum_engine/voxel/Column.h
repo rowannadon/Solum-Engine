@@ -28,20 +28,23 @@ public:
         return chunks_[chunk_z].getBlock(x, y, local_z, mipLevel);
     }
 
-    inline void setBlock(uint8_t x, uint8_t y, uint16_t z, const BlockMaterial blockID) {
+    inline uint8_t setBlock(uint8_t x, uint8_t y, uint16_t z, const BlockMaterial blockID) {
         const uint8_t chunk_z = static_cast<uint8_t>(z / Chunk::SIZE);
         if (chunk_z >= HEIGHT) {
-            return;
+            return 0u;
         }
 
         const uint8_t local_z = static_cast<uint8_t>(z % Chunk::SIZE);
         Chunk& chunk = chunks_[chunk_z];
         const bool wasEmpty = chunk.isAllAir();
-        chunk.setBlock(x, y, local_z, blockID);
+        const uint8_t changedMipMask = chunk.setBlock(x, y, local_z, blockID);
+        if (changedMipMask == 0u) {
+            return 0u;
+        }
         const bool isEmpty = chunk.isAllAir();
 
         if (wasEmpty == isEmpty) {
-            return;
+            return changedMipMask;
         }
 
         const uint32_t bit = (1u << chunk_z);
@@ -50,6 +53,7 @@ public:
         } else {
             emptyChunkMask_ &= ~bit;
         }
+        return changedMipMask;
     }
 
     inline uint8_t getPackedLight(uint8_t x, uint8_t y, uint16_t z, uint8_t mipLevel = 0) const {

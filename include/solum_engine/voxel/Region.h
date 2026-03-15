@@ -19,13 +19,13 @@ public:
         return getColumn(col_x, col_y).getBlock(local_x, local_y, z);
     }
 
-    void setBlock(uint16_t x, uint16_t y, uint16_t z, BlockMaterial blockID) {
+    uint8_t setBlock(uint16_t x, uint16_t y, uint16_t z, BlockMaterial blockID) {
         uint8_t col_x = x / Chunk::SIZE;
         uint8_t col_y = y / Chunk::SIZE;
         uint8_t local_x = x % Chunk::SIZE;
         uint8_t local_y = y % Chunk::SIZE;
         
-        getColumn(col_x, col_y).setBlock(local_x, local_y, z, blockID);
+        return getColumn(col_x, col_y).setBlock(local_x, local_y, z, blockID);
     }
 
     Column& getColumn(uint8_t x, uint8_t y) {

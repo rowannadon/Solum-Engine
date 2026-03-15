@@ -169,7 +169,7 @@ uint64_t World::copyGeneratedColumnsSince(uint64_t afterRevision,
 }
 
 uint64_t World::copyPlayerEditedChunksSince(uint64_t afterRevision,
-                                            std::vector<ChunkCoord>& outChunks,
+                                            std::vector<WorldChunkEdit>& outChunks,
                                             std::size_t maxCount) const {
     std::shared_lock<std::shared_mutex> lock(worldMutex_);
     const uint64_t currentRevision = static_cast<uint64_t>(playerEditedChunkHistory_.size());

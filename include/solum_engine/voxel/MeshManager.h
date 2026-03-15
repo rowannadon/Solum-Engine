@@ -21,8 +21,7 @@
 #include "solum_engine/voxel/ChunkMesher.h"
 #include "solum_engine/voxel/MeshTileTypes.h"
 #include "solum_engine/voxel/StreamingUpload.h"
-
-class World;
+#include "solum_engine/voxel/World.h"
 
 class MeshManager {
 public:
@@ -126,7 +125,7 @@ private:
                              float sseProjectionScale,
                              int32_t centerShiftChunks);
     void scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn,
-                                        const std::vector<ChunkCoord>& changedChunks);
+                                        const std::vector<WorldChunkEdit>& changedChunks);
     void scheduleRemeshForPlayerEditedChunks(const ColumnCoord& centerColumn);
     void scheduleRemeshForLightingChangedChunks(const ColumnCoord& centerColumn);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);

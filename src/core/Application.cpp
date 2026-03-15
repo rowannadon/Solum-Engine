@@ -493,7 +493,7 @@ void Application::updateTargetedBlockSelection(bool enabled) {
     }
 
     VoxelRaycastHit rayHit{};
-    if (raycastTargetBlock(8.0f, rayHit) && rayHit.hit) {
+    if (raycastTargetBlock(32.0f, rayHit) && rayHit.hit) {
         currentTargetBlockHit_ = rayHit;
         gpu.setSelectionOutlineBlock(rayHit.breakCoord);
         return;

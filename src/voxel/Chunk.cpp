@@ -45,9 +45,9 @@ BlockMaterial Chunk::getBlock(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel)
     return storage.palette[paletteIndex];
 }
 
-void Chunk::setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockID) {
+uint8_t Chunk::setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockID) {
     if (x >= SIZE || y >= SIZE || z >= SIZE) {
-        return;
+        return 0u;
     }
 
     const BlockMaterial previousBlock = getBlock(x, y, z, 0);
@@ -57,8 +57,10 @@ void Chunk::setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockI
     bool levelChanged = false;
     setBlockInStorage(mips_[0], x, y, z, blockID, &levelChanged);
     if (!levelChanged) {
-        return;
+        return 0u;
     }
+
+    uint8_t changedMipMask = 1u;
 
     if (previousSolid != newSolid) {
         if (newSolid) {
@@ -84,7 +86,10 @@ void Chunk::setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockI
         if (!parentChanged) {
             break;
         }
+        changedMipMask |= static_cast<uint8_t>(1u << level);
     }
+
+    return changedMipMask;
 }
 
 uint8_t Chunk::getPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel) const {

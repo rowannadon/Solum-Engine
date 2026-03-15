@@ -22,6 +22,11 @@
 class Column;
 class Region;
 
+struct WorldChunkEdit {
+    ChunkCoord coord{};
+    uint8_t changedMipMask = 0u;
+};
+
 class World : public IBlockSource {
 public:
     struct Config {
@@ -70,7 +75,7 @@ public:
                                        std::vector<ColumnCoord>& outColumns,
                                        std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     uint64_t copyPlayerEditedChunksSince(uint64_t afterRevision,
-                                         std::vector<ChunkCoord>& outChunks,
+                                         std::vector<WorldChunkEdit>& outChunks,
                                          std::size_t maxCount = std::numeric_limits<std::size_t>::max()) const;
     uint64_t copyLightingChangedChunksSince(uint64_t afterRevision,
                                             std::vector<ChunkCoord>& outChunks,
@@ -171,7 +176,7 @@ private:
     std::unordered_map<ChunkCoord, LightingChunkState> lightingChunkStates_;
     std::unordered_set<ColumnCoord> generatedColumns_;
     std::vector<ColumnCoord> generatedColumnHistory_;
-    std::vector<ChunkCoord> playerEditedChunkHistory_;
+    std::vector<WorldChunkEdit> playerEditedChunkHistory_;
     std::vector<ChunkCoord> lightingChangedChunkHistory_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
     std::deque<ChunkPropagationTask> queuedChunkPropagationJobs_;

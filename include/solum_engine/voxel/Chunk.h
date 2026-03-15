@@ -17,7 +17,7 @@ public:
 
     // High performance getters and setters
     BlockMaterial getBlock(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel = 0) const;
-    void setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockID);
+    uint8_t setBlock(uint8_t x, uint8_t y, uint8_t z, const BlockMaterial blockID);
     uint8_t getPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t mipLevel = 0) const;
     void setPackedLight(uint8_t x, uint8_t y, uint8_t z, uint8_t packedLight);
     void setPackedLightVolume(const std::array<uint8_t, VOLUME>& packedLights);

@@ -97,7 +97,10 @@ bool World::applyBlockEditLocked(const BlockCoord& coord,
         return false;
     }
 
-    column->setBlock(localX, localY, localZ, newBlock);
+    const uint8_t changedMipMask = column->setBlock(localX, localY, localZ, newBlock);
+    if (changedMipMask == 0u) {
+        return false;
+    }
 
     std::unordered_set<ColumnCoord> geometryDirtyColumns;
     geometryDirtyColumns.insert(columnCoord);
@@ -146,7 +149,7 @@ bool World::applyBlockEditLocked(const BlockCoord& coord,
         if (!isColumnSkycastCompleteLocked(chunk_to_column(dirtyChunk))) {
             continue;
         }
-        playerEditedChunkHistory_.push_back(dirtyChunk);
+        playerEditedChunkHistory_.push_back(WorldChunkEdit{dirtyChunk, changedMipMask});
         playerEditChunkRevision_.fetch_add(1, std::memory_order_release);
     }
 
