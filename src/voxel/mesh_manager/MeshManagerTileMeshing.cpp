@@ -304,14 +304,9 @@ void appendTileSeamStrips(ChunkMeshOutput& meshOutput,
         return;
     }
 
-    const uint8_t mipLevel = std::min<uint8_t>(lodLevel, Chunk::MAX_MIP_LEVEL);
-    const uint8_t seamMipLevel = (mipLevel > 0u) ? static_cast<uint8_t>(mipLevel - 1u) : 0u;
-    const int32_t extraLodShift = std::max(
-        0,
-        static_cast<int32_t>(lodLevel) - static_cast<int32_t>(Chunk::MAX_MIP_LEVEL)
-    );
-    const int32_t sampleStrideMip = pow2ClampedShift(extraLodShift);
-    const uint32_t seamVoxelScale = static_cast<uint32_t>(1u << seamMipLevel) * static_cast<uint32_t>(sampleStrideMip);
+    const uint8_t seamMipLevel = 0u;
+    const int32_t sampleStrideMip = 1;
+    const uint32_t seamVoxelScale = 1u;
     const int32_t seamVoxelScaleI = static_cast<int32_t>(std::max(seamVoxelScale, 1u));
     const int32_t tileMinX = tile.tile.x * meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMinY = tile.tile.y * meshTileSizeChunks * cfg::CHUNK_SIZE;
