@@ -4,7 +4,6 @@
 #include <array>
 #include <vector>
 
-#include "solum_engine/render/ModelManager.h"
 #include "solum_engine/render/Uniforms.h"
 
 using namespace wgpu;
@@ -47,11 +46,10 @@ bool MeshletOcclusionPipeline::refreshMeshBindGroup(const MeshletBufferControlle
         return createBindGroup();
     }
 
-    return createBindGroupForMeshBuffers(
-        meshletBuffers.activeMeshDataBufferName(),
-        meshletBuffers.activeMeshMetadataBufferName(),
-        meshletBuffers.activeMeshletRangeBufferName(),
-        meshletBuffers.activeMeshletRangeParamsBufferName()
+    return createBindGroupForSceneBuffers(
+        meshletBuffers.visibleTileIdBufferName(),
+        meshletBuffers.tileSlotBufferName(),
+        meshletBuffers.tileSceneParamsBufferName()
     );
 }
 
@@ -92,24 +90,17 @@ bool MeshletOcclusionPipeline::createResources() {
     depthDesc.sampleCount = 1;
     depthDesc.size = {width, height, 1};
     depthDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
-    depthDesc.viewFormatCount = 0;
-    depthDesc.viewFormats = nullptr;
     if (!r_.tex.createTexture(kOcclusionDepthTextureName, depthDesc)) {
         return false;
     }
 
     TextureViewDescriptor depthViewDesc = Default;
     depthViewDesc.aspect = TextureAspect::DepthOnly;
-    depthViewDesc.baseArrayLayer = 0;
-    depthViewDesc.arrayLayerCount = 1;
     depthViewDesc.baseMipLevel = 0;
     depthViewDesc.mipLevelCount = 1;
     depthViewDesc.dimension = TextureViewDimension::_2D;
     depthViewDesc.format = TextureFormat::Depth32Float;
-    if (!r_.tex.createTextureView(
-            kOcclusionDepthTextureName,
-            kOcclusionDepthViewName,
-            depthViewDesc)) {
+    if (!r_.tex.createTextureView(kOcclusionDepthTextureName, kOcclusionDepthViewName, depthViewDesc)) {
         return false;
     }
 
@@ -121,25 +112,17 @@ bool MeshletOcclusionPipeline::createResources() {
     hizDesc.sampleCount = 1;
     hizDesc.size = {width, height, 1};
     hizDesc.usage = TextureUsage::TextureBinding | TextureUsage::StorageBinding;
-    hizDesc.viewFormatCount = 0;
-    hizDesc.viewFormats = nullptr;
     if (!r_.tex.createTexture(kOcclusionHiZTextureName, hizDesc)) {
         return false;
     }
 
     TextureViewDescriptor hizViewDesc = Default;
     hizViewDesc.aspect = TextureAspect::All;
-    hizViewDesc.baseArrayLayer = 0;
-    hizViewDesc.arrayLayerCount = 1;
     hizViewDesc.baseMipLevel = 0;
     hizViewDesc.mipLevelCount = occlusionHiZMipCount_;
     hizViewDesc.dimension = TextureViewDimension::_2D;
     hizViewDesc.format = TextureFormat::R32Float;
-    return r_.tex.createTextureView(
-               kOcclusionHiZTextureName,
-               kOcclusionHiZViewName,
-               hizViewDesc
-           ) != nullptr;
+    return r_.tex.createTextureView(kOcclusionHiZTextureName, kOcclusionHiZViewName, hizViewDesc) != nullptr;
 }
 
 void MeshletOcclusionPipeline::removeResources() {
@@ -173,7 +156,7 @@ void MeshletOcclusionPipeline::removeResources() {
 }
 
 bool MeshletOcclusionPipeline::createPipeline() {
-    std::vector<BindGroupLayoutEntry> prepassLayoutEntries(6, Default);
+    std::vector<BindGroupLayoutEntry> prepassLayoutEntries(4, Default);
     prepassLayoutEntries[0].binding = 0;
     prepassLayoutEntries[0].visibility = ShaderStage::Vertex;
     prepassLayoutEntries[0].buffer.type = BufferBindingType::Uniform;
@@ -189,16 +172,8 @@ bool MeshletOcclusionPipeline::createPipeline() {
 
     prepassLayoutEntries[3].binding = 3;
     prepassLayoutEntries[3].visibility = ShaderStage::Vertex;
-    prepassLayoutEntries[3].buffer.type = BufferBindingType::ReadOnlyStorage;
-
-    prepassLayoutEntries[4].binding = 4;
-    prepassLayoutEntries[4].visibility = ShaderStage::Vertex;
-    prepassLayoutEntries[4].buffer.type = BufferBindingType::ReadOnlyStorage;
-
-    prepassLayoutEntries[5].binding = 5;
-    prepassLayoutEntries[5].visibility = ShaderStage::Vertex;
-    prepassLayoutEntries[5].buffer.type = BufferBindingType::Uniform;
-    prepassLayoutEntries[5].buffer.minBindingSize = 16u;
+    prepassLayoutEntries[3].buffer.type = BufferBindingType::Uniform;
+    prepassLayoutEntries[3].buffer.minBindingSize = sizeof(TileSceneParamsGPU);
 
     BindGroupLayout prepassBgl = r_.pip.createBindGroupLayout(kDepthPrepassBglName, prepassLayoutEntries);
     if (!prepassBgl) {
@@ -218,7 +193,6 @@ bool MeshletOcclusionPipeline::createPipeline() {
     prepassConfig.sampleCount = 1;
     prepassConfig.cullMode = CullMode::Back;
     prepassConfig.bindGroupLayouts.push_back(prepassBgl);
-
     if (!r_.pip.createRenderPipeline(kDepthPrepassPipelineName, prepassConfig)) {
         return false;
     }
@@ -250,8 +224,7 @@ bool MeshletOcclusionPipeline::createPipeline() {
     hizDownsampleLayoutEntries[1].storageTexture.format = TextureFormat::R32Float;
     hizDownsampleLayoutEntries[1].storageTexture.viewDimension = TextureViewDimension::_2D;
 
-    BindGroupLayout hizDownsampleBgl =
-        r_.pip.createBindGroupLayout(kHiZDownsampleBglName, hizDownsampleLayoutEntries);
+    BindGroupLayout hizDownsampleBgl = r_.pip.createBindGroupLayout(kHiZDownsampleBglName, hizDownsampleLayoutEntries);
     if (!hizDownsampleBgl) {
         return false;
     }
@@ -276,59 +249,44 @@ bool MeshletOcclusionPipeline::createPipeline() {
 }
 
 bool MeshletOcclusionPipeline::createBindGroup() {
-    return createBindGroupForMeshBuffers(
-        "meshlet_data_buffer",
-        "meshlet_metadata_buffer",
-        "active_meshlet_ranges_buffer",
-        "active_meshlet_ranges_params_buffer"
+    return createBindGroupForSceneBuffers(
+        "visible_tile_ids_buffer",
+        "tile_slots_buffer",
+        "tile_scene_params_buffer"
     );
 }
 
-bool MeshletOcclusionPipeline::createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
-                                                             const std::string& metadataBufferName,
-                                                             const std::string& activeRangeBufferName,
-                                                             const std::string& activeRangeParamsBufferName) {
+bool MeshletOcclusionPipeline::createBindGroupForSceneBuffers(const std::string& visibleTileIdBufferName,
+                                                              const std::string& tileSlotBufferName,
+                                                              const std::string& tileSceneParamsBufferName) {
     Buffer uniformBuffer = r_.buf.getBuffer("uniform_buffer");
-    Buffer meshDataBuffer = r_.buf.getBuffer(meshDataBufferName);
-    Buffer metadataBuffer = r_.buf.getBuffer(metadataBufferName);
-    Buffer modelQuadBuffer = r_.buf.getBuffer(ModelManager::kModelQuadBufferName);
-    Buffer activeRangeBuffer = r_.buf.getBuffer(activeRangeBufferName);
-    Buffer activeRangeParamsBuffer = r_.buf.getBuffer(activeRangeParamsBufferName);
-    if (!uniformBuffer || !meshDataBuffer || !metadataBuffer || !modelQuadBuffer ||
-        !activeRangeBuffer || !activeRangeParamsBuffer) {
+    Buffer visibleTileIds = r_.buf.getBuffer(visibleTileIdBufferName);
+    Buffer tileSlots = r_.buf.getBuffer(tileSlotBufferName);
+    Buffer sceneParams = r_.buf.getBuffer(tileSceneParamsBufferName);
+    if (!uniformBuffer || !visibleTileIds || !tileSlots || !sceneParams) {
         return false;
     }
 
-    std::vector<BindGroupEntry> entries(6, Default);
+    std::vector<BindGroupEntry> entries(4, Default);
     entries[0].binding = 0;
     entries[0].buffer = uniformBuffer;
     entries[0].offset = 0;
     entries[0].size = sizeof(FrameUniforms);
 
     entries[1].binding = 1;
-    entries[1].buffer = meshDataBuffer;
+    entries[1].buffer = visibleTileIds;
     entries[1].offset = 0;
-    entries[1].size = meshDataBuffer.getSize();
+    entries[1].size = visibleTileIds.getSize();
 
     entries[2].binding = 2;
-    entries[2].buffer = metadataBuffer;
+    entries[2].buffer = tileSlots;
     entries[2].offset = 0;
-    entries[2].size = metadataBuffer.getSize();
+    entries[2].size = tileSlots.getSize();
 
     entries[3].binding = 3;
-    entries[3].buffer = modelQuadBuffer;
+    entries[3].buffer = sceneParams;
     entries[3].offset = 0;
-    entries[3].size = modelQuadBuffer.getSize();
-
-    entries[4].binding = 4;
-    entries[4].buffer = activeRangeBuffer;
-    entries[4].offset = 0;
-    entries[4].size = activeRangeBuffer.getSize();
-
-    entries[5].binding = 5;
-    entries[5].buffer = activeRangeParamsBuffer;
-    entries[5].offset = 0;
-    entries[5].size = 16u;
+    entries[3].size = sizeof(TileSceneParamsGPU);
 
     r_.pip.deleteBindGroup(kDepthPrepassBgName);
     return r_.pip.createBindGroup(kDepthPrepassBgName, kDepthPrepassBglName, entries) != nullptr;
@@ -366,8 +324,6 @@ bool MeshletOcclusionPipeline::rebuildHierarchyBindings() {
     for (uint32_t mipLevel = 0u; mipLevel < mipCount; ++mipLevel) {
         TextureViewDescriptor viewDesc = Default;
         viewDesc.aspect = TextureAspect::All;
-        viewDesc.baseArrayLayer = 0;
-        viewDesc.arrayLayerCount = 1;
         viewDesc.baseMipLevel = mipLevel;
         viewDesc.mipLevelCount = 1;
         viewDesc.dimension = TextureViewDimension::_2D;
@@ -434,8 +390,8 @@ void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
         return;
     }
 
-    const uint32_t meshletCount = meshletBuffers.activeSelectionMeshletCount();
-    if (meshletCount == 0u) {
+    const uint32_t visibleTileCount = meshletBuffers.visibleTileCount();
+    if (visibleTileCount == 0u) {
         return;
     }
 
@@ -459,12 +415,11 @@ void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
     passDesc.colorAttachmentCount = 0;
     passDesc.colorAttachments = nullptr;
     passDesc.depthStencilAttachment = &depthAttachment;
-    passDesc.timestampWrites = nullptr;
 
     RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
     pass.setPipeline(prepassPipeline);
     pass.setBindGroup(0, prepassBindGroup, 0, nullptr);
-    pass.draw(MESHLET_VERTEX_CAPACITY, meshletCount, 0, 0);
+    pass.draw(36u, visibleTileCount, 0, 0);
     pass.end();
     pass.release();
 }
@@ -480,7 +435,6 @@ void MeshletOcclusionPipeline::encodeHierarchyPass(CommandEncoder encoder) {
     }
 
     const uint32_t mipCount = std::max(occlusionHiZMipCount_, 1u);
-
     ComputePassDescriptor passDesc = Default;
     ComputePassEncoder pass = encoder.beginComputePass(passDesc);
 

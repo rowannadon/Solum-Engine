@@ -34,10 +34,9 @@ public:
     bool createBindGroup() override;
 
 private:
-    bool createBindGroupForMeshBuffers(const std::string& meshDataBufferName,
-                                       const std::string& metadataBufferName,
-                                       const std::string& activeRangeBufferName,
-                                       const std::string& activeRangeParamsBufferName);
+    bool createBindGroupForSceneBuffers(const std::string& visibleTileIdBufferName,
+                                        const std::string& tileSlotBufferName,
+                                        const std::string& tileSceneParamsBufferName);
     bool rebuildHierarchyBindings();
     static uint32_t computeMipCount(uint32_t width, uint32_t height);
 

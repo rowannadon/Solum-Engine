@@ -31,22 +31,19 @@ public:
     bool createBindGroup() override;
 
 private:
-    bool createBindGroupForMeshBuffers(const std::string& meshletAabbBufferName,
-                                       const std::string& visibleIndicesBufferName,
-                                       const std::string& activeRangeBufferName,
-                                       const char* occlusionHiZViewName);
+    bool createBindGroupForSceneBuffers(const std::string& visibleTileIdBufferName,
+                                        const std::string& tileSlotBufferName,
+                                        const std::string& residentTileLodBufferName,
+                                        const std::string& visibleIndicesBufferName,
+                                        const std::string& tileSceneParamsBufferName);
 
-    static constexpr const char* kDefaultHiZViewName = "meshlet_occlusion_hiz_view";
-
-    static constexpr uint32_t kMeshletCullWorkgroupSize = 128u;
+    static constexpr uint32_t kTileExpansionWorkgroupSize = 64u;
 
     static std::string prefixedName(const std::string& prefix, const char* baseName);
 
-    std::string cullParamsBufferName_;
     std::string indirectArgsBufferName_;
     std::string indirectResetBufferName_;
     std::string cullBglName_;
     std::string cullBgName_;
     std::string cullPipelineName_;
-    std::string activeHiZViewName_ = kDefaultHiZViewName;
 };
