@@ -46,16 +46,22 @@ void World::updatePlayerPosition(const glm::vec3& playerWorldPosition) {
     };
     const ColumnCoord centerColumn = chunk_to_column(block_to_chunk(playerBlock));
 
-    std::vector<ScheduledColumnJob> jobsToSchedule;
+    bool centerUnchanged = false;
     {
         // Fast path for unchanged center without taking the write lock. Worker mesh jobs
         // hold shared locks frequently; avoiding a per-frame writer lock reduces stalls.
         std::shared_lock<std::shared_mutex> lock(worldMutex_);
-        if (hasLastScheduledCenter_ && centerColumn == lastScheduledCenter_) {
-            return;
+        centerUnchanged = hasLastScheduledCenter_ && centerColumn == lastScheduledCenter_;
+    }
+    if (centerUnchanged) {
+        if (hasPendingJobs()) {
+            pumpColumnGenerationQueue();
+            pumpChunkPropagationQueue();
         }
+        return;
     }
 
+    std::vector<ScheduledColumnJob> jobsToSchedule;
     {
         std::unique_lock<std::shared_mutex> lock(worldMutex_);
         if (hasLastScheduledCenter_ && centerColumn == lastScheduledCenter_) {

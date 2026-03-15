@@ -48,7 +48,8 @@ jobsystem::Priority remeshPriorityForDistance(int32_t distanceChunks, int32_t ti
 }  // namespace
 
 void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn,
-                                                 const std::vector<WorldChunkEdit>& changedChunks) {
+                                                 const std::vector<WorldChunkEdit>& changedChunks,
+                                                 bool preferFastLod0Visibility) {
     struct ScheduledTileLod {
         TileLodCoord coord{};
         int32_t distanceSq = 0;
@@ -127,12 +128,13 @@ void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn
 
     std::vector<ScheduledTileLod> jobsToSchedule;
     jobsToSchedule.reserve(jobsByCoord.size());
+    std::unordered_set<MeshTileCoord> tilesNeedingFastLod0;
 
     {
-        std::shared_lock<std::shared_mutex> lock(meshMutex_);
+        std::unique_lock<std::shared_mutex> lock(meshMutex_);
         for (auto& [coord, scheduled] : jobsByCoord) {
             const MeshTileCoord& tile = coord.tile.tile;
-            const auto tileIt = meshTiles_.find(tile);
+            auto tileIt = meshTiles_.find(tile);
 
             const int8_t desired = (tileIt != meshTiles_.end() && tileIt->second.desiredLod >= 0)
                 ? tileIt->second.desiredLod
@@ -141,7 +143,11 @@ void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn
                 continue;
             }
 
-            const int8_t selected = (tileIt != meshTiles_.end()) ? tileIt->second.selectedLod : -1;
+            if (preferFastLod0Visibility && coord.lodLevel == 0u && tileIt != meshTiles_.end()) {
+                tileIt->second.preferLod0DuringRemesh = true;
+                tilesNeedingFastLod0.insert(tile);
+            }
+
             const FootprintDistanceRange distances = footprintDistanceRangeForCell(
                 tile.x,
                 tile.y,
@@ -150,15 +156,24 @@ void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn
             );
             const int32_t distanceChunks = distances.minDistanceChunks;
             scheduled.distanceSq = distanceChunks * distanceChunks;
-            scheduled.usePriorityQueue =
-                (desired == static_cast<int8_t>(coord.lodLevel)) ||
-                (selected == static_cast<int8_t>(coord.lodLevel));
-            scheduled.tier = scheduled.usePriorityQueue ? 0u : 1u;
-            scheduled.priority = scheduled.usePriorityQueue
+            const bool useFastLod0 = preferFastLod0Visibility && coord.lodLevel == 0u;
+            scheduled.usePriorityQueue = useFastLod0;
+            scheduled.tier = useFastLod0 ? 0u : 1u;
+            scheduled.priority = useFastLod0
                 ? remeshPriorityForDistance(distanceChunks, meshTileSizeChunks_)
                 : priorityFromLodLevel(coord.lodLevel);
 
             jobsToSchedule.push_back(scheduled);
+        }
+
+        for (const MeshTileCoord& tile : tilesNeedingFastLod0) {
+            auto tileIt = meshTiles_.find(tile);
+            if (tileIt == meshTiles_.end()) {
+                continue;
+            }
+            if (refreshSelectedLodLocked(tile, tileIt->second)) {
+                selectionSnapshotDirty_ = true;
+            }
         }
     }
 
@@ -202,7 +217,7 @@ void MeshManager::scheduleRemeshForPlayerEditedChunks(const ColumnCoord& centerC
     }
 
     processedWorldPlayerEditRevision_.store(nextRevision, std::memory_order_release);
-    scheduleRemeshForChangedChunks(centerColumn, editedChunks);
+    scheduleRemeshForChangedChunks(centerColumn, editedChunks, true);
 }
 
 void MeshManager::scheduleRemeshForLightingChangedChunks(const ColumnCoord& centerColumn) {
@@ -224,5 +239,5 @@ void MeshManager::scheduleRemeshForLightingChangedChunks(const ColumnCoord& cent
     for (const ChunkCoord& coord : changedChunks) {
         lightingEdits.push_back(WorldChunkEdit{coord, changedMipMask});
     }
-    scheduleRemeshForChangedChunks(centerColumn, lightingEdits);
+    scheduleRemeshForChangedChunks(centerColumn, lightingEdits, false);
 }

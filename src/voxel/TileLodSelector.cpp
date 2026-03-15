@@ -96,11 +96,16 @@ int8_t MeshManager::applyLodHysteresis(const MeshTileCoord& tileCoord,
     );
 
     if (candidateLod > previousLod) {
+        const float candidateSsePixels = projectedSsePixels(
+            static_cast<uint8_t>(candidateLod),
+            depthBlocks,
+            sseProjectionScale
+        );
         const float coarseSwitchThreshold = std::max(
             0.0f,
             config_.lodSseTargetPixels - config_.lodSseHysteresisPixels
         );
-        if (previousSsePixels > coarseSwitchThreshold) {
+        if (candidateSsePixels > coarseSwitchThreshold) {
             return previousLod;
         }
         return candidateLod;

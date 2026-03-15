@@ -70,8 +70,9 @@ private:
         int8_t desiredLod = -1;
         int8_t selectedLod = -1;
         int8_t queuedVisibleLod = -1;
-        uint8_t pendingVisibleSlices = 0u;
+        uint16_t pendingVisibleSlices = 0u;
         bool waitingForVisibleFootprint = false;
+        bool preferLod0DuringRemesh = false;
     };
 
     struct MeshGenerationResult {
@@ -100,32 +101,13 @@ private:
         }
     };
 
-    struct DeferredTileLodEntry {
-        MeshTileCoord tile{};
-        uint8_t lodLevel = 0u;
-        int32_t distanceSq = 0;
-        uint64_t centerVersion = 0u;
-        uint64_t sequence = 0u;
-    };
-
-    struct DeferredTileLodEntryCompare {
-        bool operator()(const DeferredTileLodEntry& a, const DeferredTileLodEntry& b) const noexcept {
-            if (a.distanceSq != b.distanceSq) {
-                return a.distanceSq > b.distanceSq;
-            }
-            if (a.lodLevel != b.lodLevel) {
-                return a.lodLevel > b.lodLevel;
-            }
-            return a.sequence > b.sequence;
-        }
-    };
-
     void scheduleTilesAround(const ChunkCoord& centerChunk,
                              const glm::vec3& playerWorldPosition,
                              float sseProjectionScale,
                              int32_t centerShiftChunks);
     void scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn,
-                                        const std::vector<WorldChunkEdit>& changedChunks);
+                                        const std::vector<WorldChunkEdit>& changedChunks,
+                                        bool preferFastLod0Visibility = false);
     void scheduleRemeshForPlayerEditedChunks(const ColumnCoord& centerColumn);
     void scheduleRemeshForLightingChangedChunks(const ColumnCoord& centerColumn);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);
@@ -145,15 +127,8 @@ private:
     void ensureVisibleFrontierLocked();
     bool initializeVisibleRingLocked(int32_t ring);
     void enqueueVisibleTileLocked(const MeshTileCoord& tile, int32_t ring, int32_t distanceSq);
-    void enqueueDeferredTileLodLocked(const MeshTileCoord& tile, uint8_t lodLevel, int32_t distanceSq);
-    void queueDeferredLodsForTileLocked(const MeshTileCoord& tile);
     void markVisibleTileReadyLocked(const MeshTileCoord& tile);
-    void noteVisibleTileAttemptFinishedLocked(const MeshTileCoord& tile, uint8_t lodLevel);
-    bool tryScheduleDeferredTileLodLocked(const DeferredTileLodEntry& entry,
-                                          std::vector<TileLodCoord>& outCoords,
-                                          std::vector<jobsystem::Priority>& outPriorities,
-                                          std::vector<bool>& outForceRemesh,
-                                          int32_t activeWindowExtraChunks);
+    void noteVisibleTileAttemptFinishedLocked(const MeshTileCoord& tile);
     void pumpTileQueues();
 
     int8_t desiredLodForTile(const MeshTileCoord& tileCoord,
@@ -176,11 +151,14 @@ private:
     bool isLodCellAllAir(const ChunkCoord& cellCoord,
                          uint8_t lodLevel,
                          std::unordered_map<ColumnCoord, uint32_t>& emptyMaskCache) const;
-    int8_t chooseRenderableLodForTileLocked(const MeshTileState& state) const;
-    bool refreshSelectedLodLocked(MeshTileState& state) const;
+    int8_t chooseRenderableLodForTileLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
+    bool refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshTileState& state) const;
     bool lodFullyResidentLocked(const MeshTileState& state, int32_t lodLevel) const;
     uint8_t pendingSliceCountForLodLocked(const MeshTileCoord& tileCoord, uint8_t lodLevel) const;
-    bool isDesiredLodReadyLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
+    uint16_t pendingSliceCountForTileLocked(const MeshTileCoord& tileCoord) const;
+    bool allTileLodsResidentLocked(const MeshTileState& state) const;
+    bool canDisplayLod0DuringRemeshLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
+    bool isTileDisplayReadyLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
     bool hasVisibleQueueWorkLocked() const;
 
     ChunkMeshOutput meshTileLod(const TileLodCoord& coord) const;
@@ -217,17 +195,11 @@ private:
     std::unordered_set<MeshTileCoord> currentVisibleRingOutstandingTiles_;
     std::unordered_set<MeshTileCoord> queuedVisibleTiles_;
     std::unordered_set<MeshTileCoord> waitingVisibleTiles_;
-    std::unordered_set<TileLodCoord> queuedDeferredTileLods_;
     std::priority_queue<
         QueuedVisibleTileEntry,
         std::vector<QueuedVisibleTileEntry>,
         QueuedVisibleTileEntryCompare
     > queuedVisibleTileHeap_;
-    std::priority_queue<
-        DeferredTileLodEntry,
-        std::vector<DeferredTileLodEntry>,
-        DeferredTileLodEntryCompare
-    > deferredTileLodHeap_;
 
     std::deque<MeshTileLodKey> pendingUploadOrder_;
     std::unordered_set<MeshTileLodKey> pendingUploadSet_;
@@ -246,6 +218,8 @@ private:
     bool hasLastScheduledCenter_ = false;
     glm::vec3 lastPlayerWorldPosition_{0.0f, 0.0f, 0.0f};
     bool hasLastPlayerWorldPosition_ = false;
+    glm::vec3 lastPlanningPlayerWorldPosition_{0.0f, 0.0f, 0.0f};
+    bool hasLastPlanningPlayerWorldPosition_ = false;
     float lastSseProjectionScale_ = 390.0f;
     bool hasLastSseProjectionScale_ = false;
     uint64_t tileQueueCenterVersion_ = 0u;
