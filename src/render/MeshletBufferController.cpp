@@ -959,9 +959,6 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
 
     for (const MeshTileLodUpload& upsert : delta.upserts) {
         result.deltaApplied = upsertResidentTileLod(upsert) || result.deltaApplied;
-        if (bufferManager_->isOverBudget()) {
-            break;
-        }
     }
 
     for (const MeshTileSelectionEntry& selection : delta.selectionChanges) {

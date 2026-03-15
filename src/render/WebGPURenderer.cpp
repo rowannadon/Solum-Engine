@@ -10,6 +10,64 @@
 
 using namespace wgpu;
 
+namespace {
+void mergeMeshDeltaInto(MeshStreamingDelta& dst, MeshStreamingDelta&& src) {
+    dst.revision = std::max(dst.revision, src.revision);
+
+    auto eraseUpsert = [&dst](const MeshTileLodKey& key) {
+        dst.upserts.erase(
+            std::remove_if(dst.upserts.begin(), dst.upserts.end(), [&key](const MeshTileLodUpload& upload) {
+                return upload.key == key;
+            }),
+            dst.upserts.end()
+        );
+    };
+    auto eraseRemoval = [&dst](const MeshTileLodKey& key) {
+        dst.removals.erase(
+            std::remove(dst.removals.begin(), dst.removals.end(), key),
+            dst.removals.end()
+        );
+    };
+    auto hasRemoval = [&dst](const MeshTileLodKey& key) {
+        return std::find(dst.removals.begin(), dst.removals.end(), key) != dst.removals.end();
+    };
+
+    for (const MeshTileLodKey& key : src.removals) {
+        eraseUpsert(key);
+        if (!hasRemoval(key)) {
+            dst.removals.push_back(key);
+        }
+    }
+
+    for (MeshTileLodUpload& upload : src.upserts) {
+        eraseRemoval(upload.key);
+        auto existing = std::find_if(dst.upserts.begin(), dst.upserts.end(), [&upload](const MeshTileLodUpload& existingUpload) {
+            return existingUpload.key == upload.key;
+        });
+        if (existing != dst.upserts.end()) {
+            *existing = std::move(upload);
+        } else {
+            dst.upserts.push_back(std::move(upload));
+        }
+    }
+
+    for (const MeshTileSelectionEntry& selection : src.selectionChanges) {
+        auto existing = std::find_if(
+            dst.selectionChanges.begin(),
+            dst.selectionChanges.end(),
+            [&selection](const MeshTileSelectionEntry& existingSelection) {
+                return existingSelection.tile == selection.tile;
+            }
+        );
+        if (existing != dst.selectionChanges.end()) {
+            existing->selectedLod = selection.selectedLod;
+        } else {
+            dst.selectionChanges.push_back(selection);
+        }
+    }
+}
+}  // namespace
+
 bool WebGPURenderer::initialize() {
     return initialize(Config{});
 }
@@ -296,7 +354,12 @@ void WebGPURenderer::setSelectionOutlineBlock(const std::optional<BlockCoord>& b
 }
 
 void WebGPURenderer::queueMeshDelta(MeshStreamingDelta&& delta) {
-    pendingMeshDelta_ = std::move(delta);
+    if (!pendingMeshDelta_.has_value()) {
+        pendingMeshDelta_ = std::move(delta);
+        return;
+    }
+
+    mergeMeshDeltaInto(*pendingMeshDelta_, std::move(delta));
 }
 
 uint64_t WebGPURenderer::uploadedMeshRevision() const noexcept {
