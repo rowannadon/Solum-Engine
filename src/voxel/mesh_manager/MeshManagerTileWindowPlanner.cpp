@@ -103,9 +103,7 @@ void MeshManager::resetTileQueuesLocked(const ChunkCoord& centerChunk,
             playerWorldPosition,
             sseProjectionScale
         );
-        if (refreshSelectedLodLocked(tileCoord, tileState)) {
-            selectionSnapshotDirty_ = true;
-        }
+        refreshSelectedLodLocked(tileCoord, tileState);
     }
 }
 
@@ -131,8 +129,12 @@ void MeshManager::pruneMeshTilesOutsideWindowLocked() {
                 });
             }
         }
+        if (it->second.selectedLod >= 0) {
+            for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
+                pendingSelectionChanges_[MeshTileSliceCoord{it->first, zSlice}] = -1;
+            }
+        }
         it = meshTiles_.erase(it);
-        selectionSnapshotDirty_ = true;
     }
 }
 
@@ -197,9 +199,7 @@ bool MeshManager::initializeVisibleRingLocked(int32_t ring) {
             lastSseProjectionScale_
         );
         tileState.desiredLod = desired;
-        if (refreshSelectedLodLocked(tileCoord, tileState)) {
-            selectionSnapshotDirty_ = true;
-        }
+        refreshSelectedLodLocked(tileCoord, tileState);
         if (desired < 0) {
             return;
         }

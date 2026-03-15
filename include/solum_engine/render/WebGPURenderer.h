@@ -77,7 +77,7 @@ private:
     bool checkGpuStall(const char* stage, std::chrono::steady_clock::time_point start,
                        std::chrono::milliseconds threshold);
 
-    bool refreshMeshBindings(bool uploadApplied, bool rebuildDrawConfig);
+    bool refreshMeshBindings(bool refreshBufferBindGroups, bool rebuildDrawConfig);
     void processPendingMeshUploads();
 
 public:

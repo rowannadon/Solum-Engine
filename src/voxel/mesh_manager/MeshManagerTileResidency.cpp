@@ -68,33 +68,22 @@ std::vector<MeshTileLodKey> MeshManager::consumePendingTileLodRemovals(std::size
     return removals;
 }
 
-bool MeshManager::consumeSelectionSnapshot(uint64_t& outRevision,
-                                           std::vector<MeshTileSelectionEntry>& outSelection) {
+bool MeshManager::consumeSelectionChanges(std::vector<MeshTileSelectionEntry>& outSelection) {
     std::unique_lock<std::shared_mutex> lock(meshMutex_);
-    if (!selectionSnapshotDirty_) {
+    if (pendingSelectionChanges_.empty()) {
         return false;
     }
 
     outSelection.clear();
-    outSelection.reserve(meshTiles_.size() * static_cast<std::size_t>(meshTileSliceCount_));
-    for (const auto& [tileCoord, tileState] : meshTiles_) {
-        if (tileState.selectedLod < 0) {
-            continue;
-        }
-        for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-            outSelection.push_back(MeshTileSelectionEntry{
-                MeshTileSliceCoord{tileCoord, zSlice},
-                tileState.selectedLod
-            });
-        }
+    outSelection.reserve(pendingSelectionChanges_.size());
+    for (const auto& [tile, selectedLod] : pendingSelectionChanges_) {
+        outSelection.push_back(MeshTileSelectionEntry{tile, selectedLod});
     }
     std::sort(outSelection.begin(), outSelection.end(), [](const MeshTileSelectionEntry& a, const MeshTileSelectionEntry& b) {
         return a.tile < b.tile;
     });
 
-    ++selectionRevision_;
-    outRevision = selectionRevision_;
-    selectionSnapshotDirty_ = false;
+    pendingSelectionChanges_.clear();
     return true;
 }
 
@@ -137,13 +126,16 @@ int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileCoord& tileCo
     return -1;
 }
 
-bool MeshManager::refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshTileState& state) const {
+bool MeshManager::refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshTileState& state) {
     const int8_t selected = chooseRenderableLodForTileLocked(tileCoord, state);
     if (selected == state.selectedLod) {
         return false;
     }
 
     state.selectedLod = selected;
+    for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
+        pendingSelectionChanges_[MeshTileSliceCoord{tileCoord, zSlice}] = selected;
+    }
     return true;
 }
 
@@ -155,5 +147,5 @@ bool MeshManager::hasPendingJobs() const {
            !pendingPriorityUploadOrder_.empty() ||
            !pendingUploadOrder_.empty() ||
            !pendingRemovalOrder_.empty() ||
-           selectionSnapshotDirty_;
+           !pendingSelectionChanges_.empty();
 }

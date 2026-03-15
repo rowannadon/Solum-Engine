@@ -50,8 +50,7 @@ public:
 
     std::vector<MeshTileLodUpload> consumePendingTileLodUploads(std::size_t maxCount);
     std::vector<MeshTileLodKey> consumePendingTileLodRemovals(std::size_t maxCount);
-    bool consumeSelectionSnapshot(uint64_t& outRevision,
-                                  std::vector<MeshTileSelectionEntry>& outSelection);
+    bool consumeSelectionChanges(std::vector<MeshTileSelectionEntry>& outSelection);
 
     uint64_t meshRevision() const noexcept;
     bool hasPendingJobs() const;
@@ -181,7 +180,7 @@ private:
                          uint8_t lodLevel,
                          std::unordered_map<ColumnCoord, uint32_t>& emptyMaskCache) const;
     int8_t chooseRenderableLodForTileLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
-    bool refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshTileState& state) const;
+    bool refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshTileState& state);
     bool lodFullyResidentLocked(const MeshTileState& state, int32_t lodLevel) const;
     bool allTileLodsResidentLocked(const MeshTileState& state) const;
     uint8_t pendingSliceCountForLodLocked(const MeshTileCoord& tileCoord, uint8_t lodLevel) const;
@@ -264,6 +263,5 @@ private:
     bool currentVisibleRingInitialized_ = false;
     int32_t maxVisibleFrontierRing_ = 0;
 
-    uint64_t selectionRevision_ = 0u;
-    bool selectionSnapshotDirty_ = true;
+    std::unordered_map<MeshTileSliceCoord, int8_t> pendingSelectionChanges_;
 };

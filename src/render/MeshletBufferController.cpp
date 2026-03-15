@@ -34,7 +34,9 @@ bool MeshletBufferController::initialize(BufferManager* bufferManager) {
     allocations_.clear();
     tileSelection_.clear();
     activeRanges_.clear();
-    activeMeshletBounds_.clear();
+    activeSelectionKeys_.clear();
+    activeMeshletBoundsCache_.clear();
+    activeMeshletBoundsDirty_ = true;
     activeSelectionMeshletCount_ = 0u;
     uploadedMeshRevision_ = 0u;
 
@@ -224,14 +226,8 @@ void MeshletBufferController::releaseAllocation(const MeshTileLodKey& key) {
         return;
     }
 
-    const uint32_t meshletCount = it->second.packed
-        ? static_cast<uint32_t>(it->second.packed->metadata.size())
-        : 0u;
-    const uint32_t quadWordCount = it->second.packed
-        ? static_cast<uint32_t>(it->second.packed->quadData.size())
-        : 0u;
-    freeRange(meshletFreeRanges_, it->second.meshletOffset, meshletCount);
-    freeRange(quadFreeRanges_, it->second.quadOffset, quadWordCount);
+    freeRange(meshletFreeRanges_, it->second.meshletOffset, it->second.reservedMeshletCount);
+    freeRange(quadFreeRanges_, it->second.quadOffset, it->second.reservedQuadWordCount);
     allocations_.erase(it);
 }
 
@@ -260,8 +256,11 @@ bool MeshletBufferController::repackExistingAllocations() {
             return false;
         }
         if (!allocateRange(quadFreeRanges_, quadWordCount, record.quadOffset)) {
+            freeRange(meshletFreeRanges_, record.meshletOffset, meshletCount);
             return false;
         }
+        record.reservedMeshletCount = meshletCount;
+        record.reservedQuadWordCount = quadWordCount;
         if (!writeAllocation(record)) {
             return false;
         }
@@ -334,7 +333,14 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
         return result;
     }
 
+    auto selectionUsesKey = [this](const MeshTileLodKey& key) {
+        const auto selectionIt = tileSelection_.find(key.tile);
+        return selectionIt != tileSelection_.end() && selectionIt->second == static_cast<int8_t>(key.lod);
+    };
+    bool activeRangesDirty = false;
+
     for (const MeshTileLodKey& key : delta.removals) {
+        activeRangesDirty = activeRangesDirty || selectionUsesKey(key);
         releaseAllocation(key);
         result.deltaApplied = true;
     }
@@ -342,6 +348,7 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
     for (const MeshTileLodUpload& upsert : delta.upserts) {
         const std::shared_ptr<const PackedMeshletData>& packed = selectPackedForVariant(upsert);
         if (!packed || packed->metadata.empty()) {
+            activeRangesDirty = activeRangesDirty || selectionUsesKey(upsert.key);
             releaseAllocation(upsert.key);
             result.deltaApplied = true;
             continue;
@@ -351,65 +358,86 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
         record.key = upsert.key;
         record.packed = packed;
 
-        const bool hasPrevious = allocations_.find(upsert.key) != allocations_.end();
+        const auto previousIt = allocations_.find(upsert.key);
+        const bool hasPrevious = previousIt != allocations_.end();
 
         uint32_t meshletOffset = 0u;
         uint32_t quadOffset = 0u;
-        const uint32_t requiredMeshletWords = static_cast<uint32_t>(record.packed->metadata.size());
+        const uint32_t requiredMeshletCount = static_cast<uint32_t>(record.packed->metadata.size());
         const uint32_t requiredQuadWords = static_cast<uint32_t>(record.packed->quadData.size());
-        const bool meshletAllocated = allocateRange(meshletFreeRanges_, requiredMeshletWords, meshletOffset);
-        const bool quadAllocated = meshletAllocated && allocateRange(quadFreeRanges_, requiredQuadWords, quadOffset);
-        if (!meshletAllocated || !quadAllocated) {
-            if (meshletAllocated) {
-                freeRange(meshletFreeRanges_, meshletOffset, requiredMeshletWords);
-            }
-            if (quadAllocated) {
-                freeRange(quadFreeRanges_, quadOffset, requiredQuadWords);
-            }
+        bool reusedPreviousReservation = false;
 
-            bool recreated = false;
-            const uint32_t requiredMeshlets = meshletCapacity_ + static_cast<uint32_t>(record.packed->metadata.size()) + 64u;
-            const uint32_t requiredQuadWords = quadWordCapacity_ + static_cast<uint32_t>(record.packed->quadData.size()) + 1024u;
-            const uint32_t requiredRanges = std::max<uint32_t>(
-                rangeCapacity_,
-                static_cast<uint32_t>(tileSelection_.size() + 64u)
-            );
-            if (!ensureBuffers(requiredMeshlets, requiredQuadWords, requiredRanges, &recreated)) {
-                continue;
-            }
-            result.buffersRecreated = result.buffersRecreated || recreated;
+        if (hasPrevious &&
+            previousIt->second.reservedMeshletCount >= requiredMeshletCount &&
+            previousIt->second.reservedQuadWordCount >= requiredQuadWords) {
+            meshletOffset = previousIt->second.meshletOffset;
+            quadOffset = previousIt->second.quadOffset;
+            record.reservedMeshletCount = previousIt->second.reservedMeshletCount;
+            record.reservedQuadWordCount = previousIt->second.reservedQuadWordCount;
+            reusedPreviousReservation = true;
+        } else {
+            const bool meshletAllocated = allocateRange(meshletFreeRanges_, requiredMeshletCount, meshletOffset);
+            const bool quadAllocated =
+                meshletAllocated && allocateRange(quadFreeRanges_, requiredQuadWords, quadOffset);
+            if (!meshletAllocated || !quadAllocated) {
+                if (meshletAllocated) {
+                    freeRange(meshletFreeRanges_, meshletOffset, requiredMeshletCount);
+                }
+                if (quadAllocated) {
+                    freeRange(quadFreeRanges_, quadOffset, requiredQuadWords);
+                }
 
-            if (!allocateRange(meshletFreeRanges_, requiredMeshletWords, meshletOffset) ||
-                !allocateRange(quadFreeRanges_, requiredQuadWords, quadOffset)) {
-                continue;
+                bool recreated = false;
+                const uint32_t requiredMeshlets = meshletCapacity_ + requiredMeshletCount + 64u;
+                const uint32_t requiredQuadWordsTotal = quadWordCapacity_ + requiredQuadWords + 1024u;
+                const uint32_t requiredRanges = std::max<uint32_t>(
+                    rangeCapacity_,
+                    static_cast<uint32_t>(tileSelection_.size() + 64u)
+                );
+                if (!ensureBuffers(requiredMeshlets, requiredQuadWordsTotal, requiredRanges, &recreated)) {
+                    continue;
+                }
+                result.buffersRecreated = result.buffersRecreated || recreated;
+                activeRangesDirty = activeRangesDirty || recreated;
+
+                const bool meshletAllocatedAfterRecreate =
+                    allocateRange(meshletFreeRanges_, requiredMeshletCount, meshletOffset);
+                const bool quadAllocatedAfterRecreate =
+                    meshletAllocatedAfterRecreate &&
+                    allocateRange(quadFreeRanges_, requiredQuadWords, quadOffset);
+                if (!meshletAllocatedAfterRecreate || !quadAllocatedAfterRecreate) {
+                    if (meshletAllocatedAfterRecreate) {
+                        freeRange(meshletFreeRanges_, meshletOffset, requiredMeshletCount);
+                    }
+                    continue;
+                }
             }
+            record.reservedMeshletCount = requiredMeshletCount;
+            record.reservedQuadWordCount = requiredQuadWords;
         }
 
         record.meshletOffset = meshletOffset;
         record.quadOffset = quadOffset;
         if (!writeAllocation(record)) {
-            freeRange(meshletFreeRanges_, meshletOffset, static_cast<uint32_t>(record.packed->metadata.size()));
-            freeRange(quadFreeRanges_, quadOffset, static_cast<uint32_t>(record.packed->quadData.size()));
+            if (!reusedPreviousReservation) {
+                freeRange(meshletFreeRanges_, meshletOffset, record.reservedMeshletCount);
+                freeRange(quadFreeRanges_, quadOffset, record.reservedQuadWordCount);
+            }
             continue;
         }
 
-        if (hasPrevious) {
+        if (hasPrevious && !reusedPreviousReservation) {
             const auto currentOldIt = allocations_.find(upsert.key);
             if (currentOldIt != allocations_.end()) {
-                const uint32_t previousMeshletCount = currentOldIt->second.packed
-                    ? static_cast<uint32_t>(currentOldIt->second.packed->metadata.size())
-                    : 0u;
-                const uint32_t previousQuadWordCount = currentOldIt->second.packed
-                    ? static_cast<uint32_t>(currentOldIt->second.packed->quadData.size())
-                    : 0u;
-                freeRange(meshletFreeRanges_, currentOldIt->second.meshletOffset, previousMeshletCount);
-                freeRange(quadFreeRanges_, currentOldIt->second.quadOffset, previousQuadWordCount);
+                freeRange(meshletFreeRanges_, currentOldIt->second.meshletOffset, currentOldIt->second.reservedMeshletCount);
+                freeRange(quadFreeRanges_, currentOldIt->second.quadOffset, currentOldIt->second.reservedQuadWordCount);
                 allocations_.erase(currentOldIt);
             }
         }
 
         allocations_[upsert.key] = std::move(record);
         result.deltaApplied = true;
+        activeRangesDirty = activeRangesDirty || selectionUsesKey(upsert.key);
 
         // Stop uploading if per-frame byte budget is exceeded to avoid
         // overwhelming the Metal command queue on macOS (IOFence deadlock).
@@ -419,23 +447,32 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
         }
     }
 
-    if (!delta.selectionSnapshot.empty()) {
-        tileSelection_.clear();
-        for (const MeshTileSelectionEntry& entry : delta.selectionSnapshot) {
+    if (!delta.selectionChanges.empty()) {
+        for (const MeshTileSelectionEntry& entry : delta.selectionChanges) {
             if (entry.selectedLod >= 0) {
                 tileSelection_[entry.tile] = entry.selectedLod;
+            } else {
+                tileSelection_.erase(entry.tile);
             }
         }
         result.deltaApplied = true;
+        activeRangesDirty = true;
     }
 
-    bool recreatedForRanges = false;
-    if (!ensureBuffers(meshletCapacity_, quadWordCapacity_, std::max<uint32_t>(1u, static_cast<uint32_t>(tileSelection_.size())), &recreatedForRanges)) {
-        return result;
+    if (activeRangesDirty) {
+        bool recreatedForRanges = false;
+        if (!ensureBuffers(
+                meshletCapacity_,
+                quadWordCapacity_,
+                std::max<uint32_t>(1u, static_cast<uint32_t>(tileSelection_.size())),
+                &recreatedForRanges)) {
+            return result;
+        }
+        result.buffersRecreated = result.buffersRecreated || recreatedForRanges;
+        if (!buildActiveRanges()) {
+            return result;
+        }
     }
-    result.buffersRecreated = result.buffersRecreated || recreatedForRanges;
-
-    buildActiveRanges();
 
     if (delta.revision > uploadedMeshRevision_) {
         uploadedMeshRevision_ = delta.revision;
@@ -450,7 +487,8 @@ bool MeshletBufferController::buildActiveRanges() {
     }
 
     activeRanges_.clear();
-    activeMeshletBounds_.clear();
+    activeSelectionKeys_.clear();
+    activeMeshletBoundsDirty_ = true;
     activeSelectionMeshletCount_ = 0u;
 
     std::vector<std::pair<MeshTileSliceCoord, int8_t>> orderedSelection;
@@ -488,18 +526,13 @@ bool MeshletBufferController::buildActiveRanges() {
         }
 
         activeSelectionMeshletCount_ += count;
+        activeSelectionKeys_.push_back(key);
         activeRanges_.push_back(ActiveMeshletRangeGPU{
             it->second.meshletOffset,
             count,
             activeSelectionMeshletCount_,
             0u
         });
-
-        activeMeshletBounds_.insert(
-            activeMeshletBounds_.end(),
-            it->second.packed->bounds.begin(),
-            it->second.packed->bounds.end()
-        );
     }
 
     bool recreated = false;
@@ -581,7 +614,25 @@ uint64_t MeshletBufferController::uploadedMeshRevision() const noexcept {
 }
 
 const std::vector<MeshletAabb>& MeshletBufferController::activeMeshletBounds() const noexcept {
-    return activeMeshletBounds_;
+    if (!activeMeshletBoundsDirty_) {
+        return activeMeshletBoundsCache_;
+    }
+
+    activeMeshletBoundsCache_.clear();
+    activeMeshletBoundsCache_.reserve(activeSelectionMeshletCount_);
+    for (const MeshTileLodKey& key : activeSelectionKeys_) {
+        const auto allocationIt = allocations_.find(key);
+        if (allocationIt == allocations_.end() || !allocationIt->second.packed) {
+            continue;
+        }
+        activeMeshletBoundsCache_.insert(
+            activeMeshletBoundsCache_.end(),
+            allocationIt->second.packed->bounds.begin(),
+            allocationIt->second.packed->bounds.end()
+        );
+    }
+    activeMeshletBoundsDirty_ = false;
+    return activeMeshletBoundsCache_;
 }
 
 MeshletBufferController::ActiveBindings MeshletBufferController::activeBindings() const noexcept {

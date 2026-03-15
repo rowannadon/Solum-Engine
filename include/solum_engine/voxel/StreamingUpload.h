@@ -39,7 +39,7 @@ struct MeshTileSelectionEntry {
 struct MeshStreamingDelta {
     std::vector<MeshTileLodUpload> upserts;
     std::vector<MeshTileLodKey> removals;
-    std::vector<MeshTileSelectionEntry> selectionSnapshot;
+    std::vector<MeshTileSelectionEntry> selectionChanges;
     uint64_t revision = 0u;
 };
 

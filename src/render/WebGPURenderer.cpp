@@ -111,7 +111,7 @@ bool WebGPURenderer::initialize(const Config& config) {
     culledVoxelPipeline_->setIndirectDrawBuffer(culledMeshletCullingPipeline_->indirectArgsBufferName(), 0u);
     doubleSidedVoxelPipeline_->setIndirectDrawBuffer(doubleSidedMeshletCullingPipeline_->indirectArgsBufferName(), 0u);
 
-    if (!refreshMeshBindings(false, true)) {
+    if (!refreshMeshBindings(true, true)) {
         std::cerr << "Failed to refresh mesh bindings during renderer initialization." << std::endl;
         return false;
     }
@@ -132,26 +132,27 @@ bool WebGPURenderer::initialize(const Config& config) {
     return true;
 }
 
-bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawConfig) {
-    (void)uploadApplied;
+bool WebGPURenderer::refreshMeshBindings(bool refreshBufferBindGroups, bool rebuildDrawConfig) {
     if (!culledVoxelPipeline_.has_value() || !doubleSidedVoxelPipeline_.has_value()) {
         return false;
     }
 
     const MeshletBufferController::ActiveBindings culledBindings = culledMeshletBuffers_.activeBindings();
-    if (!culledVoxelPipeline_->createBindGroupForMeshBuffers(
-            culledBindings.meshDataBufferName,
-            culledBindings.meshMetadataBufferName,
-            culledBindings.visibleMeshletIndexBufferName)) {
-        return false;
-    }
-
     const MeshletBufferController::ActiveBindings doubleSidedBindings = doubleSidedMeshletBuffers_.activeBindings();
-    if (!doubleSidedVoxelPipeline_->createBindGroupForMeshBuffers(
-            doubleSidedBindings.meshDataBufferName,
-            doubleSidedBindings.meshMetadataBufferName,
-            doubleSidedBindings.visibleMeshletIndexBufferName)) {
-        return false;
+    if (refreshBufferBindGroups) {
+        if (!culledVoxelPipeline_->createBindGroupForMeshBuffers(
+                culledBindings.meshDataBufferName,
+                culledBindings.meshMetadataBufferName,
+                culledBindings.visibleMeshletIndexBufferName)) {
+            return false;
+        }
+
+        if (!doubleSidedVoxelPipeline_->createBindGroupForMeshBuffers(
+                doubleSidedBindings.meshDataBufferName,
+                doubleSidedBindings.meshMetadataBufferName,
+                doubleSidedBindings.visibleMeshletIndexBufferName)) {
+            return false;
+        }
     }
 
     if (rebuildDrawConfig) {
@@ -162,9 +163,11 @@ bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawCon
         );
     }
 
-    if (meshletOcclusionPipeline_.has_value() &&
-        !meshletOcclusionPipeline_->refreshMeshBindGroup(culledMeshletBuffers_)) {
-        return false;
+    if (refreshBufferBindGroups) {
+        if (meshletOcclusionPipeline_.has_value() &&
+            !meshletOcclusionPipeline_->refreshMeshBindGroup(culledMeshletBuffers_)) {
+            return false;
+        }
     }
 
     if (culledMeshletCullingPipeline_.has_value()) {
@@ -180,7 +183,8 @@ bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawCon
         const char* hizViewName = meshletOcclusionPipeline_.has_value()
             ? MeshletOcclusionPipeline::kOcclusionHiZViewName
             : nullptr;
-        if (!culledMeshletCullingPipeline_->refreshBindGroup(culledMeshletBuffers_, hizViewName)) {
+        if (refreshBufferBindGroups &&
+            !culledMeshletCullingPipeline_->refreshBindGroup(culledMeshletBuffers_, hizViewName)) {
             return false;
         }
     }
@@ -198,7 +202,8 @@ bool WebGPURenderer::refreshMeshBindings(bool uploadApplied, bool rebuildDrawCon
         const char* hizViewName = meshletOcclusionPipeline_.has_value()
             ? MeshletOcclusionPipeline::kOcclusionHiZViewName
             : nullptr;
-        if (!doubleSidedMeshletCullingPipeline_->refreshBindGroup(doubleSidedMeshletBuffers_, hizViewName)) {
+        if (refreshBufferBindGroups &&
+            !doubleSidedMeshletCullingPipeline_->refreshBindGroup(doubleSidedMeshletBuffers_, hizViewName)) {
             return false;
         }
     }
@@ -221,7 +226,7 @@ void WebGPURenderer::createRenderingTextures() {
         std::cerr << "Failed to recreate meshlet occlusion depth resources." << std::endl;
     }
 
-    if (!refreshMeshBindings(false, true)) {
+    if (!refreshMeshBindings(true, true)) {
         std::cerr << "Failed to refresh mesh bindings after resize/resource recreation." << std::endl;
     }
 }
@@ -327,7 +332,7 @@ void WebGPURenderer::processPendingMeshUploads() {
     const bool buffersRecreated = culledResult.buffersRecreated || doubleSidedResult.buffersRecreated;
     const bool deltaApplied = culledResult.deltaApplied || doubleSidedResult.deltaApplied;
     if (buffersRecreated || deltaApplied) {
-        if (!refreshMeshBindings(deltaApplied, true)) {
+        if (!refreshMeshBindings(buffersRecreated, true)) {
             std::cerr << "Failed to refresh mesh pipeline resources after upload." << std::endl;
             finalizeUploadTiming();
             return;

@@ -80,6 +80,8 @@ private:
         std::shared_ptr<const PackedMeshletData> packed;
         uint32_t meshletOffset = 0u;
         uint32_t quadOffset = 0u;
+        uint32_t reservedMeshletCount = 0u;
+        uint32_t reservedQuadWordCount = 0u;
     };
 
     struct FreeRange {
@@ -94,10 +96,10 @@ private:
         uint32_t pad1 = 0u;
     };
 
-    static constexpr uint32_t kInitialMeshletCapacity = 64u;
+    static constexpr uint32_t kInitialMeshletCapacity = 4096u;
     static constexpr uint32_t kInitialQuadWordCapacity =
         kInitialMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
-    static constexpr uint32_t kInitialRangeCapacity = 256u;
+    static constexpr uint32_t kInitialRangeCapacity = 2048u;
 
     bool ensureBuffers(uint32_t requiredMeshlets, uint32_t requiredQuadWords, uint32_t requiredRanges, bool* recreated);
     bool recreateBuffers(uint32_t meshletCapacity, uint32_t quadWordCapacity, uint32_t rangeCapacity);
@@ -133,7 +135,9 @@ private:
     std::unordered_map<MeshTileSliceCoord, int8_t> tileSelection_;
 
     std::vector<ActiveMeshletRangeGPU> activeRanges_;
-    std::vector<MeshletAabb> activeMeshletBounds_;
+    std::vector<MeshTileLodKey> activeSelectionKeys_;
+    mutable std::vector<MeshletAabb> activeMeshletBoundsCache_;
+    mutable bool activeMeshletBoundsDirty_ = true;
     uint32_t activeSelectionMeshletCount_ = 0u;
 
     uint64_t uploadedMeshRevision_ = 0u;

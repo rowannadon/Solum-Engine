@@ -198,11 +198,10 @@ std::optional<MeshStreamingDelta> VoxelStreamingSystem::buildDelta() {
     );
 
     const auto prepareStart = std::chrono::steady_clock::now();
-    uint64_t selectionRevision = 0u;
-    std::vector<MeshTileSelectionEntry> selectionSnapshot;
-    const bool hasSelectionSnapshot = meshManager_->consumeSelectionSnapshot(selectionRevision, selectionSnapshot);
+    std::vector<MeshTileSelectionEntry> selectionChanges;
+    const bool hasSelectionChanges = meshManager_->consumeSelectionChanges(selectionChanges);
 
-    if (upserts.empty() && removals.empty() && !hasSelectionSnapshot) {
+    if (upserts.empty() && removals.empty() && !hasSelectionChanges) {
         streamSkipUnchanged_.fetch_add(1, std::memory_order_relaxed);
         recordTimingNs(
             TimingStage::StreamPrepareUpload,
@@ -216,12 +215,10 @@ std::optional<MeshStreamingDelta> VoxelStreamingSystem::buildDelta() {
     MeshStreamingDelta delta{};
     delta.upserts = std::move(upserts);
     delta.removals = std::move(removals);
-    if (hasSelectionSnapshot) {
-        delta.selectionSnapshot = std::move(selectionSnapshot);
-        delta.revision = std::max(selectionRevision, streamerLastDeltaRevision_ + 1u);
-    } else {
-        delta.revision = streamerLastDeltaRevision_ + 1u;
+    if (hasSelectionChanges) {
+        delta.selectionChanges = std::move(selectionChanges);
     }
+    delta.revision = streamerLastDeltaRevision_ + 1u;
 
     recordTimingNs(
         TimingStage::StreamPrepareUpload,

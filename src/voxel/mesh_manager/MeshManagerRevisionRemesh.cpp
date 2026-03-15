@@ -171,9 +171,7 @@ void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn
             if (tileIt == meshTiles_.end()) {
                 continue;
             }
-            if (refreshSelectedLodLocked(tile, tileIt->second)) {
-                selectionSnapshotDirty_ = true;
-            }
+            refreshSelectedLodLocked(tile, tileIt->second);
         }
     }
 

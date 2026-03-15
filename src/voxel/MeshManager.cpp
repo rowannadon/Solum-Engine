@@ -301,9 +301,7 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                                 tileIt->second.preferLod0DuringRemesh = false;
                             }
 
-                            if (refreshSelectedLodLocked(coord.tile.tile, tileIt->second)) {
-                                selectionSnapshotDirty_ = true;
-                            }
+                            refreshSelectedLodLocked(coord.tile.tile, tileIt->second);
 
                             if (isVisibleAttempt) {
                                 bool tileStillPending = false;
