@@ -56,6 +56,10 @@ fn hash_to_color(id: u32) -> vec3f {
     );
 }
 
+fn luminance(color: vec3f) -> f32 {
+    return dot(color, vec3f(0.2126, 0.7152, 0.0722));
+}
+
 fn face_uv(face: u32, cornerOffset: vec3f) -> vec2f {
     if (face == 0u || face == 1u) {
         return vec2f(cornerOffset.y, cornerOffset.z);
@@ -284,12 +288,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let skyLightColor = mix(vec3f(0.55, 0.6, 0.72), vec3f(1.0, 0.98, 0.95), daylight);
     let blockLightColor = vec3f(1.0, 0.92, 0.62);
     let skyContribution = skyLight * mix(0.45, 1.0, daylight);
-    let sunWashout = smoothstep(0.35, 1.0, skyLight * daylight);
-    let blockContribution = blockLight * (1.0 - sunWashout);
-    let totalLightColor = max(
-        vec3f(0.0, 0.0, 0.0),
-        (skyLightColor * skyContribution) + (blockLightColor * blockContribution)
-    );
+    let skyRadiance = skyLightColor * skyContribution;
+    let skyLuma = luminance(skyRadiance);
+    let blockStrength = pow(blockLight, 0.85);
+    let blockVisibility = 1.0 - smoothstep(0.08, 0.72, skyLuma);
+    let blockExposure = mix(1.35, 0.3, smoothstep(0.0, 1.0, skyLuma));
+    let blockRadiance = blockLightColor * blockStrength * blockExposure * blockVisibility;
+    let combinedRadiance = max(vec3f(0.0, 0.0, 0.0), skyRadiance + blockRadiance);
+    let totalLightColor = vec3f(1.0, 1.0, 1.0) - exp(-combinedRadiance * 1.65);
     let shaded = max(0.45, shade);
 
     let linearColor = baseColor * shaded * totalLightColor;
