@@ -4,6 +4,7 @@
 #include <cmath>
 #include <exception>
 #include <mutex>
+#include <unordered_set>
 #include <utility>
 
 #include "solum_engine/resources/Constants.h"
@@ -259,6 +260,8 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
             [this, coord, usePriorityQueue](jobsystem::JobResult<MeshGenerationResult>&& result) {
                 bool rescheduleDeferred = false;
                 bool pumpQueues = false;
+                std::vector<PendingMeshDispatch> transitionRemeshDispatches;
+                std::unordered_set<TileLodCoord> transitionRemeshSeen;
                 {
                     std::unique_lock<std::shared_mutex> lock(meshMutex_);
                     if (usePriorityQueue) {
@@ -303,6 +306,11 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
 
                             if (refreshSelectedLodLocked(coord.tile.tile, tileIt->second)) {
                                 selectionSnapshotDirty_ = true;
+                                collectAdjacentLodTransitionRemeshesLocked(
+                                    coord.tile.tile,
+                                    transitionRemeshDispatches,
+                                    transitionRemeshSeen
+                                );
                             }
 
                             if (isVisibleAttempt) {
@@ -344,6 +352,15 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                         true,
                         meshTileSizeChunks_ + 4,
                         usePriorityQueue
+                    );
+                }
+                for (const PendingMeshDispatch& dispatch : transitionRemeshDispatches) {
+                    scheduleTileLodMeshing(
+                        dispatch.coord,
+                        dispatch.priority,
+                        dispatch.forceRemesh,
+                        meshTileSizeChunks_ + 4,
+                        dispatch.usePriorityQueue
                     );
                 }
                 if (pumpQueues) {

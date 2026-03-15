@@ -38,9 +38,27 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
                                       const glm::vec3& playerWorldPosition,
                                       float sseProjectionScale,
                                       int32_t centerShiftChunks) {
+    std::vector<PendingMeshDispatch> transitionRemeshDispatches;
+    std::unordered_set<TileLodCoord> transitionRemeshSeen;
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
-        resetTileQueuesLocked(centerChunk, playerWorldPosition, sseProjectionScale, centerShiftChunks);
+        resetTileQueuesLocked(
+            centerChunk,
+            playerWorldPosition,
+            sseProjectionScale,
+            centerShiftChunks,
+            transitionRemeshDispatches,
+            transitionRemeshSeen
+        );
+    }
+    for (const PendingMeshDispatch& dispatch : transitionRemeshDispatches) {
+        scheduleTileLodMeshing(
+            dispatch.coord,
+            dispatch.priority,
+            dispatch.forceRemesh,
+            meshTileSizeChunks_ + 4,
+            dispatch.usePriorityQueue
+        );
     }
     pumpTileQueues();
 }
@@ -48,7 +66,9 @@ void MeshManager::scheduleTilesAround(const ChunkCoord& centerChunk,
 void MeshManager::resetTileQueuesLocked(const ChunkCoord& centerChunk,
                                         const glm::vec3& playerWorldPosition,
                                         float sseProjectionScale,
-                                        int32_t centerShiftChunks) {
+                                        int32_t centerShiftChunks,
+                                        std::vector<PendingMeshDispatch>& transitionRemeshDispatches,
+                                        std::unordered_set<TileLodCoord>& transitionRemeshSeen) {
     const int32_t maxRadiusChunks = std::max(0, maxConfiguredRadius());
     planningPrefetchChunks_ = std::max(4, std::max(0, centerShiftChunks));
     const int32_t scheduleOuterRadiusChunks = maxRadiusChunks + planningPrefetchChunks_;
@@ -105,6 +125,11 @@ void MeshManager::resetTileQueuesLocked(const ChunkCoord& centerChunk,
         );
         if (refreshSelectedLodLocked(tileCoord, tileState)) {
             selectionSnapshotDirty_ = true;
+            collectAdjacentLodTransitionRemeshesLocked(
+                tileCoord,
+                transitionRemeshDispatches,
+                transitionRemeshSeen
+            );
         }
     }
 }
@@ -136,11 +161,17 @@ void MeshManager::pruneMeshTilesOutsideWindowLocked() {
     }
 }
 
-void MeshManager::ensureVisibleFrontierLocked() {
+void MeshManager::ensureVisibleFrontierLocked(
+    std::vector<PendingMeshDispatch>& transitionRemeshDispatches,
+    std::unordered_set<TileLodCoord>& transitionRemeshSeen) {
     while (visibleFrontierRing_ <= maxVisibleFrontierRing_) {
         if (!currentVisibleRingInitialized_) {
             currentVisibleRingOutstandingTiles_.clear();
-            initializeVisibleRingLocked(visibleFrontierRing_);
+            initializeVisibleRingLocked(
+                visibleFrontierRing_,
+                transitionRemeshDispatches,
+                transitionRemeshSeen
+            );
             currentVisibleRingInitialized_ = true;
         }
 
@@ -153,7 +184,10 @@ void MeshManager::ensureVisibleFrontierLocked() {
     }
 }
 
-bool MeshManager::initializeVisibleRingLocked(int32_t ring) {
+bool MeshManager::initializeVisibleRingLocked(
+    int32_t ring,
+    std::vector<PendingMeshDispatch>& transitionRemeshDispatches,
+    std::unordered_set<TileLodCoord>& transitionRemeshSeen) {
     bool anyTilesInRing = false;
 
     auto processTile = [&](const MeshTileCoord& tileCoord) {
@@ -199,6 +233,11 @@ bool MeshManager::initializeVisibleRingLocked(int32_t ring) {
         tileState.desiredLod = desired;
         if (refreshSelectedLodLocked(tileCoord, tileState)) {
             selectionSnapshotDirty_ = true;
+            collectAdjacentLodTransitionRemeshesLocked(
+                tileCoord,
+                transitionRemeshDispatches,
+                transitionRemeshSeen
+            );
         }
         if (desired < 0) {
             return;
@@ -388,17 +427,18 @@ void MeshManager::pumpTileQueues() {
     std::vector<MeshTileCoord> visibleAttempts;
     bool repump = false;
     const int32_t activeWindowExtraChunks = planningPrefetchChunks_ + meshTileSizeChunks_;
+    std::unordered_set<TileLodCoord> transitionRemeshSeen;
 
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
-        ensureVisibleFrontierLocked();
+        ensureVisibleFrontierLocked(dispatches, transitionRemeshSeen);
 
         std::size_t pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
         const std::size_t maxPending = maxPendingMeshJobs(jobs_.worker_count());
         std::size_t remainingBudget = (pendingCount < maxPending) ? (maxPending - pendingCount) : 0u;
 
         while (remainingBudget > 0u) {
-            ensureVisibleFrontierLocked();
+            ensureVisibleFrontierLocked(dispatches, transitionRemeshSeen);
             bool queuedVisibleWork = false;
             while (remainingBudget > 0u && !queuedVisibleTileHeap_.empty()) {
                 const QueuedVisibleTileEntry entry = queuedVisibleTileHeap_.top();
