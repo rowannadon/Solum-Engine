@@ -155,6 +155,8 @@ private:
         bool allocate(uint32_t unitCount, PageRun& outRun);
         void release(const PageRun& run);
         uint32_t unitOffset(const PageRun& run) const noexcept;
+        uint32_t freePageCount() const noexcept;
+        uint32_t largestFreeBlockPages() const noexcept;
         void addFreeBlock(uint32_t startPage, uint32_t order);
         void removeFreeBlock(uint32_t startPage, uint32_t order);
     };
@@ -204,6 +206,10 @@ private:
     ResidentRecord* residentForHandle(ResidentTileLodHandle handle) noexcept;
     const ResidentRecord* residentForHandle(ResidentTileLodHandle handle) const noexcept;
     ResidentTileLodHandle chooseTileResidentHandle(const TileSlotState& tileSlot) const noexcept;
+    void logAllocationFailure(const char* stage,
+                              const MeshTileLodKey& key,
+                              uint32_t requiredMeshlets,
+                              uint32_t requiredQuadWords) const;
 
     void updateTileSelectedResident(uint32_t tileSlotIndex);
     void updateTileResidentFlags(uint32_t tileSlotIndex);

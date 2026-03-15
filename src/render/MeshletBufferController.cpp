@@ -134,6 +134,23 @@ uint32_t MeshletBufferController::PageAllocator::unitOffset(const PageRun& run) 
     return run.startPage * pageSize;
 }
 
+uint32_t MeshletBufferController::PageAllocator::freePageCount() const noexcept {
+    uint32_t totalFreePages = 0u;
+    for (uint32_t order = 0u; order < freeLists.size(); ++order) {
+        totalFreePages += static_cast<uint32_t>(freeLists[order].size()) * (1u << order);
+    }
+    return totalFreePages;
+}
+
+uint32_t MeshletBufferController::PageAllocator::largestFreeBlockPages() const noexcept {
+    for (uint32_t order = static_cast<uint32_t>(freeLists.size()); order > 0u; --order) {
+        if (!freeLists[order - 1u].empty()) {
+            return 1u << (order - 1u);
+        }
+    }
+    return 0u;
+}
+
 void MeshletBufferController::PageAllocator::addFreeBlock(uint32_t startPage, uint32_t order) {
     if (order >= freeLists.size()) {
         return;
@@ -397,6 +414,30 @@ ResidentTileLodHandle MeshletBufferController::chooseTileResidentHandle(const Ti
     }
 
     return {};
+}
+
+void MeshletBufferController::logAllocationFailure(const char* stage,
+                                                   const MeshTileLodKey& key,
+                                                   uint32_t requiredMeshlets,
+                                                   uint32_t requiredQuadWords) const {
+    std::cerr
+        << "MeshletBufferController(" << variantLabel(geometryVariant_) << ") allocation failure at " << stage
+        << ": tile=(" << key.tile.tile.x << "," << key.tile.tile.y << "," << key.tile.z << ")"
+        << " lod=" << static_cast<uint32_t>(key.lod)
+        << " requiredMeshlets=" << requiredMeshlets
+        << " requiredMeshletPages=" << meshletPages_.pagesForUnits(requiredMeshlets)
+        << " meshletFreePages=" << meshletPages_.freePageCount()
+        << " meshletLargestBlockPages=" << meshletPages_.largestFreeBlockPages()
+        << " requiredQuadWords=" << requiredQuadWords
+        << " requiredQuadPages=" << quadPages_.pagesForUnits(requiredQuadWords)
+        << " quadFreePages=" << quadPages_.freePageCount()
+        << " quadLargestBlockPages=" << quadPages_.largestFreeBlockPages()
+        << " residentsActive=" << residentTileCount()
+        << " residentSlotsUsed=" << residentRecords_.size()
+        << " residentSlotsFree=" << freeResidentSlots_.size()
+        << " visibleTiles=" << visibleTileIds_.size()
+        << " tileSlots=" << tileSlots_.size()
+        << std::endl;
 }
 
 MeshletBufferController::ResidentRecord* MeshletBufferController::residentForHandle(ResidentTileLodHandle handle) noexcept {
@@ -771,10 +812,16 @@ bool MeshletBufferController::evictForAllocation(uint32_t requiredMeshlets,
 
         const int32_t evictionCandidate = chooseEvictionCandidate(protectedKey);
         if (evictionCandidate < 0) {
+            if (protectedKey != nullptr) {
+                logAllocationFailure("evict_for_allocation:no_candidate", *protectedKey, requiredMeshlets, requiredQuadWords);
+            }
             return false;
         }
         const MeshTileLodKey key = residentRecords_[static_cast<size_t>(evictionCandidate)].key;
         if (!removeResidentTileLod(key)) {
+            if (protectedKey != nullptr) {
+                logAllocationFailure("evict_for_allocation:remove_failed", *protectedKey, requiredMeshlets, requiredQuadWords);
+            }
             return false;
         }
     }
@@ -887,6 +934,7 @@ bool MeshletBufferController::upsertResidentTileLod(const MeshTileLodUpload& upl
             record->quadPages = {};
         }
         if (!evictForAllocation(requiredMeshlets, requiredQuadWords, &upload.key)) {
+            logAllocationFailure("upsert:evict_failed", upload.key, requiredMeshlets, requiredQuadWords);
             if (createdNewSlot) {
                 freeResidentSlots_.push_back(residentSlot);
             }
@@ -897,6 +945,7 @@ bool MeshletBufferController::upsertResidentTileLod(const MeshTileLodUpload& upl
         PageRun quadRun{};
         if (!meshletPages_.allocate(requiredMeshlets, meshletRun) ||
             !quadPages_.allocate(requiredQuadWords, quadRun)) {
+            logAllocationFailure("upsert:post_evict_allocate_failed", upload.key, requiredMeshlets, requiredQuadWords);
             if (meshletRun.valid()) {
                 meshletPages_.release(meshletRun);
             }
