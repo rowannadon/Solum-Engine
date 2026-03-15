@@ -46,6 +46,12 @@ private:
         uint64_t streamSnapshotsPrepared = 0;
     };
 
+    struct StreamingLoopState {
+        glm::vec3 cameraPosition{0.0f, 0.0f, 0.0f};
+        float cameraSseProjectionScale = 390.0f;
+        bool hasCameraPosition = false;
+    };
+
     std::unique_ptr<World> world_;
     std::unique_ptr<MeshManager> meshManager_;
     std::shared_ptr<const BlockModelLibrary> blockModelLibrary_;
@@ -54,6 +60,7 @@ private:
     mutable std::mutex streamingMutex_;
     std::condition_variable streamingCv_;
     bool streamingStopRequested_ = false;
+    bool streamingWorkRequested_ = false;
     bool hasLatestStreamingCamera_ = false;
     glm::vec3 latestStreamingCamera_{0.0f, 0.0f, 0.0f};
     float latestStreamingSseProjectionScale_ = 390.0f;
@@ -69,6 +76,11 @@ private:
     std::optional<std::chrono::steady_clock::time_point> lastTimingSampleTime_;
 
     void streamingThreadMain();
+    bool waitForWork(StreamingLoopState& state);
+    void requestStreamingWorkLocked(bool cameraUpdated);
+    void runWorldStep(const StreamingLoopState& state);
+    void runMeshStep(const StreamingLoopState& state);
+    std::optional<MeshStreamingDelta> buildDelta();
 
     void recordTimingNs(TimingStage stage, uint64_t ns) noexcept;
     TimingRawTotals captureTimingRawTotals() const;

@@ -102,55 +102,16 @@ bool World::applyBlockEditLocked(const BlockCoord& coord,
         return false;
     }
 
-    std::unordered_set<ColumnCoord> geometryDirtyColumns;
-    geometryDirtyColumns.insert(columnCoord);
-    if (localX == 0u) {
-        geometryDirtyColumns.insert(ColumnCoord{columnCoord.v.x - 1, columnCoord.v.y});
-    } else if (localX == static_cast<uint8_t>(cfg::CHUNK_SIZE - 1)) {
-        geometryDirtyColumns.insert(ColumnCoord{columnCoord.v.x + 1, columnCoord.v.y});
-    }
-    if (localY == 0u) {
-        geometryDirtyColumns.insert(ColumnCoord{columnCoord.v.x, columnCoord.v.y - 1});
-    } else if (localY == static_cast<uint8_t>(cfg::CHUNK_SIZE - 1)) {
-        geometryDirtyColumns.insert(ColumnCoord{columnCoord.v.x, columnCoord.v.y + 1});
-    }
-
-    for (const ColumnCoord& dirtyColumn : geometryDirtyColumns) {
-        if (!isColumnSkycastCompleteLocked(dirtyColumn)) {
-            continue;
-        }
-        generatedColumns_.insert(dirtyColumn);
-        generatedColumnHistory_.push_back(dirtyColumn);
-        generationRevision_.fetch_add(1, std::memory_order_release);
-    }
-
-    std::unordered_set<ChunkCoord> geometryDirtyChunks;
-    for (const ColumnCoord& dirtyColumn : geometryDirtyColumns) {
-        geometryDirtyChunks.insert(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z});
-    }
-    if (localZ == 0u) {
-        for (const ColumnCoord& dirtyColumn : geometryDirtyColumns) {
-            if (chunkCoord.v.z > 0) {
-                geometryDirtyChunks.insert(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z - 1});
-            }
-        }
-    } else if (localZ == static_cast<uint16_t>(cfg::CHUNK_SIZE - 1)) {
-        for (const ColumnCoord& dirtyColumn : geometryDirtyColumns) {
-            if (chunkCoord.v.z + 1 < cfg::COLUMN_HEIGHT) {
-                geometryDirtyChunks.insert(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z + 1});
-            }
-        }
-    }
+    const std::vector<ColumnCoord> geometryDirtyColumns =
+        collectGeometryDirtyColumnsLocked(columnCoord, localX, localY);
+    const std::vector<ChunkCoord> geometryDirtyChunks =
+        collectGeometryDirtyChunksLocked(geometryDirtyColumns, chunkCoord, localZ);
 
     for (const ChunkCoord& dirtyChunk : geometryDirtyChunks) {
-        if (dirtyChunk.v.z < 0 || dirtyChunk.v.z >= cfg::COLUMN_HEIGHT) {
-            continue;
-        }
         if (!isColumnSkycastCompleteLocked(chunk_to_column(dirtyChunk))) {
             continue;
         }
-        playerEditedChunkHistory_.push_back(WorldChunkEdit{dirtyChunk, changedMipMask});
-        playerEditChunkRevision_.fetch_add(1, std::memory_order_release);
+        recordPlayerEditedChunkEventLocked(WorldChunkEdit{dirtyChunk, changedMipMask});
     }
 
     for (int32_t oy = -1; oy <= 1; ++oy) {
@@ -172,6 +133,62 @@ bool World::applyBlockEditLocked(const BlockCoord& coord,
     }
 
     return true;
+}
+
+std::vector<ColumnCoord> World::collectGeometryDirtyColumnsLocked(const ColumnCoord& columnCoord,
+                                                                  uint8_t localX,
+                                                                  uint8_t localY) const {
+    std::vector<ColumnCoord> dirtyColumns;
+    dirtyColumns.push_back(columnCoord);
+
+    if (localX == 0u) {
+        dirtyColumns.push_back(ColumnCoord{columnCoord.v.x - 1, columnCoord.v.y});
+    } else if (localX == static_cast<uint8_t>(cfg::CHUNK_SIZE - 1)) {
+        dirtyColumns.push_back(ColumnCoord{columnCoord.v.x + 1, columnCoord.v.y});
+    }
+
+    if (localY == 0u) {
+        dirtyColumns.push_back(ColumnCoord{columnCoord.v.x, columnCoord.v.y - 1});
+    } else if (localY == static_cast<uint8_t>(cfg::CHUNK_SIZE - 1)) {
+        dirtyColumns.push_back(ColumnCoord{columnCoord.v.x, columnCoord.v.y + 1});
+    }
+
+    std::sort(dirtyColumns.begin(), dirtyColumns.end());
+    dirtyColumns.erase(std::unique(dirtyColumns.begin(), dirtyColumns.end()), dirtyColumns.end());
+    return dirtyColumns;
+}
+
+std::vector<ChunkCoord> World::collectGeometryDirtyChunksLocked(const std::vector<ColumnCoord>& dirtyColumns,
+                                                                const ChunkCoord& chunkCoord,
+                                                                uint16_t localZ) const {
+    std::vector<ChunkCoord> dirtyChunks;
+    dirtyChunks.reserve(dirtyColumns.size() * 3u);
+
+    for (const ColumnCoord& dirtyColumn : dirtyColumns) {
+        dirtyChunks.push_back(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z});
+        if (localZ == 0u && chunkCoord.v.z > 0) {
+            dirtyChunks.push_back(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z - 1});
+        } else if (localZ == static_cast<uint16_t>(cfg::CHUNK_SIZE - 1) &&
+                   chunkCoord.v.z + 1 < cfg::COLUMN_HEIGHT) {
+            dirtyChunks.push_back(ChunkCoord{dirtyColumn.v.x, dirtyColumn.v.y, chunkCoord.v.z + 1});
+        }
+    }
+
+    std::sort(dirtyChunks.begin(), dirtyChunks.end());
+    dirtyChunks.erase(std::unique(dirtyChunks.begin(), dirtyChunks.end()), dirtyChunks.end());
+    return dirtyChunks;
+}
+
+void World::recordPlayerEditedChunkEventLocked(const WorldChunkEdit& edit) {
+    appendRevisionEventLocked(playerEditedChunkEvents_, edit, playerEditChunkRevision_);
+}
+
+void World::recordGeneratedColumnEventLocked(const ColumnCoord& coord) {
+    appendRevisionEventLocked(generatedColumnEvents_, coord, generationRevision_);
+}
+
+void World::recordLightingChangedChunkEventLocked(const ChunkCoord& coord) {
+    appendRevisionEventLocked(lightingChangedChunkEvents_, coord, lightingChunkRevision_);
 }
 
 void World::enqueueChunkPropagationCandidatesLocked(const ColumnCoord& coord) {

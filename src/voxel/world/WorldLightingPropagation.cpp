@@ -839,8 +839,7 @@ bool World::propagateChunkLighting(const ChunkCoord& coord,
 
         const bool wasGenerated = generatedColumns_.find(columnCoord) != generatedColumns_.end();
         if (chunkLightChanged && wasGenerated) {
-            lightingChangedChunkHistory_.push_back(coord);
-            lightingChunkRevision_.fetch_add(1, std::memory_order_release);
+            recordLightingChangedChunkEventLocked(coord);
         }
 
         auto queueDependent = [&](const ChunkCoord& dependentCoord) {
@@ -876,8 +875,7 @@ bool World::propagateChunkLighting(const ChunkCoord& coord,
             }
         }
         if (columnConverged && generatedColumns_.insert(columnCoord).second) {
-            generatedColumnHistory_.push_back(columnCoord);
-            generationRevision_.fetch_add(1, std::memory_order_release);
+            recordGeneratedColumnEventLocked(columnCoord);
         }
 
         if (outLightChanged != nullptr) {

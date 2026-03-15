@@ -12,6 +12,44 @@ namespace {
     constexpr int kPaddedPlaneArea = kChunkSizePadded * kChunkSizePadded;
     constexpr int kPaddedBlockCount = kChunkSizePadded * kChunkSizePadded * kChunkSizePadded;
 
+    struct PaddedChunkBlockSource final : IBlockSource {
+        BlockCoord origin{};
+        std::array<BlockMaterial, kPaddedBlockCount> blocks{};
+        std::array<uint8_t, kPaddedBlockCount> lights{};
+
+        static constexpr int index(int x, int y, int z) {
+            return (x * kPaddedPlaneArea) + (y * kChunkSizePadded) + z;
+        }
+
+        BlockMaterial getBlock(const BlockCoord& coord) const override {
+            const int lx = coord.v.x - origin.v.x;
+            const int ly = coord.v.y - origin.v.y;
+            const int lz = coord.v.z - origin.v.z;
+            if (lx < 0 || ly < 0 || lz < 0 ||
+                lx >= kChunkSizePadded ||
+                ly >= kChunkSizePadded ||
+                lz >= kChunkSizePadded) {
+                return UnpackedBlockMaterial{}.pack();
+            }
+
+            return blocks[static_cast<size_t>(index(lx, ly, lz))];
+        }
+
+        uint8_t getPackedLight(const BlockCoord& coord) const override {
+            const int lx = coord.v.x - origin.v.x;
+            const int ly = coord.v.y - origin.v.y;
+            const int lz = coord.v.z - origin.v.z;
+            if (lx < 0 || ly < 0 || lz < 0 ||
+                lx >= kChunkSizePadded ||
+                ly >= kChunkSizePadded ||
+                lz >= kChunkSizePadded) {
+                return Chunk::packLight(0u, 0u);
+            }
+
+            return lights[static_cast<size_t>(index(lx, ly, lz))];
+        }
+    };
+
     uint8_t maxPackedLight(uint8_t a, uint8_t b) {
         return Chunk::packLight(
             std::max(Chunk::unpackSkyLight(a), Chunk::unpackSkyLight(b)),
@@ -191,230 +229,84 @@ namespace {
 ChunkMeshOutput ChunkMesher::mesh(const Chunk& chunk,
                                   const ChunkCoord& coord,
                                   const std::vector<const Chunk*>& neighbors) const {
-    // We use a flat array of uint32_t to store the unpacked IDs for cache-friendly access
-    std::array<BlockMaterial, kPaddedBlockCount> paddedBlockData;
-    std::array<uint8_t, kPaddedBlockCount> paddedLightData;
-    UnpackedBlockMaterial air{0, 0, Direction::PlusX, 0};
-    paddedBlockData.fill(air.pack()); // Fill with air by default
-    paddedLightData.fill(Chunk::packLight(15u, 0u));
-
-    // Helper to get 1D index for the 3D padded array
-    auto paddedIndex = [&](int x, int y, int z) {
-        return (x * kPaddedPlaneArea) + (y * kChunkSizePadded) + z;
+    PaddedChunkBlockSource snapshot;
+    snapshot.origin = BlockCoord{
+        (coord.v.x * kChunkSize) - 1,
+        (coord.v.y * kChunkSize) - 1,
+        (coord.v.z * kChunkSize) - 1
     };
+    UnpackedBlockMaterial air{0, 0, Direction::PlusX, 0};
+    snapshot.blocks.fill(air.pack());
+    snapshot.lights.fill(Chunk::packLight(15u, 0u));
 
-    // 1. Unpack the central chunk into the padded array
     for (int x = 0; x < kChunkSize; ++x) {
         for (int y = 0; y < kChunkSize; ++y) {
             for (int z = 0; z < kChunkSize; ++z) {
-                paddedBlockData[paddedIndex(x + 1, y + 1, z + 1)] = chunk.getBlock(x, y, z);
-                paddedLightData[paddedIndex(x + 1, y + 1, z + 1)] = chunk.getPackedLight(x, y, z);
+                snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(x + 1, y + 1, z + 1))] =
+                    chunk.getBlock(x, y, z);
+                snapshot.lights[static_cast<size_t>(PaddedChunkBlockSource::index(x + 1, y + 1, z + 1))] =
+                    chunk.getPackedLight(x, y, z);
             }
         }
     }
 
-    // 2. Unpack the neighbor boundaries into the padded array
-    // Directions match the directionOffsets array: +X, -X, +Y, -Y, +Z, -Z
     for (size_t dir = 0; dir < std::min(neighbors.size(), static_cast<size_t>(6)); ++dir) {
         const Chunk* neighbor = neighbors[dir];
-        if (!neighbor) continue;
+        if (neighbor == nullptr) {
+            continue;
+        }
 
         for (int i = 0; i < kChunkSize; ++i) {
             for (int j = 0; j < kChunkSize; ++j) {
                 switch (dir) {
-                    case 0: // PlusX: Neighbor's x=0 maps to padded x=17
-                        paddedBlockData[paddedIndex(kChunkSize + 1, i + 1, j + 1)] = neighbor->getBlock(0, i, j);
-                        paddedLightData[paddedIndex(kChunkSize + 1, i + 1, j + 1)] = neighbor->getPackedLight(0, i, j);
+                    case 0:
+                        snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(kChunkSize + 1, i + 1, j + 1))] =
+                            neighbor->getBlock(0, i, j);
+                        snapshot.lights[static_cast<size_t>(PaddedChunkBlockSource::index(kChunkSize + 1, i + 1, j + 1))] =
+                            neighbor->getPackedLight(0, i, j);
                         break;
-                    case 1: // MinusX: Neighbor's x=15 maps to padded x=0
-                        paddedBlockData[paddedIndex(0, i + 1, j + 1)] = neighbor->getBlock(kChunkSize - 1, i, j);
-                        paddedLightData[paddedIndex(0, i + 1, j + 1)] = neighbor->getPackedLight(kChunkSize - 1, i, j);
+                    case 1:
+                        snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(0, i + 1, j + 1))] =
+                            neighbor->getBlock(kChunkSize - 1, i, j);
+                        snapshot.lights[static_cast<size_t>(PaddedChunkBlockSource::index(0, i + 1, j + 1))] =
+                            neighbor->getPackedLight(kChunkSize - 1, i, j);
                         break;
-                    case 2: // PlusY: Neighbor's y=0 maps to padded y=17
-                        paddedBlockData[paddedIndex(i + 1, kChunkSize + 1, j + 1)] = neighbor->getBlock(i, 0, j);
-                        paddedLightData[paddedIndex(i + 1, kChunkSize + 1, j + 1)] = neighbor->getPackedLight(i, 0, j);
+                    case 2:
+                        snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(i + 1, kChunkSize + 1, j + 1))] =
+                            neighbor->getBlock(i, 0, j);
+                        snapshot.lights[static_cast<size_t>(PaddedChunkBlockSource::index(i + 1, kChunkSize + 1, j + 1))] =
+                            neighbor->getPackedLight(i, 0, j);
                         break;
-                    case 3: // MinusY: Neighbor's y=15 maps to padded y=0
-                        paddedBlockData[paddedIndex(i + 1, 0, j + 1)] = neighbor->getBlock(i, kChunkSize - 1, j);
-                        paddedLightData[paddedIndex(i + 1, 0, j + 1)] = neighbor->getPackedLight(i, kChunkSize - 1, j);
+                    case 3:
+                        snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(i + 1, 0, j + 1))] =
+                            neighbor->getBlock(i, kChunkSize - 1, j);
+                        snapshot.lights[static_cast<size_t>(PaddedChunkBlockSource::index(i + 1, 0, j + 1))] =
+                            neighbor->getPackedLight(i, kChunkSize - 1, j);
                         break;
-                    case 4: // PlusZ: Neighbor's z=0 maps to padded z=17
-                        paddedBlockData[paddedIndex(i + 1, j + 1, kChunkSize + 1)] = neighbor->getBlock(i, j, 0);
-                        paddedLightData[paddedIndex(i + 1, j + 1, kChunkSize + 1)] = neighbor->getPackedLight(i, j, 0);
+                    case 4:
+                        snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(i + 1, j + 1, kChunkSize + 1))] =
+                            neighbor->getBlock(i, j, 0);
+                        snapshot.lights[static_cast<size_t>(PaddedChunkBlockSource::index(i + 1, j + 1, kChunkSize + 1))] =
+                            neighbor->getPackedLight(i, j, 0);
                         break;
-                    case 5: // MinusZ: Neighbor's z=15 maps to padded z=0
-                        paddedBlockData[paddedIndex(i + 1, j + 1, 0)] = neighbor->getBlock(i, j, kChunkSize - 1);
-                        paddedLightData[paddedIndex(i + 1, j + 1, 0)] = neighbor->getPackedLight(i, j, kChunkSize - 1);
+                    case 5:
+                        snapshot.blocks[static_cast<size_t>(PaddedChunkBlockSource::index(i + 1, j + 1, 0))] =
+                            neighbor->getBlock(i, j, kChunkSize - 1);
+                        snapshot.lights[static_cast<size_t>(PaddedChunkBlockSource::index(i + 1, j + 1, 0))] =
+                            neighbor->getPackedLight(i, j, kChunkSize - 1);
                         break;
                 }
             }
         }
     }
 
-    // 3. Generate Meshlets
-    BlockCoord chunkOrigin = chunk_to_block_origin(coord);
-    std::array<std::vector<Meshlet>, 6> culledMeshletsByDirection;
-    std::array<std::vector<Meshlet>, 6> doubleSidedMeshletsByDirection;
-    const BlockModelLibrary* blockModelLibrary = blockModelLibrary_.get();
-
-    auto appendQuad = [&](uint32_t dir,
-                          uint32_t x,
-                          uint32_t y,
-                          uint32_t z,
-                          uint16_t materialId,
-                          uint16_t packedLight,
-                          uint16_t packedAoData,
-                          const BlockModelQuadRef& quadRef,
-                          bool useVoxelAo) {
-        const bool useDoubleSided = isMaterialDoubleSided(blockModelLibrary, materialId);
-        auto& dirMeshlets = useDoubleSided
-            ? doubleSidedMeshletsByDirection[dir]
-            : culledMeshletsByDirection[dir];
-        if (dirMeshlets.empty() || dirMeshlets.back().quadCount >= MESHLET_QUAD_CAPACITY) {
-            Meshlet meshlet{};
-            meshlet.origin = chunkOrigin.v;
-            meshlet.faceDirection = dir;
-            dirMeshlets.push_back(meshlet);
-        }
-
-        Meshlet& activeMeshlet = dirMeshlets.back();
-        activeMeshlet.packedQuadLocalOffsets[activeMeshlet.quadCount] = packMeshletLocalOffset(x, y, z);
-        activeMeshlet.quadMaterialIds[activeMeshlet.quadCount] = materialId;
-        activeMeshlet.quadLightData[activeMeshlet.quadCount] = packedLight;
-        activeMeshlet.quadAoData[activeMeshlet.quadCount] = packedAoData;
-        activeMeshlet.quadModelQuadIndices[activeMeshlet.quadCount] = quadRef.gpuQuadIndex;
-        activeMeshlet.quadUsesVoxelAo[activeMeshlet.quadCount] = useVoxelAo ? 1u : 0u;
-        const glm::vec3 blockBase = glm::vec3(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
-        expandMeshletBounds(activeMeshlet, blockBase + quadRef.minCorner, blockBase + quadRef.maxCorner);
-        activeMeshlet.quadCount += 1;
-    };
-
-    auto isSolidAtPadded = [&paddedBlockData, &paddedIndex, blockModelLibrary](const glm::ivec3& coord) {
-        const uint16_t materialId = paddedBlockData[paddedIndex(coord.x, coord.y, coord.z)].unpack().id;
-        return isMaterialAoOccluder(blockModelLibrary, materialId);
-    };
-
-    // Iterate through the actual chunk boundaries inside the padded array
-    for (int x = 0; x < kChunkSize; ++x) {
-        for (int y = 0; y < kChunkSize; ++y) {
-            for (int z = 0; z < kChunkSize; ++z) {
-                const int paddedX = x + 1;
-                const int paddedY = y + 1;
-                const int paddedZ = z + 1;
-
-                const BlockMaterial blockID = paddedBlockData[paddedIndex(paddedX, paddedY, paddedZ)];
-                const uint16_t materialId = blockID.unpack().id;
-                if (materialId == kAirBlockId || materialId == ChunkMesher::kCulledSolidBlockId) {
-                    continue;
-                }
-                const bool materialDoubleSided = isMaterialDoubleSided(blockModelLibrary, materialId);
-                std::array<bool, 6> faceVisible{};
-                std::array<uint8_t, 6> faceLight{};
-                for (uint32_t dir = 0; dir < 6; ++dir) {
-                    const glm::ivec3& offset = directionOffsets[dir];
-                    const int neighborX = paddedX + offset.x;
-                    const int neighborY = paddedY + offset.y;
-                    const int neighborZ = paddedZ + offset.z;
-                    const BlockMaterial neighborBlockID = paddedBlockData[paddedIndex(neighborX, neighborY, neighborZ)];
-                    faceLight[dir] = paddedLightData[paddedIndex(neighborX, neighborY, neighborZ)];
-                    faceVisible[dir] = materialDoubleSided ||
-                                       isNeighborTransparentForMeshing(blockModelLibrary, neighborBlockID);
-                }
-
-                const BlockModelDefinition* modelDefinition = modelDefinitionForMaterial(blockModelLibrary, materialId);
-                if (modelDefinition != nullptr) {
-                    const BlockModelDefinition* fallbackModel = blockModelLibrary != nullptr
-                        ? blockModelLibrary->modelByIndex(blockModelLibrary->fallbackModelIndex)
-                        : nullptr;
-                    const bool useVoxelAoForModel = (fallbackModel != nullptr && modelDefinition == fallbackModel);
-
-                    for (uint32_t dir = 0; dir < 6; ++dir) {
-                        if (!faceVisible[dir]) {
-                            continue;
-                        }
-
-                        const uint16_t packedAoData = useVoxelAoForModel
-                            ? computePackedQuadAoData(
-                                dir,
-                                glm::ivec3{paddedX, paddedY, paddedZ},
-                                isSolidAtPadded
-                            )
-                            : packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
-
-                        for (uint32_t quadRefIndex : modelDefinition->cullableQuadRefs[dir]) {
-                            const BlockModelQuadRef* quadRef = modelQuadRef(blockModelLibrary, quadRefIndex);
-                            if (quadRef == nullptr) {
-                                continue;
-                            }
-                            appendQuad(
-                                dir,
-                                static_cast<uint32_t>(x),
-                                static_cast<uint32_t>(y),
-                                static_cast<uint32_t>(z),
-                                materialId,
-                                packMeshletQuadLightPair(faceLight[dir], faceLight[oppositeDirection(dir)]),
-                                packedAoData,
-                                *quadRef,
-                                useVoxelAoForModel
-                            );
-                        }
-                    }
-
-                    uint8_t nonCullableLight = Chunk::packLight(0u, 0u);
-                    for (uint8_t neighborLight : faceLight) {
-                        nonCullableLight = maxPackedLight(nonCullableLight, neighborLight);
-                    }
-                    const uint16_t kFullBrightAo = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
-                    for (uint32_t quadRefIndex : modelDefinition->nonCullableQuadRefs) {
-                        const BlockModelQuadRef* quadRef = modelQuadRef(blockModelLibrary, quadRefIndex);
-                        if (quadRef == nullptr) {
-                            continue;
-                        }
-                        appendQuad(
-                            quadRef->preferredFace,
-                            static_cast<uint32_t>(x),
-                            static_cast<uint32_t>(y),
-                            static_cast<uint32_t>(z),
-                            materialId,
-                            packMeshletQuadLightPair(nonCullableLight, nonCullableLight),
-                            kFullBrightAo,
-                            *quadRef,
-                            false
-                        );
-                    }
-                    continue;
-                }
-
-                for (uint32_t dir = 0; dir < 6; ++dir) {
-                    if (!faceVisible[dir]) {
-                        continue;
-                    }
-                    const uint16_t packedAoData = computePackedQuadAoData(
-                        dir,
-                        glm::ivec3{paddedX, paddedY, paddedZ},
-                        isSolidAtPadded
-                    );
-                    const BlockModelQuadRef fallbackRef = fallbackCubeFaceRef(dir);
-                    appendQuad(
-                        dir,
-                        static_cast<uint32_t>(x),
-                        static_cast<uint32_t>(y),
-                        static_cast<uint32_t>(z),
-                        materialId,
-                        packMeshletQuadLightPair(faceLight[dir], faceLight[oppositeDirection(dir)]),
-                        packedAoData,
-                        fallbackRef,
-                        true
-                    );
-                }
-            }
-        }
-    }
-
-    ChunkMeshOutput output{};
-    output.culledMeshlets = flattenMeshlets(culledMeshletsByDirection);
-    output.doubleSidedMeshlets = flattenMeshlets(doubleSidedMeshletsByDirection);
-    return output;
+    return mesh(
+        snapshot,
+        chunk_to_block_origin(coord),
+        glm::ivec3{kChunkSize, kChunkSize, kChunkSize},
+        chunk_to_block_origin(coord).v,
+        1u
+    );
 }
 
 ChunkMeshOutput ChunkMesher::mesh(const IBlockSource& source,

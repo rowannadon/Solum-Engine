@@ -335,7 +335,7 @@ ChunkMeshOutput MeshManager::meshLodCell(const ChunkCoord& cellCoord, uint8_t lo
         paddedOriginSample.v.y * sampleStrideMip,
         paddedOriginSample.v.z * sampleStrideMip
     };
-    world_.sampleBlockAndLightVolume(
+    world_.buildMeshingBlockVolumeSnapshot(
         paddedOriginCopy,
         glm::ivec3{kPaddedChunkExtent, kPaddedChunkExtent, kPaddedChunkExtent},
         glm::ivec3{sampleStrideMip, sampleStrideMip, sampleStrideMip},

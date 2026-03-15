@@ -87,9 +87,6 @@ void MeshManager::resetTileQueuesLocked(const ChunkCoord& centerChunk,
         if (!tileInBounds(tileCoord, planningMinTileX_, planningMaxTileX_, planningMinTileY_, planningMaxTileY_)) {
             continue;
         }
-        tileState.queuedVisibleLod = -1;
-        tileState.pendingVisibleSlices = 0u;
-        tileState.waitingForVisibleFootprint = false;
 
         const int8_t previousDesired = tileState.desiredLod;
         const int8_t candidateDesired = desiredLodForTile(
@@ -166,9 +163,6 @@ bool MeshManager::initializeVisibleRingLocked(int32_t ring) {
 
         anyTilesInRing = true;
         MeshTileState& tileState = meshTiles_[tileCoord];
-        tileState.queuedVisibleLod = -1;
-        tileState.pendingVisibleSlices = 0u;
-        tileState.waitingForVisibleFootprint = false;
 
         for (auto lodIt = tileState.lodStates.begin(); lodIt != tileState.lodStates.end();) {
             if (static_cast<int32_t>(lodIt->first) >= config_.lodLevelCount) {
@@ -215,28 +209,7 @@ bool MeshManager::initializeVisibleRingLocked(int32_t ring) {
         }
 
         currentVisibleRingOutstandingTiles_.insert(tileCoord);
-
-        const uint16_t pendingTile = pendingSliceCountForTileLocked(tileCoord);
-        if (pendingTile > 0u) {
-            tileState.queuedVisibleLod = desired;
-            tileState.pendingVisibleSlices = pendingTile;
-            return;
-        }
-
-        if (!isTileFootprintGenerated(tileCoord)) {
-            tileState.waitingForVisibleFootprint = true;
-            waitingVisibleTiles_.insert(tileCoord);
-            return;
-        }
-
-        const FootprintDistanceRange distances = footprintDistanceRangeForCell(
-            tileCoord.x,
-            tileCoord.y,
-            meshTileSizeChunks_,
-            lastScheduledCenterChunk_
-        );
-        const int32_t distanceChunks = distances.minDistanceChunks;
-        enqueueVisibleTileLocked(tileCoord, ring, distanceChunks * distanceChunks);
+        advanceVisibleTileLocked(tileCoord, false, nullptr, nullptr, nullptr);
     };
 
     if (ring == 0) {
@@ -270,8 +243,6 @@ void MeshManager::enqueueVisibleTileLocked(const MeshTileCoord& tile, int32_t ri
         return;
     }
 
-    MeshTileState& tileState = meshTiles_[tile];
-    tileState.waitingForVisibleFootprint = false;
     waitingVisibleTiles_.erase(tile);
     queuedVisibleTileHeap_.push(QueuedVisibleTileEntry{
         tile,
@@ -286,66 +257,105 @@ void MeshManager::markVisibleTileReadyLocked(const MeshTileCoord& tile) {
     currentVisibleRingOutstandingTiles_.erase(tile);
     queuedVisibleTiles_.erase(tile);
     waitingVisibleTiles_.erase(tile);
-
-    auto tileIt = meshTiles_.find(tile);
-    if (tileIt == meshTiles_.end()) {
-        return;
-    }
-
-    tileIt->second.queuedVisibleLod = -1;
-    tileIt->second.pendingVisibleSlices = 0u;
-    tileIt->second.waitingForVisibleFootprint = false;
 }
 
 void MeshManager::noteVisibleTileAttemptFinishedLocked(const MeshTileCoord& tile) {
-    auto tileIt = meshTiles_.find(tile);
-    if (tileIt == meshTiles_.end()) {
-        return;
-    }
-
-    MeshTileState& tileState = tileIt->second;
-    if (tileState.queuedVisibleLod < 0) {
-        return;
-    }
-
-    tileState.queuedVisibleLod = -1;
-    tileState.pendingVisibleSlices = 0u;
-
-    if (currentVisibleRingOutstandingTiles_.find(tile) == currentVisibleRingOutstandingTiles_.end()) {
-        tileState.waitingForVisibleFootprint = false;
+    if (!currentVisibleRingOutstandingTiles_.contains(tile)) {
+        queuedVisibleTiles_.erase(tile);
         waitingVisibleTiles_.erase(tile);
         return;
     }
 
-    if (tileState.desiredLod < 0 || isTileDisplayReadyLocked(tile, tileState)) {
+    advanceVisibleTileLocked(tile, false, nullptr, nullptr, nullptr);
+}
+
+void MeshManager::waitVisibleTileForFootprintLocked(const MeshTileCoord& tile) {
+    queuedVisibleTiles_.erase(tile);
+    waitingVisibleTiles_.insert(tile);
+}
+
+void MeshManager::advanceVisibleTileLocked(const MeshTileCoord& tile,
+                                          bool dispatchNow,
+                                          std::vector<PendingMeshDispatch>* dispatches,
+                                          std::vector<MeshTileCoord>* dispatchedTiles,
+                                          bool* repump) {
+    auto tileIt = meshTiles_.find(tile);
+    if (tileIt == meshTiles_.end()) {
         markVisibleTileReadyLocked(tile);
         return;
     }
 
-    const uint16_t pendingTile = pendingSliceCountForTileLocked(tile);
-    if (pendingTile > 0u) {
-        tileState.queuedVisibleLod = tileState.desiredLod;
-        tileState.pendingVisibleSlices = pendingTile;
-        tileState.waitingForVisibleFootprint = false;
-        waitingVisibleTiles_.erase(tile);
+    MeshTileState& tileState = tileIt->second;
+    if (tileState.desiredLod < 0 || isTileDisplayReadyLocked(tile, tileState)) {
+        markVisibleTileReadyLocked(tile);
+        if (repump != nullptr) {
+            *repump = true;
+        }
         return;
     }
 
     if (!isTileFootprintGenerated(tile)) {
-        tileState.waitingForVisibleFootprint = true;
-        waitingVisibleTiles_.insert(tile);
+        waitVisibleTileForFootprintLocked(tile);
         return;
     }
 
-    const int32_t ring = std::max(std::abs(tile.x - currentCenterTile_.x), std::abs(tile.y - currentCenterTile_.y));
+    waitingVisibleTiles_.erase(tile);
+    for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
+        if (pendingSliceCountForLodLocked(tile, static_cast<uint8_t>(lod)) > 0u) {
+            return;
+        }
+    }
+
+    if (!dispatchNow) {
+        enqueueVisibleTileLocked(tile, visibleRingForTileLocked(tile), visibleDistanceSqForTileLocked(tile));
+        return;
+    }
+
     const FootprintDistanceRange distances = footprintDistanceRangeForCell(
         tile.x,
         tile.y,
         meshTileSizeChunks_,
         lastScheduledCenterChunk_
     );
-    const int32_t distanceChunks = distances.minDistanceChunks;
-    enqueueVisibleTileLocked(tile, ring, distanceChunks * distanceChunks);
+    const jobsystem::Priority priority =
+        primaryPriorityForDistance(distances.minDistanceChunks, meshTileSizeChunks_);
+
+    std::size_t beforeDispatchCount = (dispatches != nullptr) ? dispatches->size() : 0u;
+    for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
+        const uint8_t lodLevel = static_cast<uint8_t>(lod);
+        const auto lodIt = tileState.lodStates.find(lodLevel);
+        for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
+            const bool resident = lodIt != tileState.lodStates.end() &&
+                lodIt->second.contains(zSlice) &&
+                lodIt->second.at(zSlice).resident;
+            if (resident || dispatches == nullptr) {
+                continue;
+            }
+            dispatches->push_back(PendingMeshDispatch{
+                TileLodCoord{MeshTileSliceCoord{tile, zSlice}, lodLevel},
+                priority,
+                false,
+                true
+            });
+        }
+    }
+
+    const std::size_t added = (dispatches != nullptr) ? (dispatches->size() - beforeDispatchCount) : 0u;
+    if (added == 0u) {
+        if (isTileDisplayReadyLocked(tile, tileState)) {
+            markVisibleTileReadyLocked(tile);
+        } else {
+            enqueueVisibleTileLocked(tile, visibleRingForTileLocked(tile), visibleDistanceSqForTileLocked(tile));
+        }
+        if (repump != nullptr) {
+            *repump = true;
+        }
+        return;
+    }
+
+    if (dispatchedTiles != nullptr) {
+        dispatchedTiles->push_back(tile);
+    }
 }
 
 void MeshManager::wakeVisibleTilesForGeneratedColumns(const std::vector<ColumnCoord>& generatedColumns) {
@@ -369,39 +379,12 @@ void MeshManager::wakeVisibleTilesForGeneratedColumns(const std::vector<ColumnCo
         if (queuedVisibleTiles_.find(tile) != queuedVisibleTiles_.end()) {
             continue;
         }
-
-        auto tileIt = meshTiles_.find(tile);
-        if (tileIt == meshTiles_.end() || tileIt->second.desiredLod < 0) {
-            continue;
-        }
-        if (pendingSliceCountForTileLocked(tile) > 0u) {
-            tileIt->second.queuedVisibleLod = tileIt->second.desiredLod;
-            continue;
-        }
-        if (!isTileFootprintGenerated(tile)) {
-            continue;
-        }
-
-        const int32_t ring = std::max(std::abs(tile.x - currentCenterTile_.x), std::abs(tile.y - currentCenterTile_.y));
-        const FootprintDistanceRange distances = footprintDistanceRangeForCell(
-            tile.x,
-            tile.y,
-            meshTileSizeChunks_,
-            lastScheduledCenterChunk_
-        );
-        const int32_t distanceChunks = distances.minDistanceChunks;
-        enqueueVisibleTileLocked(tile, ring, distanceChunks * distanceChunks);
+        advanceVisibleTileLocked(tile, false, nullptr, nullptr, nullptr);
     }
 }
 
 void MeshManager::pumpTileQueues() {
-    struct PendingDispatch {
-        TileLodCoord coord{};
-        jobsystem::Priority priority = jobsystem::Priority::Low;
-        bool forceRemesh = false;
-    };
-
-    std::vector<PendingDispatch> dispatches;
+    std::vector<PendingMeshDispatch> dispatches;
     std::vector<MeshTileCoord> visibleAttempts;
     bool repump = false;
     const int32_t activeWindowExtraChunks = planningPrefetchChunks_ + meshTileSizeChunks_;
@@ -431,81 +414,10 @@ void MeshManager::pumpTileQueues() {
                     continue;
                 }
 
-                auto tileIt = meshTiles_.find(entry.tile);
-                if (tileIt == meshTiles_.end()) {
-                    currentVisibleRingOutstandingTiles_.erase(entry.tile);
-                    continue;
-                }
-
-                MeshTileState& tileState = tileIt->second;
-                if (tileState.desiredLod < 0) {
-                    markVisibleTileReadyLocked(entry.tile);
-                    repump = true;
-                    continue;
-                }
-                if (isTileDisplayReadyLocked(entry.tile, tileState)) {
-                    markVisibleTileReadyLocked(entry.tile);
-                    repump = true;
-                    continue;
-                }
-
-                const uint16_t pendingTile = pendingSliceCountForTileLocked(entry.tile);
-                if (pendingTile > 0u) {
-                    tileState.queuedVisibleLod = tileState.desiredLod;
-                    tileState.pendingVisibleSlices = pendingTile;
-                    continue;
-                }
-
-                if (!isTileFootprintGenerated(entry.tile)) {
-                    tileState.waitingForVisibleFootprint = true;
-                    waitingVisibleTiles_.insert(entry.tile);
-                    continue;
-                }
-
-                const FootprintDistanceRange distances = footprintDistanceRangeForCell(
-                    entry.tile.x,
-                    entry.tile.y,
-                    meshTileSizeChunks_,
-                    lastScheduledCenterChunk_
-                );
-                const int32_t distanceChunks = distances.minDistanceChunks;
-                const jobsystem::Priority priority = primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
-
-                std::size_t beforeDispatchCount = dispatches.size();
-                for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
-                    const auto lodIt = tileState.lodStates.find(static_cast<uint8_t>(lod));
-                    for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
-                        const bool resident = lodIt != tileState.lodStates.end() &&
-                            lodIt->second.contains(zSlice) &&
-                            lodIt->second.at(zSlice).resident;
-                        if (resident) {
-                            continue;
-                        }
-                        dispatches.push_back(PendingDispatch{
-                            TileLodCoord{MeshTileSliceCoord{entry.tile, zSlice}, static_cast<uint8_t>(lod)},
-                            priority,
-                            false
-                        });
-                    }
-                }
-
+                const std::size_t beforeDispatchCount = dispatches.size();
+                advanceVisibleTileLocked(entry.tile, true, &dispatches, &visibleAttempts, &repump);
                 const std::size_t added = dispatches.size() - beforeDispatchCount;
-                if (added == 0u) {
-                    if (isTileDisplayReadyLocked(entry.tile, tileState)) {
-                        markVisibleTileReadyLocked(entry.tile);
-                    } else {
-                        noteVisibleTileAttemptFinishedLocked(entry.tile);
-                    }
-                    repump = true;
-                    continue;
-                }
-
-                tileState.queuedVisibleLod = tileState.desiredLod;
-                tileState.pendingVisibleSlices = 0u;
-                tileState.waitingForVisibleFootprint = false;
-                waitingVisibleTiles_.erase(entry.tile);
-                visibleAttempts.push_back(entry.tile);
-                queuedVisibleWork = true;
+                queuedVisibleWork = queuedVisibleWork || (added > 0u);
                 remainingBudget = (added >= remainingBudget) ? 0u : (remainingBudget - added);
             }
 
@@ -515,35 +427,23 @@ void MeshManager::pumpTileQueues() {
         }
     }
 
-    for (const PendingDispatch& dispatch : dispatches) {
+    for (const PendingMeshDispatch& dispatch : dispatches) {
         scheduleTileLodMeshing(
             dispatch.coord,
             dispatch.priority,
             dispatch.forceRemesh,
-            activeWindowExtraChunks
+            activeWindowExtraChunks,
+            dispatch.usePriorityQueue
         );
     }
 
     if (!visibleAttempts.empty()) {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
         for (const MeshTileCoord& tile : visibleAttempts) {
-            auto tileIt = meshTiles_.find(tile);
-            if (tileIt == meshTiles_.end() || tileIt->second.queuedVisibleLod < 0) {
+            if (!currentVisibleRingOutstandingTiles_.contains(tile)) {
                 continue;
             }
-
-            const uint16_t pending = pendingSliceCountForTileLocked(tile);
-            tileIt->second.pendingVisibleSlices = pending;
-            if (pending > 0u) {
-                continue;
-            }
-
-            if (isTileDisplayReadyLocked(tile, tileIt->second)) {
-                markVisibleTileReadyLocked(tile);
-            } else {
-                noteVisibleTileAttemptFinishedLocked(tile);
-            }
-            repump = true;
+            advanceVisibleTileLocked(tile, false, nullptr, nullptr, &repump);
         }
     }
 
@@ -555,10 +455,9 @@ void MeshManager::pumpTileQueues() {
 void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
     struct ScheduledTileLod {
         TileLodCoord coord{};
-        int32_t frontierDepth = std::numeric_limits<int32_t>::max();
         int32_t distanceSq = 0;
-        uint8_t tier = 1u;
         jobsystem::Priority priority = jobsystem::Priority::Low;
+        bool usePriorityQueue = false;
     };
 
     const uint64_t processedRevision = processedWorldGenerationRevision_.load(std::memory_order_acquire);
@@ -614,52 +513,6 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
         ? lastSseProjectionScale_
         : config_.lodSseFallbackProjectionScale;
 
-    std::unordered_map<MeshTileCoord, int32_t> remeshDepth;
-    if (!tilesToRemesh.empty()) {
-        MeshTileCoord seed{};
-        bool hasSeed = false;
-        int32_t bestDistance = std::numeric_limits<int32_t>::max();
-        for (const MeshTileCoord& tile : tilesToRemesh) {
-            const int32_t dx = std::abs(tile.x - floor_div(centerChunk.v.x, meshTileSizeChunks_));
-            const int32_t dy = std::abs(tile.y - floor_div(centerChunk.v.y, meshTileSizeChunks_));
-            const int32_t distance = std::max(dx, dy);
-            if (!hasSeed || distance < bestDistance) {
-                hasSeed = true;
-                bestDistance = distance;
-                seed = tile;
-            }
-        }
-
-        if (hasSeed) {
-            std::queue<std::pair<MeshTileCoord, int32_t>> frontier;
-            frontier.push(std::make_pair(seed, 0));
-            remeshDepth.emplace(seed, 0);
-
-            static constexpr std::array<glm::ivec2, 4> kCardinalNeighbors{
-                glm::ivec2{1, 0},
-                glm::ivec2{-1, 0},
-                glm::ivec2{0, 1},
-                glm::ivec2{0, -1}
-            };
-
-            while (!frontier.empty()) {
-                const auto [current, depth] = frontier.front();
-                frontier.pop();
-
-                for (const glm::ivec2& n : kCardinalNeighbors) {
-                    const MeshTileCoord neighbor{current.x + n.x, current.y + n.y};
-                    if (tilesToRemesh.find(neighbor) == tilesToRemesh.end()) {
-                        continue;
-                    }
-                    if (!remeshDepth.emplace(neighbor, depth + 1).second) {
-                        continue;
-                    }
-                    frontier.push(std::make_pair(neighbor, depth + 1));
-                }
-            }
-        }
-    }
-
     {
         std::shared_lock<std::shared_mutex> lock(meshMutex_);
         for (const MeshTileCoord& tile : tilesToRemesh) {
@@ -680,21 +533,18 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
             );
             const int32_t distanceChunks = distances.minDistanceChunks;
             const int32_t distanceSq = distanceChunks * distanceChunks;
-            const int32_t frontierDepth = remeshDepth.contains(tile)
-                ? remeshDepth.at(tile)
-                : std::numeric_limits<int32_t>::max();
-
-            const jobsystem::Priority primaryPriority =
-                primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
+            const bool visibleOutstanding = currentVisibleRingOutstandingTiles_.contains(tile);
+            const jobsystem::Priority primaryPriority = visibleOutstanding
+                ? jobsystem::Priority::Critical
+                : primaryPriorityForDistance(distanceChunks, meshTileSizeChunks_);
 
             for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
                 for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
                     jobsToSchedule.push_back(ScheduledTileLod{
                         TileLodCoord{MeshTileSliceCoord{tile, zSlice}, static_cast<uint8_t>(lod)},
-                        frontierDepth,
                         distanceSq,
-                        0u,
-                        primaryPriority
+                        primaryPriority,
+                        visibleOutstanding
                     });
                 }
             }
@@ -702,14 +552,8 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
     }
 
     std::stable_sort(jobsToSchedule.begin(), jobsToSchedule.end(), [](const ScheduledTileLod& a, const ScheduledTileLod& b) {
-        if (a.frontierDepth != b.frontierDepth) {
-            return a.frontierDepth < b.frontierDepth;
-        }
         if (a.distanceSq != b.distanceSq) {
             return a.distanceSq < b.distanceSq;
-        }
-        if (a.tier != b.tier) {
-            return a.tier < b.tier;
         }
         if (!(a.coord.tile == b.coord.tile)) {
             return a.coord.tile < b.coord.tile;
@@ -730,7 +574,8 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
             scheduled.coord,
             scheduled.priority,
             true,
-            meshTileSizeChunks_ + 4
+            meshTileSizeChunks_ + 4,
+            scheduled.usePriorityQueue
         );
 
         std::shared_lock<std::shared_mutex> lock(meshMutex_);

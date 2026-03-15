@@ -42,22 +42,24 @@ void VoxelStreamingSystem::start(const glm::vec3& initialCameraPosition, uint64_
     {
         std::lock_guard<std::mutex> lock(streamingMutex_);
         streamingStopRequested_ = false;
-        hasLatestStreamingCamera_ = true;
-        latestStreamingCamera_ = initialCameraPosition;
-        latestStreamingSseProjectionScale_ = 390.0f;
         uploadMailbox_.clear();
         streamerLastDeltaRevision_ = initialUploadedMeshRevision;
+        requestStreamingWorkLocked(true);
+        latestStreamingCamera_ = initialCameraPosition;
+        latestStreamingSseProjectionScale_ = 390.0f;
     }
 
     streamingThread_ = std::thread([this] {
         streamingThreadMain();
     });
+    streamingCv_.notify_one();
 }
 
 void VoxelStreamingSystem::stop() {
     {
         std::lock_guard<std::mutex> lock(streamingMutex_);
         streamingStopRequested_ = true;
+        streamingWorkRequested_ = false;
         hasLatestStreamingCamera_ = false;
     }
     streamingCv_.notify_all();
@@ -69,6 +71,7 @@ void VoxelStreamingSystem::stop() {
     {
         std::lock_guard<std::mutex> lock(streamingMutex_);
         streamingStopRequested_ = false;
+        streamingWorkRequested_ = false;
         uploadMailbox_.clear();
     }
 }
@@ -76,9 +79,9 @@ void VoxelStreamingSystem::stop() {
 void VoxelStreamingSystem::updateCamera(const glm::vec3& cameraPosition, float sseProjectionScale) {
     {
         std::lock_guard<std::mutex> lock(streamingMutex_);
-        hasLatestStreamingCamera_ = true;
         latestStreamingCamera_ = cameraPosition;
         latestStreamingSseProjectionScale_ = sseProjectionScale;
+        requestStreamingWorkLocked(true);
     }
     streamingCv_.notify_one();
 }
@@ -92,7 +95,7 @@ bool VoxelStreamingSystem::breakBlock(const BlockCoord& coord) {
     if (changed) {
         {
             std::lock_guard<std::mutex> lock(streamingMutex_);
-            hasLatestStreamingCamera_ = true;
+            requestStreamingWorkLocked(false);
         }
         streamingCv_.notify_one();
     }
@@ -108,7 +111,7 @@ bool VoxelStreamingSystem::placeBlock(const BlockCoord& coord, const BlockMateri
     if (changed) {
         {
             std::lock_guard<std::mutex> lock(streamingMutex_);
-            hasLatestStreamingCamera_ = true;
+            requestStreamingWorkLocked(false);
         }
         streamingCv_.notify_one();
     }
@@ -127,100 +130,127 @@ const World* VoxelStreamingSystem::world() const noexcept {
     return world_.get();
 }
 
-void VoxelStreamingSystem::streamingThreadMain() {
-    glm::vec3 cameraPosition{0.0f, 0.0f, 0.0f};
-    float cameraSseProjectionScale = 390.0f;
-    bool hasCameraPosition = false;
+void VoxelStreamingSystem::requestStreamingWorkLocked(bool cameraUpdated) {
+    streamingWorkRequested_ = true;
+    if (cameraUpdated) {
+        hasLatestStreamingCamera_ = true;
+    }
+}
 
-    while (true) {
-        {
-            const auto waitStart = std::chrono::steady_clock::now();
-            std::unique_lock<std::mutex> lock(streamingMutex_);
-            streamingCv_.wait_for(lock, std::chrono::milliseconds(16), [this] {
-                return streamingStopRequested_ || hasLatestStreamingCamera_;
-            });
-            const uint64_t waitNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - waitStart
-            ).count());
-            recordTimingNs(TimingStage::StreamWait, waitNs);
-            if (streamingStopRequested_) {
-                return;
-            }
-            if (hasLatestStreamingCamera_) {
-                cameraPosition = latestStreamingCamera_;
-                cameraSseProjectionScale = latestStreamingSseProjectionScale_;
-                hasLatestStreamingCamera_ = false;
-                hasCameraPosition = true;
-            }
-        }
+bool VoxelStreamingSystem::waitForWork(StreamingLoopState& state) {
+    const auto waitStart = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lock(streamingMutex_);
+    streamingCv_.wait_for(lock, std::chrono::milliseconds(16), [this] {
+        return streamingStopRequested_ || hasLatestStreamingCamera_ || streamingWorkRequested_;
+    });
+    const uint64_t waitNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - waitStart
+    ).count());
+    recordTimingNs(TimingStage::StreamWait, waitNs);
 
-        if (!hasCameraPosition || !world_ || !meshManager_) {
-            streamSkipNoCamera_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
+    if (streamingStopRequested_) {
+        return false;
+    }
 
-        const auto worldUpdateStart = std::chrono::steady_clock::now();
-        world_->updatePlayerPosition(cameraPosition);
-        recordTimingNs(
-            TimingStage::StreamWorldUpdate,
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - worldUpdateStart
-            ).count())
-        );
+    if (hasLatestStreamingCamera_) {
+        state.cameraPosition = latestStreamingCamera_;
+        state.cameraSseProjectionScale = latestStreamingSseProjectionScale_;
+        state.hasCameraPosition = true;
+        hasLatestStreamingCamera_ = false;
+    }
 
-        const auto meshUpdateStart = std::chrono::steady_clock::now();
-        meshManager_->updatePlayerPosition(cameraPosition, cameraSseProjectionScale);
-        recordTimingNs(
-            TimingStage::StreamMeshUpdate,
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - meshUpdateStart
-            ).count())
-        );
+    streamingWorkRequested_ = false;
+    return true;
+}
 
-        const auto copyStart = std::chrono::steady_clock::now();
-        constexpr std::size_t kMaxDeltaEntriesPerTick = 64u;
-        std::vector<MeshTileLodUpload> upserts = meshManager_->consumePendingTileLodUploads(kMaxDeltaEntriesPerTick);
-        std::vector<MeshTileLodKey> removals = meshManager_->consumePendingTileLodRemovals(kMaxDeltaEntriesPerTick);
-        recordTimingNs(
-            TimingStage::StreamCopyMeshlets,
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - copyStart
-            ).count())
-        );
+void VoxelStreamingSystem::runWorldStep(const StreamingLoopState& state) {
+    const auto worldUpdateStart = std::chrono::steady_clock::now();
+    world_->updatePlayerPosition(state.cameraPosition);
+    recordTimingNs(
+        TimingStage::StreamWorldUpdate,
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - worldUpdateStart
+        ).count())
+    );
+}
 
-        const auto prepareStart = std::chrono::steady_clock::now();
-        uint64_t selectionRevision = 0u;
-        std::vector<MeshTileSelectionEntry> selectionSnapshot;
-        const bool hasSelectionSnapshot = meshManager_->consumeSelectionSnapshot(selectionRevision, selectionSnapshot);
+void VoxelStreamingSystem::runMeshStep(const StreamingLoopState& state) {
+    const auto meshUpdateStart = std::chrono::steady_clock::now();
+    meshManager_->updatePlayerPosition(state.cameraPosition, state.cameraSseProjectionScale);
+    recordTimingNs(
+        TimingStage::StreamMeshUpdate,
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - meshUpdateStart
+        ).count())
+    );
+}
 
-        if (upserts.empty() && removals.empty() && !hasSelectionSnapshot) {
-            streamSkipUnchanged_.fetch_add(1, std::memory_order_relaxed);
-            recordTimingNs(
-                TimingStage::StreamPrepareUpload,
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - prepareStart
-                ).count())
-            );
-            continue;
-        }
+std::optional<MeshStreamingDelta> VoxelStreamingSystem::buildDelta() {
+    const auto copyStart = std::chrono::steady_clock::now();
+    constexpr std::size_t kMaxDeltaEntriesPerTick = 64u;
+    std::vector<MeshTileLodUpload> upserts = meshManager_->consumePendingTileLodUploads(kMaxDeltaEntriesPerTick);
+    std::vector<MeshTileLodKey> removals = meshManager_->consumePendingTileLodRemovals(kMaxDeltaEntriesPerTick);
+    recordTimingNs(
+        TimingStage::StreamCopyMeshlets,
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - copyStart
+        ).count())
+    );
 
-        MeshStreamingDelta delta{};
-        delta.upserts = std::move(upserts);
-        delta.removals = std::move(removals);
-        if (hasSelectionSnapshot) {
-            delta.selectionSnapshot = std::move(selectionSnapshot);
-            delta.revision = std::max(selectionRevision, streamerLastDeltaRevision_ + 1u);
-        } else {
-            delta.revision = streamerLastDeltaRevision_ + 1u;
-        }
-        const uint64_t deltaRevision = delta.revision;
+    const auto prepareStart = std::chrono::steady_clock::now();
+    uint64_t selectionRevision = 0u;
+    std::vector<MeshTileSelectionEntry> selectionSnapshot;
+    const bool hasSelectionSnapshot = meshManager_->consumeSelectionSnapshot(selectionRevision, selectionSnapshot);
 
+    if (upserts.empty() && removals.empty() && !hasSelectionSnapshot) {
+        streamSkipUnchanged_.fetch_add(1, std::memory_order_relaxed);
         recordTimingNs(
             TimingStage::StreamPrepareUpload,
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - prepareStart
             ).count())
         );
+        return std::nullopt;
+    }
+
+    MeshStreamingDelta delta{};
+    delta.upserts = std::move(upserts);
+    delta.removals = std::move(removals);
+    if (hasSelectionSnapshot) {
+        delta.selectionSnapshot = std::move(selectionSnapshot);
+        delta.revision = std::max(selectionRevision, streamerLastDeltaRevision_ + 1u);
+    } else {
+        delta.revision = streamerLastDeltaRevision_ + 1u;
+    }
+
+    recordTimingNs(
+        TimingStage::StreamPrepareUpload,
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - prepareStart
+        ).count())
+    );
+    return delta;
+}
+
+void VoxelStreamingSystem::streamingThreadMain() {
+    StreamingLoopState state;
+    while (true) {
+        if (!waitForWork(state)) {
+            return;
+        }
+
+        if (!state.hasCameraPosition || !world_ || !meshManager_) {
+            streamSkipNoCamera_.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+
+        runWorldStep(state);
+        runMeshStep(state);
+
+        std::optional<MeshStreamingDelta> delta = buildDelta();
+        if (!delta.has_value()) {
+            continue;
+        }
 
         {
             std::lock_guard<std::mutex> lock(streamingMutex_);
@@ -229,8 +259,8 @@ void VoxelStreamingSystem::streamingThreadMain() {
             }
         }
 
-        uploadMailbox_.pushLatest(std::move(delta));
-        streamerLastDeltaRevision_ = deltaRevision;
+        streamerLastDeltaRevision_ = delta->revision;
+        uploadMailbox_.pushLatest(std::move(*delta));
         streamSnapshotsPrepared_.fetch_add(1, std::memory_order_relaxed);
     }
 }

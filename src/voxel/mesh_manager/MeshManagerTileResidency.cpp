@@ -124,14 +124,17 @@ void MeshManager::queueTileLodRemovalLocked(const MeshTileLodKey& key) {
 
 int8_t MeshManager::chooseRenderableLodForTileLocked(const MeshTileCoord& tileCoord,
                                                      const MeshTileState& state) const {
-    if (!isTileDisplayReadyLocked(tileCoord, state)) {
+    if (isTileDisplayReadyLocked(tileCoord, state)) {
         if (canDisplayLod0DuringRemeshLocked(tileCoord, state)) {
             return 0;
         }
-        return -1;
+        return state.desiredLod;
     }
 
-    return state.desiredLod;
+    if (canDisplayLod0DuringRemeshLocked(tileCoord, state)) {
+        return 0;
+    }
+    return -1;
 }
 
 bool MeshManager::refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshTileState& state) const {

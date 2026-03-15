@@ -57,6 +57,28 @@ public:
     bool hasPendingJobs() const;
 
 private:
+    struct PlanningUpdate {
+        ChunkCoord centerChunk{};
+        ColumnCoord centerColumn{};
+        float safeSseProjectionScale = 390.0f;
+        int32_t centerShiftChunks = 0;
+        bool planningResetRequired = false;
+        bool shouldPumpPendingWork = false;
+    };
+
+    struct WorldChangeFlags {
+        bool playerEdits = false;
+        bool lighting = false;
+        bool generation = false;
+    };
+
+    struct PendingMeshDispatch {
+        TileLodCoord coord{};
+        jobsystem::Priority priority = jobsystem::Priority::Low;
+        bool forceRemesh = false;
+        bool usePriorityQueue = false;
+    };
+
     struct MeshTileLodState {
         std::shared_ptr<const PackedMeshletData> culledPacked;
         std::shared_ptr<const PackedMeshletData> doubleSidedPacked;
@@ -69,9 +91,6 @@ private:
         std::unordered_map<uint8_t, std::unordered_map<int32_t, MeshTileLodState>> lodStates;
         int8_t desiredLod = -1;
         int8_t selectedLod = -1;
-        int8_t queuedVisibleLod = -1;
-        uint16_t pendingVisibleSlices = 0u;
-        bool waitingForVisibleFootprint = false;
         bool preferLod0DuringRemesh = false;
     };
 
@@ -112,6 +131,10 @@ private:
     void scheduleRemeshForLightingChangedChunks(const ColumnCoord& centerColumn);
     void scheduleRemeshForNewColumns(const ColumnCoord& centerColumn);
     void wakeVisibleTilesForGeneratedColumns(const std::vector<ColumnCoord>& generatedColumns);
+    PlanningUpdate updatePlanningInputs(const glm::vec3& playerWorldPosition, float sseProjectionScale);
+    WorldChangeFlags drainWorldChangeFeeds(const ColumnCoord& centerColumn);
+    void maybeResetTilePlanning(const PlanningUpdate& update, const glm::vec3& playerWorldPosition);
+    void pumpPendingVisibleWork(const PlanningUpdate& update, const WorldChangeFlags& changeFlags);
     bool scheduleTileLodMeshing(const TileLodCoord& coord,
                                 jobsystem::Priority priority,
                                 bool forceRemesh,
@@ -129,6 +152,12 @@ private:
     void enqueueVisibleTileLocked(const MeshTileCoord& tile, int32_t ring, int32_t distanceSq);
     void markVisibleTileReadyLocked(const MeshTileCoord& tile);
     void noteVisibleTileAttemptFinishedLocked(const MeshTileCoord& tile);
+    void waitVisibleTileForFootprintLocked(const MeshTileCoord& tile);
+    void advanceVisibleTileLocked(const MeshTileCoord& tile,
+                                  bool dispatchNow,
+                                  std::vector<PendingMeshDispatch>* dispatches,
+                                  std::vector<MeshTileCoord>* dispatchedTiles,
+                                  bool* repump);
     void pumpTileQueues();
 
     int8_t desiredLodForTile(const MeshTileCoord& tileCoord,
@@ -154,12 +183,13 @@ private:
     int8_t chooseRenderableLodForTileLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
     bool refreshSelectedLodLocked(const MeshTileCoord& tileCoord, MeshTileState& state) const;
     bool lodFullyResidentLocked(const MeshTileState& state, int32_t lodLevel) const;
-    uint8_t pendingSliceCountForLodLocked(const MeshTileCoord& tileCoord, uint8_t lodLevel) const;
-    uint16_t pendingSliceCountForTileLocked(const MeshTileCoord& tileCoord) const;
     bool allTileLodsResidentLocked(const MeshTileState& state) const;
+    uint8_t pendingSliceCountForLodLocked(const MeshTileCoord& tileCoord, uint8_t lodLevel) const;
     bool canDisplayLod0DuringRemeshLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
     bool isTileDisplayReadyLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const;
     bool hasVisibleQueueWorkLocked() const;
+    int32_t visibleRingForTileLocked(const MeshTileCoord& tileCoord) const;
+    int32_t visibleDistanceSqForTileLocked(const MeshTileCoord& tileCoord) const;
 
     ChunkMeshOutput meshTileLod(const TileLodCoord& coord) const;
     ChunkMeshOutput meshLodCell(const ChunkCoord& cellCoord, uint8_t lodLevel) const;

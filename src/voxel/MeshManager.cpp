@@ -71,29 +71,27 @@ MeshManager::~MeshManager() {
     priorityJobs_.stop();
 }
 
-void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, float sseProjectionScale) {
-    if (shuttingDown_.load(std::memory_order_acquire)) {
-        return;
-    }
-
+MeshManager::PlanningUpdate MeshManager::updatePlanningInputs(const glm::vec3& playerWorldPosition,
+                                                             float sseProjectionScale) {
+    PlanningUpdate update;
     const float safeSseProjectionScale =
         (std::isfinite(sseProjectionScale) && sseProjectionScale > 0.0f)
         ? sseProjectionScale
         : config_.lodSseFallbackProjectionScale;
+    update.safeSseProjectionScale = safeSseProjectionScale;
 
     const BlockCoord playerBlock{
         static_cast<int32_t>(std::floor(playerWorldPosition.x)),
         static_cast<int32_t>(std::floor(playerWorldPosition.y)),
         static_cast<int32_t>(std::floor(playerWorldPosition.z))
     };
-    const ChunkCoord centerChunk = block_to_chunk(playerBlock);
-    const ColumnCoord centerColumn = chunk_to_column(centerChunk);
+    update.centerChunk = block_to_chunk(playerBlock);
+    update.centerColumn = chunk_to_column(update.centerChunk);
 
     ChunkCoord previousCenterChunk{};
     bool hadPreviousCenter = false;
     bool centerChanged = false;
-    bool planningResetRequired = false;
-    bool shouldPumpPendingWork = false;
+
     {
         std::unique_lock<std::shared_mutex> lock(meshMutex_);
         const bool projectionChanged =
@@ -111,21 +109,21 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
         lastSseProjectionScale_ = safeSseProjectionScale;
         hasLastSseProjectionScale_ = true;
 
-        if (!hasLastScheduledCenter_ || !(centerChunk == lastScheduledCenterChunk_)) {
+        if (!hasLastScheduledCenter_ || !(update.centerChunk == lastScheduledCenterChunk_)) {
             hadPreviousCenter = hasLastScheduledCenter_;
             previousCenterChunk = lastScheduledCenterChunk_;
-            lastScheduledCenterChunk_ = centerChunk;
+            lastScheduledCenterChunk_ = update.centerChunk;
             hasLastScheduledCenter_ = true;
             centerChanged = true;
         }
 
-        planningResetRequired = centerChanged || projectionChanged || playerMovedForLodPlanning;
-        if (planningResetRequired) {
+        update.planningResetRequired = centerChanged || projectionChanged || playerMovedForLodPlanning;
+        if (update.planningResetRequired) {
             lastPlanningPlayerWorldPosition_ = playerWorldPosition;
             hasLastPlanningPlayerWorldPosition_ = true;
         }
 
-        shouldPumpPendingWork =
+        update.shouldPumpPendingWork =
             !pendingTileLodJobs_.empty() ||
             !pendingPriorityTileLodJobs_.empty() ||
             !queuedVisibleTileHeap_.empty() ||
@@ -133,50 +131,71 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
             !waitingVisibleTiles_.empty();
     }
 
-    const int32_t centerShiftChunks = (centerChanged && hadPreviousCenter)
+    update.centerShiftChunks = (centerChanged && hadPreviousCenter)
         ? std::max(
-            std::abs(centerChunk.v.x - previousCenterChunk.v.x),
-            std::abs(centerChunk.v.y - previousCenterChunk.v.y))
+            std::abs(update.centerChunk.v.x - previousCenterChunk.v.x),
+            std::abs(update.centerChunk.v.y - previousCenterChunk.v.y))
         : 0;
+    return update;
+}
 
-    const uint64_t worldPlayerEditRevision = world_.playerEditChunkRevision();
-    const uint64_t processedPlayerEditRevision =
-        processedWorldPlayerEditRevision_.load(std::memory_order_acquire);
-    const bool hasPlayerEditChanges = worldPlayerEditRevision != processedPlayerEditRevision;
-    if (hasPlayerEditChanges) {
+MeshManager::WorldChangeFlags MeshManager::drainWorldChangeFeeds(const ColumnCoord& centerColumn) {
+    WorldChangeFlags changeFlags;
+
+    changeFlags.playerEdits =
+        world_.playerEditChunkRevision() != processedWorldPlayerEditRevision_.load(std::memory_order_acquire);
+    if (changeFlags.playerEdits) {
         scheduleRemeshForPlayerEditedChunks(centerColumn);
     }
 
-    const uint64_t worldLightingRevision = world_.lightingChunkRevision();
-    const uint64_t processedLightingRevision =
-        processedWorldLightingRevision_.load(std::memory_order_acquire);
-    const bool hasLightingChanges = worldLightingRevision != processedLightingRevision;
-    if (hasLightingChanges) {
+    changeFlags.lighting =
+        world_.lightingChunkRevision() != processedWorldLightingRevision_.load(std::memory_order_acquire);
+    if (changeFlags.lighting) {
         scheduleRemeshForLightingChangedChunks(centerColumn);
     }
 
-    const uint64_t worldRevision = world_.generationRevision();
-    const uint64_t processedRevision = processedWorldGenerationRevision_.load(std::memory_order_acquire);
-    const bool hasGenerationChanges = worldRevision != processedRevision;
+    changeFlags.generation =
+        world_.generationRevision() != processedWorldGenerationRevision_.load(std::memory_order_acquire);
+    return changeFlags;
+}
 
-    if (!planningResetRequired && !hasPlayerEditChanges && !hasLightingChanges && !hasGenerationChanges) {
-        if (shouldPumpPendingWork) {
+void MeshManager::maybeResetTilePlanning(const PlanningUpdate& update, const glm::vec3& playerWorldPosition) {
+    if (!update.planningResetRequired) {
+        return;
+    }
+
+    scheduleTilesAround(
+        update.centerChunk,
+        playerWorldPosition,
+        update.safeSseProjectionScale,
+        update.centerShiftChunks
+    );
+}
+
+void MeshManager::pumpPendingVisibleWork(const PlanningUpdate& update, const WorldChangeFlags& changeFlags) {
+    if (!update.planningResetRequired &&
+        !changeFlags.playerEdits &&
+        !changeFlags.lighting &&
+        !changeFlags.generation) {
+        if (update.shouldPumpPendingWork) {
             pumpTileQueues();
         }
         return;
     }
+}
 
-    if (planningResetRequired) {
-        scheduleTilesAround(
-            centerChunk,
-            playerWorldPosition,
-            safeSseProjectionScale,
-            centerShiftChunks
-        );
+void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, float sseProjectionScale) {
+    if (shuttingDown_.load(std::memory_order_acquire)) {
+        return;
     }
 
-    if (hasGenerationChanges) {
-        scheduleRemeshForNewColumns(centerColumn);
+    const PlanningUpdate update = updatePlanningInputs(playerWorldPosition, sseProjectionScale);
+    const WorldChangeFlags changeFlags = drainWorldChangeFeeds(update.centerColumn);
+    pumpPendingVisibleWork(update, changeFlags);
+    maybeResetTilePlanning(update, playerWorldPosition);
+
+    if (changeFlags.generation) {
+        scheduleRemeshForNewColumns(update.centerColumn);
     }
 }
 
@@ -198,7 +217,7 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
 
         const bool normalPending = pendingTileLodJobs_.find(coord) != pendingTileLodJobs_.end();
         const bool priorityPending = pendingPriorityTileLodJobs_.find(coord) != pendingPriorityTileLodJobs_.end();
-        if (priorityPending || (!usePriorityQueue && normalPending)) {
+        if (priorityPending || normalPending) {
             if (forceRemesh) {
                 deferredRemeshTileLods_.insert(coord);
             }
@@ -249,8 +268,7 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                     }
 
                     auto tileIt = meshTiles_.find(coord.tile.tile);
-                    const bool isVisibleAttempt = tileIt != meshTiles_.end() &&
-                        tileIt->second.queuedVisibleLod >= 0 &&
+                    const bool isVisibleAttempt =
                         currentVisibleRingOutstandingTiles_.contains(coord.tile.tile);
 
                     if (!result.success() || shuttingDown_.load(std::memory_order_acquire)) {
@@ -279,8 +297,7 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                             lodState.uploadQueued = true;
 
                             if (tileIt->second.preferLod0DuringRemesh &&
-                                allTileLodsResidentLocked(tileIt->second) &&
-                                pendingSliceCountForTileLocked(coord.tile.tile) == 0u) {
+                                allTileLodsResidentLocked(tileIt->second)) {
                                 tileIt->second.preferLod0DuringRemesh = false;
                             }
 
@@ -288,14 +305,22 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                                 selectionSnapshotDirty_ = true;
                             }
 
-                            if (isVisibleAttempt &&
-                                pendingSliceCountForTileLocked(coord.tile.tile) == 0u) {
-                                if (isTileDisplayReadyLocked(coord.tile.tile, tileIt->second)) {
-                                    markVisibleTileReadyLocked(coord.tile.tile);
-                                } else {
-                                    noteVisibleTileAttemptFinishedLocked(coord.tile.tile);
+                            if (isVisibleAttempt) {
+                                bool tileStillPending = false;
+                                for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
+                                    if (pendingSliceCountForLodLocked(
+                                            coord.tile.tile,
+                                            static_cast<uint8_t>(lod)
+                                        ) > 0u) {
+                                        tileStillPending = true;
+                                        break;
+                                    }
                                 }
-                                pumpQueues = true;
+
+                                if (!tileStillPending) {
+                                    noteVisibleTileAttemptFinishedLocked(coord.tile.tile);
+                                    pumpQueues = true;
+                                }
                             }
 
                             const auto deferredIt = deferredRemeshTileLods_.find(coord);
@@ -333,10 +358,7 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
         } else {
             pendingTileLodJobs_.erase(coord);
         }
-        auto tileIt = meshTiles_.find(coord.tile.tile);
-        if (tileIt != meshTiles_.end() &&
-            tileIt->second.queuedVisibleLod >= 0 &&
-            currentVisibleRingOutstandingTiles_.contains(coord.tile.tile)) {
+        if (currentVisibleRingOutstandingTiles_.contains(coord.tile.tile)) {
             noteVisibleTileAttemptFinishedLocked(coord.tile.tile);
         }
         if (pendingTileLodJobs_.find(coord) == pendingTileLodJobs_.end() &&
@@ -398,6 +420,15 @@ bool MeshManager::lodFullyResidentLocked(const MeshTileState& state, int32_t lod
     return true;
 }
 
+bool MeshManager::allTileLodsResidentLocked(const MeshTileState& state) const {
+    for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
+        if (!lodFullyResidentLocked(state, lod)) {
+            return false;
+        }
+    }
+    return config_.lodLevelCount > 0;
+}
+
 uint8_t MeshManager::pendingSliceCountForLodLocked(const MeshTileCoord& tileCoord, uint8_t lodLevel) const {
     uint8_t count = 0u;
     for (int32_t zSlice = 0; zSlice < meshTileSliceCount_; ++zSlice) {
@@ -410,25 +441,6 @@ uint8_t MeshManager::pendingSliceCountForLodLocked(const MeshTileCoord& tileCoor
     return count;
 }
 
-uint16_t MeshManager::pendingSliceCountForTileLocked(const MeshTileCoord& tileCoord) const {
-    uint16_t count = 0u;
-    for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
-        count = static_cast<uint16_t>(
-            count + pendingSliceCountForLodLocked(tileCoord, static_cast<uint8_t>(lod))
-        );
-    }
-    return count;
-}
-
-bool MeshManager::allTileLodsResidentLocked(const MeshTileState& state) const {
-    for (int32_t lod = 0; lod < config_.lodLevelCount; ++lod) {
-        if (!lodFullyResidentLocked(state, lod)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool MeshManager::canDisplayLod0DuringRemeshLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const {
     if (!state.preferLod0DuringRemesh) {
         return false;
@@ -438,8 +450,7 @@ bool MeshManager::canDisplayLod0DuringRemeshLocked(const MeshTileCoord& tileCoor
 }
 
 bool MeshManager::isTileDisplayReadyLocked(const MeshTileCoord& tileCoord, const MeshTileState& state) const {
-    (void)tileCoord;
-    return state.desiredLod >= 0 && allTileLodsResidentLocked(state);
+    return allTileLodsResidentLocked(state) || canDisplayLod0DuringRemeshLocked(tileCoord, state);
 }
 
 bool MeshManager::hasVisibleQueueWorkLocked() const {
@@ -447,6 +458,21 @@ bool MeshManager::hasVisibleQueueWorkLocked() const {
         return true;
     }
     return visibleFrontierRing_ <= maxVisibleFrontierRing_;
+}
+
+int32_t MeshManager::visibleRingForTileLocked(const MeshTileCoord& tileCoord) const {
+    return std::max(std::abs(tileCoord.x - currentCenterTile_.x), std::abs(tileCoord.y - currentCenterTile_.y));
+}
+
+int32_t MeshManager::visibleDistanceSqForTileLocked(const MeshTileCoord& tileCoord) const {
+    const FootprintDistanceRange distances = footprintDistanceRangeForCell(
+        tileCoord.x,
+        tileCoord.y,
+        meshTileSizeChunks_,
+        lastScheduledCenterChunk_
+    );
+    const int32_t distanceChunks = distances.minDistanceChunks;
+    return distanceChunks * distanceChunks;
 }
 
 int32_t MeshManager::cellCountPerAxisForLod(uint8_t lodLevel) const {

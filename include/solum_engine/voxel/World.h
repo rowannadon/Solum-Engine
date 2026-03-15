@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -62,6 +63,13 @@ public:
                                    BlockMaterial* outBlocks,
                                    uint8_t* outPackedLights,
                                    uint8_t* outKnownMask) const;
+    void buildMeshingBlockVolumeSnapshot(const BlockCoord& origin,
+                                         const glm::ivec3& extent,
+                                         const glm::ivec3& stride,
+                                         uint8_t mipLevel,
+                                         BlockMaterial* outBlocks,
+                                         uint8_t* outPackedLights,
+                                         uint8_t* outKnownMask) const;
     bool tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight) const;
     bool tryGetPackedLight(const BlockCoord& coord, uint8_t& outPackedLight, uint8_t mipLevel) const;
     bool breakBlock(const BlockCoord& coord);
@@ -103,6 +111,12 @@ private:
     struct ScheduledColumnJob {
         ColumnCoord coord{};
         jobsystem::Priority priority = jobsystem::Priority::Low;
+    };
+    template <typename Event>
+    struct RevisionEventStream {
+        std::deque<Event> events;
+        uint64_t firstRevision = 0u;
+        uint64_t nextRevision = 0u;
     };
 
     void enqueueColumnGenerationLocked(const ColumnCoord& coord);
@@ -147,6 +161,24 @@ private:
     bool isColumnGeneratedLocked(const ColumnCoord& coord) const;
     bool isWithinActiveWindowLocked(const ColumnCoord& coord, int32_t extraRadius) const;
     Region* getOrCreateRegionLocked(const RegionCoord& coord);
+    std::vector<ColumnCoord> collectGeometryDirtyColumnsLocked(const ColumnCoord& columnCoord,
+                                                              uint8_t localX,
+                                                              uint8_t localY) const;
+    std::vector<ChunkCoord> collectGeometryDirtyChunksLocked(const std::vector<ColumnCoord>& dirtyColumns,
+                                                            const ChunkCoord& chunkCoord,
+                                                            uint16_t localZ) const;
+    void recordGeneratedColumnEventLocked(const ColumnCoord& coord);
+    void recordPlayerEditedChunkEventLocked(const WorldChunkEdit& edit);
+    void recordLightingChangedChunkEventLocked(const ChunkCoord& coord);
+    template <typename Event>
+    uint64_t copyRevisionEventsSinceLocked(const RevisionEventStream<Event>& stream,
+                                           uint64_t afterRevision,
+                                           std::vector<Event>& outEvents,
+                                           std::size_t maxCount) const;
+    template <typename Event>
+    void appendRevisionEventLocked(RevisionEventStream<Event>& stream,
+                                   const Event& event,
+                                   std::atomic<uint64_t>& revisionCounter);
 
     static jobsystem::Priority priorityFromDistanceSq(int32_t distanceSq);
 
@@ -175,9 +207,9 @@ private:
     std::unordered_set<ColumnCoord> skycastColumns_;
     std::unordered_map<ChunkCoord, LightingChunkState> lightingChunkStates_;
     std::unordered_set<ColumnCoord> generatedColumns_;
-    std::vector<ColumnCoord> generatedColumnHistory_;
-    std::vector<WorldChunkEdit> playerEditedChunkHistory_;
-    std::vector<ChunkCoord> lightingChangedChunkHistory_;
+    RevisionEventStream<ColumnCoord> generatedColumnEvents_;
+    RevisionEventStream<WorldChunkEdit> playerEditedChunkEvents_;
+    RevisionEventStream<ChunkCoord> lightingChangedChunkEvents_;
     std::unordered_set<ColumnCoord> pendingColumnJobs_;
     std::deque<ChunkPropagationTask> queuedChunkPropagationJobs_;
     std::unordered_map<ChunkCoord, uint64_t> pendingChunkPropagationJobs_;
@@ -198,4 +230,53 @@ private:
 
     ColumnCoord lastScheduledCenter_{0, 0};
     bool hasLastScheduledCenter_ = false;
+
+    static constexpr std::size_t kMaxRetainedRevisionEvents = 32768u;
 };
+
+template <typename Event>
+uint64_t World::copyRevisionEventsSinceLocked(const RevisionEventStream<Event>& stream,
+                                              uint64_t afterRevision,
+                                              std::vector<Event>& outEvents,
+                                              std::size_t maxCount) const {
+    const uint64_t currentRevision = stream.nextRevision;
+    if (afterRevision > currentRevision) {
+        afterRevision = currentRevision;
+    }
+    if (afterRevision < stream.firstRevision) {
+        afterRevision = stream.firstRevision;
+    }
+
+    const std::size_t startIndex = static_cast<std::size_t>(afterRevision - stream.firstRevision);
+    const std::size_t available = (startIndex < stream.events.size())
+        ? (stream.events.size() - startIndex)
+        : 0u;
+    const std::size_t count = std::min(maxCount, available);
+
+    outEvents.clear();
+    outEvents.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        outEvents.push_back(stream.events[startIndex + i]);
+    }
+
+    return afterRevision + static_cast<uint64_t>(count);
+}
+
+template <typename Event>
+void World::appendRevisionEventLocked(RevisionEventStream<Event>& stream,
+                                      const Event& event,
+                                      std::atomic<uint64_t>& revisionCounter) {
+    if (stream.events.empty()) {
+        stream.firstRevision = stream.nextRevision;
+    }
+
+    stream.events.push_back(event);
+    ++stream.nextRevision;
+
+    while (stream.events.size() > kMaxRetainedRevisionEvents) {
+        stream.events.pop_front();
+        ++stream.firstRevision;
+    }
+
+    revisionCounter.store(stream.nextRevision, std::memory_order_release);
+}
