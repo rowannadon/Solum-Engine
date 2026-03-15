@@ -27,12 +27,44 @@ const char* variantLabel(MeshletGeometryVariant variant) {
         return "culled";
     }
 }
+
+uint32_t floorLog2(uint32_t value) {
+    uint32_t result = 0u;
+    while (value > 1u) {
+        value >>= 1u;
+        ++result;
+    }
+    return result;
+}
+
+uint32_t ceilLog2(uint32_t value) {
+    if (value <= 1u) {
+        return 0u;
+    }
+    return floorLog2(value - 1u) + 1u;
+}
 }  // namespace
 
 void MeshletBufferController::PageAllocator::reset(uint32_t capacityUnits, uint32_t pageSizeUnits) {
     pageSize = std::max(pageSizeUnits, 1u);
     pageCount = (capacityUnits + pageSize - 1u) / pageSize;
-    pageUsed.assign(pageCount, 0u);
+    maxOrder = (pageCount > 0u) ? floorLog2(pageCount) : 0u;
+    freeLists.assign(maxOrder + 1u, {});
+    freeBlockOrders.clear();
+
+    uint32_t nextStartPage = 0u;
+    uint32_t remainingPages = pageCount;
+    while (remainingPages > 0u) {
+        uint32_t order = floorLog2(remainingPages);
+        while (order > 0u && (nextStartPage & ((1u << order) - 1u)) != 0u) {
+            --order;
+        }
+
+        addFreeBlock(nextStartPage, order);
+        const uint32_t blockPages = 1u << order;
+        nextStartPage += blockPages;
+        remainingPages -= blockPages;
+    }
 }
 
 uint32_t MeshletBufferController::PageAllocator::pagesForUnits(uint32_t unitCount) const noexcept {
@@ -48,29 +80,28 @@ bool MeshletBufferController::PageAllocator::allocate(uint32_t unitCount, PageRu
         outRun = {};
         return true;
     }
-    if (requiredPages > pageCount) {
+    if (requiredPages > pageCount || freeLists.empty()) {
         return false;
     }
 
-    uint32_t runStart = 0u;
-    uint32_t runLength = 0u;
-    for (uint32_t page = 0u; page < pageCount; ++page) {
-        if (pageUsed[page] != 0u) {
-            runLength = 0u;
+    const uint32_t targetOrder = ceilLog2(requiredPages);
+    for (uint32_t order = targetOrder; order < freeLists.size(); ++order) {
+        if (freeLists[order].empty()) {
             continue;
         }
-        if (runLength == 0u) {
-            runStart = page;
+
+        const uint32_t startPage = *freeLists[order].begin();
+        removeFreeBlock(startPage, order);
+
+        uint32_t splitOrder = order;
+        while (splitOrder > targetOrder) {
+            --splitOrder;
+            addFreeBlock(startPage + (1u << splitOrder), splitOrder);
         }
-        ++runLength;
-        if (runLength >= requiredPages) {
-            for (uint32_t usedPage = runStart; usedPage < (runStart + requiredPages); ++usedPage) {
-                pageUsed[usedPage] = 1u;
-            }
-            outRun.startPage = runStart;
-            outRun.pageCount = requiredPages;
-            return true;
-        }
+
+        outRun.startPage = startPage;
+        outRun.pageCount = 1u << targetOrder;
+        return true;
     }
 
     return false;
@@ -80,14 +111,43 @@ void MeshletBufferController::PageAllocator::release(const PageRun& run) {
     if (!run.valid()) {
         return;
     }
-    const uint32_t endPage = std::min(pageCount, run.startPage + run.pageCount);
-    for (uint32_t page = run.startPage; page < endPage; ++page) {
-        pageUsed[page] = 0u;
+
+    uint32_t startPage = run.startPage;
+    uint32_t order = floorLog2(std::max(run.pageCount, 1u));
+    while (order < freeLists.size()) {
+        const uint32_t blockPages = 1u << order;
+        const uint32_t buddyStart = startPage ^ blockPages;
+        const auto buddyIt = freeBlockOrders.find(buddyStart);
+        if (buddyIt == freeBlockOrders.end() || buddyIt->second != order) {
+            break;
+        }
+
+        removeFreeBlock(buddyStart, order);
+        startPage = std::min(startPage, buddyStart);
+        ++order;
     }
+
+    addFreeBlock(startPage, std::min<uint32_t>(order, maxOrder));
 }
 
 uint32_t MeshletBufferController::PageAllocator::unitOffset(const PageRun& run) const noexcept {
     return run.startPage * pageSize;
+}
+
+void MeshletBufferController::PageAllocator::addFreeBlock(uint32_t startPage, uint32_t order) {
+    if (order >= freeLists.size()) {
+        return;
+    }
+    freeLists[order].insert(startPage);
+    freeBlockOrders[startPage] = order;
+}
+
+void MeshletBufferController::PageAllocator::removeFreeBlock(uint32_t startPage, uint32_t order) {
+    if (order >= freeLists.size()) {
+        return;
+    }
+    freeLists[order].erase(startPage);
+    freeBlockOrders.erase(startPage);
 }
 
 MeshletBufferController::MeshletBufferController()

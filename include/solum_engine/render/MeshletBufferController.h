@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -145,13 +146,17 @@ private:
     struct PageAllocator {
         uint32_t pageSize = 1u;
         uint32_t pageCount = 0u;
-        std::vector<uint8_t> pageUsed;
+        uint32_t maxOrder = 0u;
+        std::vector<std::unordered_set<uint32_t>> freeLists;
+        std::unordered_map<uint32_t, uint32_t> freeBlockOrders;
 
         void reset(uint32_t capacityUnits, uint32_t pageSizeUnits);
         uint32_t pagesForUnits(uint32_t unitCount) const noexcept;
         bool allocate(uint32_t unitCount, PageRun& outRun);
         void release(const PageRun& run);
         uint32_t unitOffset(const PageRun& run) const noexcept;
+        void addFreeBlock(uint32_t startPage, uint32_t order);
+        void removeFreeBlock(uint32_t startPage, uint32_t order);
     };
 
     struct ResidentRecord {
