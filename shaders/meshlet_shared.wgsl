@@ -6,7 +6,7 @@ struct MeshletMetadata {
     faceDirection: u32,
     dataOffset: u32,
     voxelScale: u32,
-    pad1: u32,
+    flags: u32,
 };
 
 struct ModelQuad {

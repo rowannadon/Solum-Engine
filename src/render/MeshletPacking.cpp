@@ -92,6 +92,7 @@ PackedMeshletData packMeshletsForUpload(const std::vector<Meshlet>& meshlets) {
         metadata.faceDirection = meshlet.faceDirection;
         metadata.dataOffset = static_cast<uint32_t>(packed.quadData.size());
         metadata.voxelScale = std::max(meshlet.voxelScale, 1u);
+        metadata.flags = meshlet.flags;
         packed.metadata.push_back(metadata);
 
         const MeshletAabb bounds = computeMeshletAabb(meshlet);

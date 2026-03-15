@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <iterator>
+#include <unordered_set>
 
 #include "solum_engine/resources/Constants.h"
 #include "solum_engine/voxel/World.h"
@@ -12,6 +13,7 @@ constexpr int kPaddedChunkExtent = cfg::CHUNK_SIZE + 2;
 constexpr int kPaddedChunkArea = kPaddedChunkExtent * kPaddedChunkExtent;
 constexpr int kPaddedChunkVoxelCount = kPaddedChunkExtent * kPaddedChunkExtent * kPaddedChunkExtent;
 constexpr int kMaxLodShift = 30;
+constexpr uint8_t kDefaultSeamPackedLight = Chunk::packLight(15u, 0u);
 
 BlockMaterial airBlock() {
     static const BlockMaterial kAir = UnpackedBlockMaterial{}.pack();
@@ -66,101 +68,245 @@ int32_t pow2ClampedShift(int32_t shift) {
     return (1 << clampedShift);
 }
 
-const BlockModelQuadRef* selectModelQuadRef(const BlockModelLibrary* blockModelLibrary,
-                                            uint16_t materialId,
-                                            uint32_t faceDirection) {
-    if (blockModelLibrary == nullptr || blockModelLibrary->models.empty() || faceDirection >= 6u) {
-        return nullptr;
+bool isMaterialAoOccluder(const BlockModelLibrary* blockModelLibrary, uint16_t materialId) {
+    if (materialId == 0u) {
+        return false;
     }
-
-    uint16_t modelIndex = blockModelLibrary->materialToModel[materialId];
-
-    const BlockModelDefinition* model = blockModelLibrary->modelByIndex(modelIndex);
-    if (model == nullptr) {
-        model = blockModelLibrary->modelByIndex(blockModelLibrary->fallbackModelIndex);
+    if (blockModelLibrary == nullptr) {
+        return true;
     }
-    if (model == nullptr) {
-        return nullptr;
-    }
-
-    auto resolveRef = [blockModelLibrary](uint32_t refIndex) -> const BlockModelQuadRef* {
-        if (refIndex >= blockModelLibrary->quadRefs.size()) {
-            return nullptr;
-        }
-        return &blockModelLibrary->quadRefs[refIndex];
-    };
-
-    if (!model->cullableQuadRefs[faceDirection].empty()) {
-        if (const BlockModelQuadRef* ref = resolveRef(model->cullableQuadRefs[faceDirection][0])) {
-            return ref;
-        }
-    }
-
-    if (!model->nonCullableQuadRefs.empty()) {
-        if (const BlockModelQuadRef* ref = resolveRef(model->nonCullableQuadRefs[0])) {
-            return ref;
-        }
-    }
-
-    for (uint32_t face = 0u; face < 6u; ++face) {
-        if (!model->cullableQuadRefs[face].empty()) {
-            if (const BlockModelQuadRef* ref = resolveRef(model->cullableQuadRefs[face][0])) {
-                return ref;
-            }
-        }
-    }
-
-    return nullptr;
+    return blockModelLibrary->isMaterialAoOccluder(materialId);
 }
 
-void appendSkirtQuad(std::vector<Meshlet>& targetMeshlets,
-                     uint32_t faceDirection,
-                     const glm::ivec3& origin,
-                     uint32_t voxelScale,
-                     uint16_t materialId,
-                     const BlockModelLibrary* blockModelLibrary) {
-    Meshlet skirt{};
-    skirt.origin = origin;
-    skirt.faceDirection = faceDirection;
-    skirt.voxelScale = std::max(voxelScale, 1u);
-    skirt.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
-    skirt.quadMaterialIds[0] = materialId;
-    skirt.quadAoData[0] = packMeshletQuadAoData(3u, 3u, 3u, 3u, false);
-    skirt.quadLightData[0] = packMeshletQuadLightPair(
-        Chunk::packLight(15u, 0u),
-        Chunk::packLight(15u, 0u)
+uint32_t oppositeDirection(uint32_t dir) {
+    switch (dir) {
+        case Direction::PlusX: return Direction::MinusX;
+        case Direction::MinusX: return Direction::PlusX;
+        case Direction::PlusY: return Direction::MinusY;
+        case Direction::MinusY: return Direction::PlusY;
+        case Direction::PlusZ: return Direction::MinusZ;
+        default: return Direction::PlusZ;
+    }
+}
+
+uint8_t maxPackedLight(uint8_t a, uint8_t b) {
+    return Chunk::packLight(
+        std::max(Chunk::unpackSkyLight(a), Chunk::unpackSkyLight(b)),
+        std::max(Chunk::unpackBlockLight(a), Chunk::unpackBlockLight(b))
     );
-    const BlockModelQuadRef* quadRef = selectModelQuadRef(blockModelLibrary, materialId, faceDirection);
-    skirt.quadModelQuadIndices[0] = (quadRef != nullptr) ? quadRef->gpuQuadIndex : faceDirection;
-    skirt.quadUsesVoxelAo[0] = 0u;
-    if (quadRef != nullptr) {
-        skirt.localBoundsMin = quadRef->minCorner;
-        skirt.localBoundsMax = quadRef->maxCorner;
-    } else {
-        skirt.localBoundsMin = glm::vec3(0.0f);
-        skirt.localBoundsMax = glm::vec3(1.0f);
-    }
-    skirt.hasCustomBounds = true;
-    skirt.quadCount = 1u;
-    targetMeshlets.push_back(skirt);
 }
 
-void appendAlwaysOnTileSkirts(ChunkMeshOutput& meshOutput,
-                              const MeshTileCoord& tile,
-                              int32_t meshTileSizeChunks,
-                              uint8_t lodLevel,
-                              const BlockModelLibrary* blockModelLibrary) {
+constexpr std::array<std::array<std::array<glm::ivec3, 3>, 4>, 6> kAoStates = {{
+    {{
+        {glm::ivec3(1, -1, 0), glm::ivec3(1, 0, -1), glm::ivec3(1, -1, -1)},
+        {glm::ivec3(1, 1, 0), glm::ivec3(1, 0, -1), glm::ivec3(1, 1, -1)},
+        {glm::ivec3(1, -1, 0), glm::ivec3(1, 0, 1), glm::ivec3(1, -1, 1)},
+        {glm::ivec3(1, 1, 0), glm::ivec3(1, 0, 1), glm::ivec3(1, 1, 1)},
+    }},
+    {{
+        {glm::ivec3(-1, -1, 0), glm::ivec3(-1, 0, -1), glm::ivec3(-1, -1, -1)},
+        {glm::ivec3(-1, -1, 0), glm::ivec3(-1, 0, 1), glm::ivec3(-1, -1, 1)},
+        {glm::ivec3(-1, 1, 0), glm::ivec3(-1, 0, -1), glm::ivec3(-1, 1, -1)},
+        {glm::ivec3(-1, 1, 0), glm::ivec3(-1, 0, 1), glm::ivec3(-1, 1, 1)},
+    }},
+    {{
+        {glm::ivec3(-1, 1, 0), glm::ivec3(0, 1, -1), glm::ivec3(-1, 1, -1)},
+        {glm::ivec3(-1, 1, 0), glm::ivec3(0, 1, 1), glm::ivec3(-1, 1, 1)},
+        {glm::ivec3(1, 1, 0), glm::ivec3(0, 1, -1), glm::ivec3(1, 1, -1)},
+        {glm::ivec3(1, 1, 0), glm::ivec3(0, 1, 1), glm::ivec3(1, 1, 1)},
+    }},
+    {{
+        {glm::ivec3(-1, -1, 0), glm::ivec3(0, -1, -1), glm::ivec3(-1, -1, -1)},
+        {glm::ivec3(1, -1, 0), glm::ivec3(0, -1, -1), glm::ivec3(1, -1, -1)},
+        {glm::ivec3(-1, -1, 0), glm::ivec3(0, -1, 1), glm::ivec3(-1, -1, 1)},
+        {glm::ivec3(1, -1, 0), glm::ivec3(0, -1, 1), glm::ivec3(1, -1, 1)},
+    }},
+    {{
+        {glm::ivec3(-1, 0, 1), glm::ivec3(0, -1, 1), glm::ivec3(-1, -1, 1)},
+        {glm::ivec3(1, 0, 1), glm::ivec3(0, -1, 1), glm::ivec3(1, -1, 1)},
+        {glm::ivec3(-1, 0, 1), glm::ivec3(0, 1, 1), glm::ivec3(-1, 1, 1)},
+        {glm::ivec3(1, 0, 1), glm::ivec3(0, 1, 1), glm::ivec3(1, 1, 1)},
+    }},
+    {{
+        {glm::ivec3(-1, 0, -1), glm::ivec3(0, -1, -1), glm::ivec3(-1, -1, -1)},
+        {glm::ivec3(-1, 0, -1), glm::ivec3(0, 1, -1), glm::ivec3(-1, 1, -1)},
+        {glm::ivec3(1, 0, -1), glm::ivec3(0, -1, -1), glm::ivec3(1, -1, -1)},
+        {glm::ivec3(1, 0, -1), glm::ivec3(0, 1, -1), glm::ivec3(1, 1, -1)},
+    }},
+}};
+
+uint8_t vertexAo(bool side1, bool side2, bool corner) {
+    if (side1 && side2) {
+        return 0u;
+    }
+    return static_cast<uint8_t>(3u - static_cast<uint8_t>(side1) - static_cast<uint8_t>(side2) - static_cast<uint8_t>(corner));
+}
+
+struct FaceCoordKey {
+    glm::ivec3 origin{0};
+    uint32_t direction = 0u;
+
+    friend bool operator==(const FaceCoordKey& a, const FaceCoordKey& b) {
+        return a.direction == b.direction && a.origin == b.origin;
+    }
+};
+
+struct FaceCoordKeyHash {
+    size_t operator()(const FaceCoordKey& key) const noexcept {
+#if SIZE_MAX > UINT32_MAX
+        constexpr size_t kGoldenRatio = 0x9e3779b97f4a7c15ull;
+#else
+        constexpr size_t kGoldenRatio = 0x9e3779b9u;
+#endif
+        size_t seed = std::hash<int32_t>{}(key.origin.x);
+        seed ^= std::hash<int32_t>{}(key.origin.y) + kGoldenRatio + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int32_t>{}(key.origin.z) + kGoldenRatio + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<uint32_t>{}(key.direction) + kGoldenRatio + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
+
+bool isBoundarySideDirection(uint32_t faceDirection) {
+    return faceDirection == Direction::MinusX ||
+        faceDirection == Direction::PlusX ||
+        faceDirection == Direction::MinusY ||
+        faceDirection == Direction::PlusY;
+}
+
+void appendSeamQuad(std::vector<Meshlet>& targetMeshlets,
+                    uint32_t faceDirection,
+                    const glm::ivec3& origin,
+                    uint32_t voxelScale,
+                    uint16_t materialId,
+                    uint16_t packedLight,
+                    uint16_t packedAoData) {
+    Meshlet seam{};
+    seam.origin = origin;
+    seam.faceDirection = faceDirection;
+    seam.voxelScale = std::max(voxelScale, 1u);
+    seam.flags = MESHLET_FLAG_SEAM;
+    seam.packedQuadLocalOffsets[0] = packMeshletLocalOffset(0u, 0u, 0u);
+    seam.quadMaterialIds[0] = materialId;
+    seam.quadAoData[0] = packedAoData;
+    seam.quadLightData[0] = packedLight;
+    seam.quadModelQuadIndices[0] = faceDirection;
+    seam.quadUsesVoxelAo[0] = 1u;
+    seam.localBoundsMin = glm::vec3(0.0f);
+    seam.localBoundsMax = glm::vec3(1.0f);
+    seam.hasCustomBounds = true;
+    seam.quadCount = 1u;
+    targetMeshlets.push_back(seam);
+}
+
+bool trySamplePackedLightAtMip(const World& world,
+                               const glm::ivec3& mesherCoord,
+                               int32_t sampleStrideMip,
+                               uint8_t mipLevel,
+                               uint8_t& outPackedLight) {
+    const BlockCoord worldMipCoord{
+        mesherCoord.x * sampleStrideMip,
+        mesherCoord.y * sampleStrideMip,
+        mesherCoord.z * sampleStrideMip
+    };
+    return world.tryGetPackedLight(worldMipCoord, outPackedLight, mipLevel);
+}
+
+bool isSolidAtMip(const World& world,
+                  const BlockModelLibrary* blockModelLibrary,
+                  const glm::ivec3& mesherCoord,
+                  int32_t sampleStrideMip,
+                  uint8_t mipLevel) {
+    BlockMaterial block = airBlock();
+    const BlockCoord worldMipCoord{
+        mesherCoord.x * sampleStrideMip,
+        mesherCoord.y * sampleStrideMip,
+        mesherCoord.z * sampleStrideMip
+    };
+    if (!world.tryGetBlock(worldMipCoord, block, mipLevel)) {
+        return false;
+    }
+    return isMaterialAoOccluder(blockModelLibrary, block.unpack().id);
+}
+
+uint16_t computeSeamPackedAoData(const World& world,
+                                 const BlockModelLibrary* blockModelLibrary,
+                                 uint32_t faceDirection,
+                                 const glm::ivec3& blockCoordMesher,
+                                 int32_t sampleStrideMip,
+                                 uint8_t mipLevel) {
+    std::array<uint8_t, 4> ao{};
+    for (uint32_t corner = 0; corner < 4; ++corner) {
+        const glm::ivec3 side1Coord = blockCoordMesher + kAoStates[faceDirection][corner][0];
+        const glm::ivec3 side2Coord = blockCoordMesher + kAoStates[faceDirection][corner][1];
+        const glm::ivec3 cornerCoord = blockCoordMesher + kAoStates[faceDirection][corner][2];
+
+        ao[corner] = vertexAo(
+            isSolidAtMip(world, blockModelLibrary, side1Coord, sampleStrideMip, mipLevel),
+            isSolidAtMip(world, blockModelLibrary, side2Coord, sampleStrideMip, mipLevel),
+            isSolidAtMip(world, blockModelLibrary, cornerCoord, sampleStrideMip, mipLevel)
+        );
+    }
+
+    const bool flipped = (static_cast<uint32_t>(ao[1]) + static_cast<uint32_t>(ao[2])) >
+        (static_cast<uint32_t>(ao[0]) + static_cast<uint32_t>(ao[3]));
+    return packMeshletQuadAoData(ao[0], ao[1], ao[2], ao[3], flipped);
+}
+
+void collectBoundarySideFaces(const std::vector<Meshlet>& meshlets,
+                              std::unordered_set<FaceCoordKey, FaceCoordKeyHash>& outFaces) {
+    for (const Meshlet& meshlet : meshlets) {
+        if (!isBoundarySideDirection(meshlet.faceDirection) || meshlet.quadCount == 0u) {
+            continue;
+        }
+
+        const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
+        for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
+            if (meshlet.quadUsesVoxelAo[quadIndex] == 0u) {
+                continue;
+            }
+
+            const glm::uvec3 local = unpackMeshletLocalOffset(meshlet.packedQuadLocalOffsets[quadIndex]);
+            outFaces.insert(FaceCoordKey{
+                glm::ivec3(
+                    meshlet.origin.x + static_cast<int32_t>(local.x * voxelScale),
+                    meshlet.origin.y + static_cast<int32_t>(local.y * voxelScale),
+                    meshlet.origin.z + static_cast<int32_t>(local.z * voxelScale)
+                ),
+                meshlet.faceDirection
+            });
+        }
+    }
+}
+
+void appendTileSeamStrips(ChunkMeshOutput& meshOutput,
+                          const World& world,
+                          const MeshTileCoord& tile,
+                          int32_t meshTileSizeChunks,
+                          uint8_t lodLevel,
+                          const BlockModelLibrary* blockModelLibrary) {
     if (lodLevel == 0u ||
         (meshOutput.culledMeshlets.empty() && meshOutput.doubleSidedMeshlets.empty())) {
         return;
     }
 
-    std::vector<Meshlet> culledSkirtMeshlets;
-    std::vector<Meshlet> doubleSidedSkirtMeshlets;
+    const uint8_t mipLevel = std::min<uint8_t>(lodLevel, Chunk::MAX_MIP_LEVEL);
+    const int32_t extraLodShift = std::max(
+        0,
+        static_cast<int32_t>(lodLevel) - static_cast<int32_t>(Chunk::MAX_MIP_LEVEL)
+    );
+    const int32_t sampleStrideMip = pow2ClampedShift(extraLodShift);
     const int32_t tileMinX = tile.x * meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMinY = tile.y * meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMaxX = tileMinX + meshTileSizeChunks * cfg::CHUNK_SIZE;
     const int32_t tileMaxY = tileMinY + meshTileSizeChunks * cfg::CHUNK_SIZE;
+
+    std::unordered_set<FaceCoordKey, FaceCoordKeyHash> existingBoundaryFaces;
+    existingBoundaryFaces.reserve(meshOutput.culledMeshlets.size() + meshOutput.doubleSidedMeshlets.size());
+    collectBoundarySideFaces(meshOutput.culledMeshlets, existingBoundaryFaces);
+    collectBoundarySideFaces(meshOutput.doubleSidedMeshlets, existingBoundaryFaces);
+
+    std::vector<Meshlet> culledSeamMeshlets;
+    std::vector<Meshlet> doubleSidedSeamMeshlets;
 
     auto processMeshlets = [&](const std::vector<Meshlet>& meshlets) {
         for (const Meshlet& meshlet : meshlets) {
@@ -169,61 +315,102 @@ void appendAlwaysOnTileSkirts(ChunkMeshOutput& meshOutput,
             }
 
             const uint32_t voxelScale = std::max(meshlet.voxelScale, 1u);
+            const int32_t voxelScaleI = static_cast<int32_t>(voxelScale);
             for (uint32_t quadIndex = 0; quadIndex < meshlet.quadCount; ++quadIndex) {
-                const uint16_t packed = meshlet.packedQuadLocalOffsets[quadIndex];
-                const uint16_t materialId = meshlet.quadMaterialIds[quadIndex];
-                const uint32_t localX = static_cast<uint32_t>(packed & 0x1Fu);
-                const uint32_t localY = static_cast<uint32_t>((packed >> 5u) & 0x1Fu);
-                const uint32_t localZ = static_cast<uint32_t>((packed >> 10u) & 0x1Fu);
+                if (meshlet.quadUsesVoxelAo[quadIndex] == 0u) {
+                    continue;
+                }
 
-                const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(localX * voxelScale);
-                const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(localY * voxelScale);
-                const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(localZ * voxelScale);
-                const bool materialDoubleSided = (blockModelLibrary != nullptr) &&
-                    blockModelLibrary->isMaterialDoubleSided(materialId);
-                std::vector<Meshlet>& targetMeshlets = materialDoubleSided
-                    ? doubleSidedSkirtMeshlets
-                    : culledSkirtMeshlets;
+                const glm::uvec3 local = unpackMeshletLocalOffset(meshlet.packedQuadLocalOffsets[quadIndex]);
+                const uint16_t materialId = meshlet.quadMaterialIds[quadIndex];
+                const uint16_t fallbackLight = meshlet.quadLightData[quadIndex];
+                const int32_t worldX = meshlet.origin.x + static_cast<int32_t>(local.x * voxelScale);
+                const int32_t worldY = meshlet.origin.y + static_cast<int32_t>(local.y * voxelScale);
+                const int32_t worldZ = meshlet.origin.z + static_cast<int32_t>(local.z * voxelScale);
+                const glm::ivec3 seamOrigin{worldX, worldY, worldZ};
+                const glm::ivec3 blockCoordMesher{
+                    floor_div(worldX, voxelScaleI),
+                    floor_div(worldY, voxelScaleI),
+                    floor_div(worldZ, voxelScaleI)
+                };
+
+                auto appendForDirection = [&](uint32_t faceDirection) {
+                    const FaceCoordKey key{seamOrigin, faceDirection};
+                    if (existingBoundaryFaces.contains(key)) {
+                        return;
+                    }
+
+                    const glm::ivec3 frontCoord = blockCoordMesher + ChunkMesher::directionOffsets[faceDirection];
+                    const glm::ivec3 backCoord = blockCoordMesher + ChunkMesher::directionOffsets[oppositeDirection(faceDirection)];
+                    const uint8_t fallbackFront = static_cast<uint8_t>(fallbackLight & 0xFFu);
+                    const uint8_t fallbackBack = static_cast<uint8_t>((fallbackLight >> 8u) & 0xFFu);
+                    uint8_t frontPackedLight = kDefaultSeamPackedLight;
+                    uint8_t backPackedLight = kDefaultSeamPackedLight;
+                    const bool frontLightKnown = trySamplePackedLightAtMip(
+                        world,
+                        frontCoord,
+                        sampleStrideMip,
+                        mipLevel,
+                        frontPackedLight
+                    );
+                    const bool backLightKnown = trySamplePackedLightAtMip(
+                        world,
+                        backCoord,
+                        sampleStrideMip,
+                        mipLevel,
+                        backPackedLight
+                    );
+                    if (frontLightKnown) {
+                        frontPackedLight = maxPackedLight(frontPackedLight, fallbackFront);
+                    } else {
+                        frontPackedLight = maxPackedLight(kDefaultSeamPackedLight, fallbackFront);
+                    }
+                    if (backLightKnown) {
+                        backPackedLight = maxPackedLight(backPackedLight, fallbackBack);
+                    } else {
+                        backPackedLight = maxPackedLight(kDefaultSeamPackedLight, fallbackBack);
+                    }
+
+                    if (!isSolidAtMip(world, blockModelLibrary, frontCoord, sampleStrideMip, mipLevel)) {
+                        frontPackedLight = maxPackedLight(frontPackedLight, kDefaultSeamPackedLight);
+                    }
+                    const uint16_t packedLight = packMeshletQuadLightPair(frontPackedLight, backPackedLight);
+                    const uint16_t packedAoData = computeSeamPackedAoData(
+                        world,
+                        blockModelLibrary,
+                        faceDirection,
+                        blockCoordMesher,
+                        sampleStrideMip,
+                        mipLevel
+                    );
+
+                    std::vector<Meshlet>& targetMeshlets =
+                        (blockModelLibrary != nullptr && blockModelLibrary->isMaterialDoubleSided(materialId))
+                        ? doubleSidedSeamMeshlets
+                        : culledSeamMeshlets;
+                    appendSeamQuad(
+                        targetMeshlets,
+                        faceDirection,
+                        seamOrigin,
+                        voxelScale,
+                        materialId,
+                        packedLight,
+                        packedAoData
+                    );
+                    existingBoundaryFaces.insert(key);
+                };
 
                 if (worldX == tileMinX) {
-                    appendSkirtQuad(
-                        targetMeshlets,
-                        Direction::MinusX,
-                        glm::ivec3(worldX, worldY, worldZ),
-                        voxelScale,
-                        materialId,
-                        blockModelLibrary
-                    );
+                    appendForDirection(Direction::MinusX);
                 }
-                if ((worldX + static_cast<int32_t>(voxelScale)) == tileMaxX) {
-                    appendSkirtQuad(
-                        targetMeshlets,
-                        Direction::PlusX,
-                        glm::ivec3(worldX, worldY, worldZ),
-                        voxelScale,
-                        materialId,
-                        blockModelLibrary
-                    );
+                if ((worldX + voxelScaleI) == tileMaxX) {
+                    appendForDirection(Direction::PlusX);
                 }
                 if (worldY == tileMinY) {
-                    appendSkirtQuad(
-                        targetMeshlets,
-                        Direction::MinusY,
-                        glm::ivec3(worldX, worldY, worldZ),
-                        voxelScale,
-                        materialId,
-                        blockModelLibrary
-                    );
+                    appendForDirection(Direction::MinusY);
                 }
-                if ((worldY + static_cast<int32_t>(voxelScale)) == tileMaxY) {
-                    appendSkirtQuad(
-                        targetMeshlets,
-                        Direction::PlusY,
-                        glm::ivec3(worldX, worldY, worldZ),
-                        voxelScale,
-                        materialId,
-                        blockModelLibrary
-                    );
+                if ((worldY + voxelScaleI) == tileMaxY) {
+                    appendForDirection(Direction::PlusY);
                 }
             }
         }
@@ -234,13 +421,13 @@ void appendAlwaysOnTileSkirts(ChunkMeshOutput& meshOutput,
 
     meshOutput.culledMeshlets.insert(
         meshOutput.culledMeshlets.end(),
-        std::make_move_iterator(culledSkirtMeshlets.begin()),
-        std::make_move_iterator(culledSkirtMeshlets.end())
+        std::make_move_iterator(culledSeamMeshlets.begin()),
+        std::make_move_iterator(culledSeamMeshlets.end())
     );
     meshOutput.doubleSidedMeshlets.insert(
         meshOutput.doubleSidedMeshlets.end(),
-        std::make_move_iterator(doubleSidedSkirtMeshlets.begin()),
-        std::make_move_iterator(doubleSidedSkirtMeshlets.end())
+        std::make_move_iterator(doubleSidedSeamMeshlets.begin()),
+        std::make_move_iterator(doubleSidedSeamMeshlets.end())
     );
 }
 }  // namespace
@@ -294,7 +481,7 @@ ChunkMeshOutput MeshManager::meshTileLod(const TileLodCoord& coord) const {
         }
     }
 
-    appendAlwaysOnTileSkirts(meshOutput, coord.tile.tile, meshTileSizeChunks_, lodLevel, blockModelLibrary_.get());
+    appendTileSeamStrips(meshOutput, world_, coord.tile.tile, meshTileSizeChunks_, lodLevel, blockModelLibrary_.get());
     return meshOutput;
 }
 

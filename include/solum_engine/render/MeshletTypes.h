@@ -11,6 +11,7 @@ static constexpr uint32_t MESHLET_AO_BITS = 9;
 static constexpr uint32_t MESHLET_MODEL_QUAD_INDEX_SHIFT = MESHLET_AO_BITS;
 static constexpr uint32_t MESHLET_MODEL_QUAD_INDEX_MASK = 0x3fffffu;
 static constexpr uint32_t MESHLET_VOXEL_AO_FLAG_SHIFT = 31u;
+static constexpr uint32_t MESHLET_FLAG_SEAM = 0x1u;
 
 inline uint16_t packMeshletLocalOffset(uint32_t x, uint32_t y, uint32_t z) {
     return static_cast<uint16_t>((x & 0x1Fu) | ((y & 0x1Fu) << 5u) | ((z & 0x1Fu) << 10u));
@@ -65,6 +66,7 @@ struct Meshlet {
     uint32_t faceDirection = 0;
     uint32_t quadCount = 0;
     uint32_t voxelScale = 1;
+    uint32_t flags = 0;
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> packedQuadLocalOffsets{};
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> quadMaterialIds{};
     std::array<uint16_t, MESHLET_QUAD_CAPACITY> quadLightData{};
@@ -84,7 +86,7 @@ struct MeshletMetadataGPU {
     uint32_t faceDirection = 0;
     uint32_t dataOffset = 0;
     uint32_t voxelScale = 1;
-    uint32_t pad1 = 0;
+    uint32_t flags = 0;
 };
 
 struct MeshletAabb {

@@ -32,6 +32,7 @@ struct VertexOutput {
     @location(5) @interpolate(flat) useVoxelAo: u32,
     @location(6) @interpolate(flat) blockCoord: vec3i,
     @location(7) @interpolate(flat) packedLight: u32,
+    @location(8) @interpolate(flat) isSeamMeshlet: u32,
 };
 
 fn hash_u32(x: u32) -> u32 {
@@ -185,19 +186,21 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         out.useVoxelAo = 0u;
         out.blockCoord = vec3i(0, 0, 0);
         out.packedLight = 0u;
+        out.isSeamMeshlet = 0u;
         return out;
     }
 
     let sample = sample_meshlet_quad_vertex(meshlet, quadIdx, triangleVertex);
+    let isSeamMeshlet = (meshlet.flags & 0x1u) != 0u;
 
     let decodedMaterialId = decode_material_id(sample.quadData);
     let safeMaterialId = min(decodedMaterialId, 65535u);
     let material = materialMetadata[safeMaterialId];
     let flags = material.flags;
     let offsetDirectionMask = (flags >> 1u) & 0x7u;
-    let modelRotationEnabled = (flags & 0x10u) != 0u;
+    let modelRotationEnabled = ((flags & 0x10u) != 0u) && !isSeamMeshlet;
     let modelRotationDirectionMask = (flags >> 5u) & 0x7u;
-    let offsetAmount = clamp(material.randomOffsetAmount, 0.0, 1.0);
+    let offsetAmount = select(clamp(material.randomOffsetAmount, 0.0, 1.0), 0.0, isSeamMeshlet);
     let offset = random_offset_for_block(sample.blockCoord, offsetDirectionMask, offsetAmount);
     var localPosition = sample.worldPosition + offset;
     localPosition = random_model_rotation_for_block(
@@ -227,6 +230,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     }
     out.blockCoord = sample.blockCoord;
     out.packedLight = sample.packedLightData;
+    out.isSeamMeshlet = select(0u, 1u, isSeamMeshlet);
 
     let meshletColorSeed = (bitcast<u32>(meshlet.originX) * 73856093u) ^
         (bitcast<u32>(meshlet.originY) * 19349663u) ^
@@ -261,7 +265,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let flags = material.flags;
         let textureLayer = material.textureLayer;
         var sampleUv = in.texCoord;
-        if ((flags & 0x1u) != 0u && in.useVoxelAo != 0u) {
+        if ((flags & 0x1u) != 0u && in.useVoxelAo != 0u && in.isSeamMeshlet == 0u) {
             let rotation = hash_block_coord(in.blockCoord) & 0x3u;
             let tileUv = floor(sampleUv);
             let localUv = fract(sampleUv);
