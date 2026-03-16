@@ -5,10 +5,10 @@
     "decorations": [["tall_grass", 10], ["sprout", 1]],
     "noise": {
       "seed": 1337,
-      "horizontalFrequency": 4.0,
-      "verticalFrequency": 1.5,
-      "maxStrengthBlocks": 10.0,
-      "falloffBlocks": 16.0,
+      "horizontalFrequency": 0.5,
+      "verticalFrequency": 1.25,
+      "maxStrengthBlocks": 64.0,
+      "falloffBlocks": 64.0,
       "encodedNodeTree": "DQAE@BCQgEAwrXIz8E"
     },
     "materials": {
