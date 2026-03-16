@@ -4,19 +4,80 @@
 
 # FastNoise2
 
-WIP successor to [FastNoiseSIMD](https://github.com/Auburn/FastNoiseSIMD)
+Modular node based noise generation library using SIMD, focused on performance, modern C++17 and designed with ease of use in mind.
 
-Modular node based noise generation library using SIMD, modern C++17 and templates
+Noise node graphs can be created in code or with the help of the included visual "Node Editor" tool. Or if you just want basic coherent noise you can easily generate it from a single Simplex/Perlin node
 
-FastNoise2 is a fully featured noise generation library which aims to meet all your coherent noise needs while being extremely fast
+### Why Nodes?
 
-Uses FastSIMD to compile classes with multiple SIMD types and selects the fastest supported SIMD level at runtime
+The node-based approach keeps all noise generation and operations (add, multiply, blend, etc.) within the SIMD pipeline. This means when combining multiple noise types or applying modifiers, the intermediate values stay in SIMD registers rather than being written to memory.
+
+The traditional approach of generating noise types separately and combining them with scalar operations doesn't make sense if you want to benefit from SIMD. With just SIMD noise generation each noise type is generated into its own array, then the arrays would need to be combined afterwards in separate passes. With FastNoise2's node graph, the entire computation is fused and executed in SIMD, maximizing throughput and minimizing both memory allocation and bandwidth.
+
+## Features
+
+**Coherent Noise**
+- Perlin, Simplex, SuperSimplex (OpenSimplex2S), Value
+- Cellular Value, Cellular Distance, Cellular Lookup
+
+**Fractals**
+- FBm, Ridged
+
+**Blends & Operators**
+- Add, Subtract, Multiply, Divide, (Smooth)Min, (Smooth)Max, Fade, and more
+
+**Modifiers**
+- Remap, Terrace, Domain Scale/Offset/Rotate, and more
+
+**Domain Warping**
+- Gradient, Simplex, SuperSimplex
+- Fractal Progressive, Fractal Independent
+
+**Dimensions**
+- 2D, 3D, 4D noise generation + 2D tiling support
+
+**Thread Safety**
+- Fully thread-safe: generate noise in parallel across multiple threads with the same node tree
+
+**Serialization**
+- Node trees can be encoded to compact strings and decoded at runtime for quick iteration
+- Create complex noise setups in the Node Editor and load them directly into your application
+- Connect your application directly to the node editor and see live node tree update in your engine
+
+**Extendable**
+- Create custom nodes using the SIMD-agnostic interface provided by FastSIMD
+- Write code once and it automatically compiles for all supported SIMD architectures
+- Custom nodes work in the Node Editor, serialisation and other language bindings with minimal effort thanks to node metadata
+
+## Node Editor
+
+The FastNoise2 Node Editor tool provides a node graph editor to create trees of FastNoise2 nodes. Node trees can be exported as serialised strings and loaded into the FastNoise2 library in your own code. Node Editor has 2D texture/heightmap and 3D mesh previews for the node graph output, generation is infinite in all dimensions. See screenshots below for examples.
+
+[Web Node Editor](https://auburn.github.io/FastNoise2/) (WASM)
+
+Check the [Releases](https://github.com/Auburn/FastNoise2/releases/latest) for compiled Node Editor binaries for desktop platforms
+
+![Node Editor Mountain Terrain](https://github.com/user-attachments/assets/acda59bd-1245-40dd-8f0e-06fa8a17c60d)
+
+![Node Editor Crazy Terrain](https://github.com/user-attachments/assets/22bb2052-b17d-415e-897d-999869991fa9)
+
+## FastNoise2 vs FastNoise Lite
+
+[FastNoise Lite](https://github.com/Auburn/FastNoiseLite) is a simpler, portable library best suited for basic noise needs in many languages. Choose **FastNoise2** when you need:
+- Maximum performance through SIMD optimization
+- Better tools to create interesting noise generation
+- Runtime-configurable node graphs
+
+## Platform Support
+
+Uses [FastSIMD](https://github.com/Auburn/FastSIMD) to compile code with multiple SIMD architectures and selects the fastest supported SIMD level at runtime
 - Scalar (non-SIMD)
 - SSE2
 - SSE4.1
 - AVX2
 - AVX512
 - NEON
+- WASM SIMD
 
 Supports:
 - 32/64 bit
@@ -24,9 +85,13 @@ Supports:
 - Linux
 - Android
 - MacOS x86/ARM
+- iOS
 - MSVC
-- Clang
+- Clang(CL)
 - GCC
+- Emscripten (WASM)
+
+On Windows using ClangCL is recommended as MSVC has SIMD compiler bugs, which cause incorrect generation. ClangCL also complies much faster and has measurable runtime performance increases. Remember ClangCL binaries/libraries are fully compatible with MSVC!
 
 Bindings:
 - [C#](https://github.com/Auburn/FastNoise2Bindings)
@@ -37,14 +102,6 @@ Bindings:
 
 Roadmap:
 - [Vague collection of ideas](https://github.com/users/Auburn/projects/1)
-
-## Noise Tool
-
-The FastNoise2 noise tool provides a node graph editor to create trees of FastNoise2 nodes. Node trees can be exported as serialised strings and loaded into the FastNoise2 library in your own code. The noise tool has 2D and 3D previews for the node graph output, see screenshots below for examples.
-
-Check the [Releases](https://github.com/Auburn/FastNoise2/releases/latest) for compiled NoiseTool binaries
-
-![NoiseTool](https://user-images.githubusercontent.com/1349548/90967950-4e8da600-e4de-11ea-902a-94e72cb86481.png)
 
 ## Performance
 
@@ -78,4 +135,4 @@ Million points of noise generated per second (higher = better)
 
 # Getting Started
 
-See [documentation](https://github.com/Auburn/FastNoise2/wiki)
+See [Wiki](https://github.com/Auburn/FastNoise2/wiki)

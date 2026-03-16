@@ -2,6 +2,9 @@
 
 #include "terrain/TerrainGeneratorInternal.h"
 
+TerrainGenerator::TerrainGenerator()
+    : fnGenerator(terrain_internal::createTerrainNoiseGenerator()) {}
+
 void TerrainGenerator::generateColumn(const glm::ivec3& origin, Column& col) {
     const terrain_internal::HeightmapData& heightmap = terrain_internal::heightmapData();
     const terrain_internal::TerrainDecorationConfig config = terrain_internal::decorationConfig();

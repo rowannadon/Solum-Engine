@@ -46,7 +46,7 @@ target_include_directories(solum_engine
         ${THIRD_PARTY_INCLUDE_DIRS}
 )
 
-target_link_libraries(solum_engine PRIVATE glfw webgpu glfw3webgpu FastNoise imgui)
+target_link_libraries(solum_engine PRIVATE glfw webgpu glfw3webgpu imgui PUBLIC FastNoise)
 
 if(DEV_MODE)
     # In dev mode, we load resources from the source tree, so that when we

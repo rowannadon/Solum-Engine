@@ -271,7 +271,7 @@ void World::dispatchScheduledColumnJobs(std::vector<ScheduledColumnJob>&& jobsTo
                         }
                     }
 
-                    TerrainGenerator generator;
+                    thread_local TerrainGenerator generator;
                     Column generatedColumn;
 
                     const ChunkCoord columnBaseChunk = column_local_to_chunk(coord, 0);

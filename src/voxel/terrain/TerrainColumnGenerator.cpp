@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -33,7 +34,7 @@ int wrapIndex(int value, int size) {
 }
 
 std::string resolveHeightmapPath() {
-    return std::string(RESOURCE_DIR) + "/height/heightmap6.png";
+    return std::string(RESOURCE_DIR) + "/height/heightmap16.png";
 }
 
 std::filesystem::path biomeConfigPath() {
@@ -177,6 +178,14 @@ terrain_internal::BiomeConfig loadBiomeConfig() {
             }
             if (noise.contains("falloffBlocks") && noise["falloffBlocks"].is_number()) {
                 config.noiseFalloffBlocks = std::max(0.001f, noise["falloffBlocks"].get<float>());
+            }
+            if (noise.contains("encodedNodeTree")) {
+                if (noise["encodedNodeTree"].is_string()) {
+                    config.noiseEncodedNodeTree = noise["encodedNodeTree"].get<std::string>();
+                } else {
+                    std::cerr << "TerrainGenerator: biomes[" << selectedIndex
+                              << "].noise field 'encodedNodeTree' must be a string." << std::endl;
+                }
             }
         }
     }
@@ -417,6 +426,30 @@ const HeightmapData& heightmapData() {
 const BiomeConfig& biomeConfig() {
     static const BiomeConfig kConfig = loadBiomeConfig();
     return kConfig;
+}
+
+FastNoise::SmartNode<> createTerrainNoiseGenerator() {
+    const BiomeConfig& biome = biomeConfig();
+    if (!biome.noiseEncodedNodeTree.empty()) {
+        FastNoise::SmartNode<> configuredNoise =
+            FastNoise::NewFromEncodedNodeTree(biome.noiseEncodedNodeTree.c_str());
+        if (configuredNoise) {
+            static std::once_flag sEncodedNoiseLogOnce;
+            std::call_once(sEncodedNoiseLogOnce, [&biome]() {
+                std::cout << "TerrainGenerator: using encoded FastNoise node tree for biome '" << biome.name
+                          << "'." << std::endl;
+            });
+            return configuredNoise;
+        }
+
+        static std::once_flag sInvalidEncodedNoiseLogOnce;
+        std::call_once(sInvalidEncodedNoiseLogOnce, [&biome]() {
+            std::cerr << "TerrainGenerator: biome '" << biome.name
+                      << "' has an invalid FastNoise encoded node tree. Falling back to Perlin noise." << std::endl;
+        });
+    }
+
+    return FastNoise::New<FastNoise::Perlin>();
 }
 
 TerrainDecorationConfig decorationConfig() {

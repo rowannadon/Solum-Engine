@@ -20,6 +20,7 @@ inline constexpr float kDefaultNoiseHorizontalFrequency = 0.015f;
 inline constexpr float kDefaultNoiseVerticalFrequency = 0.04f;
 inline constexpr float kDefaultNoiseMaxStrengthBlocks = 64.0f;
 inline constexpr float kDefaultNoiseFalloffBlocks = 55.0f;
+inline constexpr const char* kDefaultNoiseEncodedNodeTree = "";
 inline constexpr float kDefaultFlatnessThreshold = 0.75f;
 inline constexpr float kDefaultDecorationChance = 0.25f;
 inline constexpr const char* kDefaultAbovegroundMaterial = "grass";
@@ -56,6 +57,7 @@ struct BiomeConfig {
     float noiseVerticalFrequency = kDefaultNoiseVerticalFrequency;
     float noiseMaxStrengthBlocks = kDefaultNoiseMaxStrengthBlocks;
     float noiseFalloffBlocks = kDefaultNoiseFalloffBlocks;
+    std::string noiseEncodedNodeTree = kDefaultNoiseEncodedNodeTree;
     BlockMaterial abovegroundMaterial = UnpackedBlockMaterial{2, 0, Direction::PlusZ, 0}.pack();
     BlockMaterial undergroundMaterial = UnpackedBlockMaterial{1, 0, Direction::PlusZ, 0}.pack();
     float flatnessThreshold = kDefaultFlatnessThreshold;
@@ -74,6 +76,7 @@ struct TerrainDecorationConfig {
 
 const HeightmapData& heightmapData();
 const BiomeConfig& biomeConfig();
+FastNoise::SmartNode<> createTerrainNoiseGenerator();
 TerrainDecorationConfig decorationConfig();
 int sampleTerrainHeight(const HeightmapData& heightmap, int worldX, int worldY);
 float sampleDensity(const FastNoise::SmartNode<>& fnGenerator,

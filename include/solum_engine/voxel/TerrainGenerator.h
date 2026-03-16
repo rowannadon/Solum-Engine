@@ -8,8 +8,7 @@ private:
     FastNoise::SmartNode<> fnGenerator;
 
 public:
-    TerrainGenerator() : fnGenerator(FastNoise::New<FastNoise::Perlin>()) {}
-
+    TerrainGenerator();
 
     void generateColumn(const glm::ivec3& origin, Column& col);
 };
