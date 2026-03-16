@@ -18,7 +18,7 @@ bool VoxelStreamingSystem::initialize(std::shared_ptr<const BlockModelLibrary> b
 
     World::Config worldConfig;
     worldConfig.columnLoadRadius = 32;
-    worldConfig.jobConfig.worker_threads = 1;
+    worldConfig.jobConfig.worker_threads = 3;
 
     MeshManager::Config meshConfig;
     meshConfig.meshTileSizeChunks = 2;

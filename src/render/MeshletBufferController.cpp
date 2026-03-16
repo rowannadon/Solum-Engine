@@ -1,10 +1,8 @@
 #include "solum_engine/render/MeshletBufferController.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <numeric>
 #include <utility>
 
 using namespace wgpu;
@@ -29,19 +27,34 @@ std::string MeshletBufferController::prefixedName(const std::string& prefix, con
     return prefix + "_" + baseName;
 }
 
+// ---------------------------------------------------------------------------
+// Initialization
+// ---------------------------------------------------------------------------
+
 bool MeshletBufferController::initialize(BufferManager* bufferManager) {
     bufferManager_ = bufferManager;
-    allocations_.clear();
-    tileSelection_.clear();
+
+    tileSlots_.clear();
+    freeSlotIndices_.clear();
+    coordToSlot_.clear();
+    activeSlotIndices_.clear();
+    slotToActivePos_.clear();
     activeRanges_.clear();
-    activeSelectionKeys_.clear();
     activeMeshletBoundsCache_.clear();
     activeMeshletBoundsDirty_ = true;
-    activeSelectionMeshletCount_ = 0u;
+    activeRangesDirty_ = true;
+    totalActiveMeshlets_ = 0u;
     uploadedMeshRevision_ = 0u;
 
     if (bufferManager_ == nullptr) {
         return false;
+    }
+
+    // Pre-allocate tile slots.
+    tileSlots_.resize(kInitialTileSlotCapacity);
+    freeSlotIndices_.reserve(kInitialTileSlotCapacity);
+    for (uint32_t i = kInitialTileSlotCapacity; i > 0u; --i) {
+        freeSlotIndices_.push_back(i - 1u);
     }
 
     bool recreated = false;
@@ -52,66 +65,156 @@ bool MeshletBufferController::initialize(BufferManager* bufferManager) {
     return buildActiveRanges();
 }
 
-bool MeshletBufferController::allocateRange(std::vector<FreeRange>& freeList,
-                                            uint32_t length,
-                                            uint32_t& outOffset) {
-    if (length == 0u) {
-        outOffset = 0u;
-        return true;
-    }
+// ---------------------------------------------------------------------------
+// Tile Slot Management
+// ---------------------------------------------------------------------------
 
-    for (auto it = freeList.begin(); it != freeList.end(); ++it) {
-        if (it->length < length) {
-            continue;
-        }
-        outOffset = it->offset;
-        it->offset += length;
-        it->length -= length;
-        if (it->length == 0u) {
-            freeList.erase(it);
-        }
-        return true;
+void MeshletBufferController::ensureTileSlotCapacity() {
+    if (!freeSlotIndices_.empty()) {
+        return;
     }
-    return false;
+    const uint32_t oldSize = static_cast<uint32_t>(tileSlots_.size());
+    const uint32_t newSize = std::max(oldSize * 2u, 64u);
+    tileSlots_.resize(newSize);
+    freeSlotIndices_.reserve(newSize - oldSize);
+    for (uint32_t i = newSize; i > oldSize; --i) {
+        freeSlotIndices_.push_back(i - 1u);
+    }
 }
 
-void MeshletBufferController::freeRange(std::vector<FreeRange>& freeList,
-                                        uint32_t offset,
-                                        uint32_t length) {
-    if (length == 0u) {
+uint32_t MeshletBufferController::acquireTileSlot(const MeshTileSliceCoord& coord) {
+    auto it = coordToSlot_.find(coord);
+    if (it != coordToSlot_.end()) {
+        return it->second;
+    }
+
+    ensureTileSlotCapacity();
+
+    const uint32_t slotIndex = freeSlotIndices_.back();
+    freeSlotIndices_.pop_back();
+
+    TileSlot& slot = tileSlots_[slotIndex];
+    slot = TileSlot{};
+    slot.coord = coord;
+    coordToSlot_[coord] = slotIndex;
+    return slotIndex;
+}
+
+void MeshletBufferController::releaseTileSlot(uint32_t slotIndex) {
+    TileSlot& slot = tileSlots_[slotIndex];
+
+    // Hide from active list if present.
+    hideTileSlot(slotIndex);
+
+    // Free all LOD allocations.
+    for (uint32_t lod = 0u; lod < kMaxLods; ++lod) {
+        LodAllocation& alloc = slot.lods[lod];
+        if (!alloc.resident) continue;
+        meshletAllocator_.free(alloc.meshletOffset, alloc.reservedMeshletCount);
+        quadDataAllocator_.free(alloc.quadDataOffset, alloc.reservedQuadWordCount);
+        alloc = LodAllocation{};
+    }
+
+    coordToSlot_.erase(slot.coord);
+    slot = TileSlot{};
+    freeSlotIndices_.push_back(slotIndex);
+}
+
+// ---------------------------------------------------------------------------
+// Active List Management (O(1) operations)
+// ---------------------------------------------------------------------------
+
+void MeshletBufferController::showTileSlot(uint32_t slotIndex) {
+    TileSlot& slot = tileSlots_[slotIndex];
+    if (slot.inActiveList || slot.activeLod < 0) return;
+
+    const auto& lod = slot.lods[static_cast<uint8_t>(slot.activeLod)];
+    if (!lod.resident || lod.meshletCount == 0u) return;
+
+    const uint32_t pos = static_cast<uint32_t>(activeSlotIndices_.size());
+    activeSlotIndices_.push_back(slotIndex);
+    slotToActivePos_[slotIndex] = pos;
+    slot.inActiveList = true;
+
+    totalActiveMeshlets_ += lod.meshletCount;
+    activeRangesDirty_ = true;
+    activeMeshletBoundsDirty_ = true;
+}
+
+void MeshletBufferController::hideTileSlot(uint32_t slotIndex) {
+    TileSlot& slot = tileSlots_[slotIndex];
+    if (!slot.inActiveList) return;
+
+    if (slot.activeLod >= 0) {
+        const auto& lod = slot.lods[static_cast<uint8_t>(slot.activeLod)];
+        if (lod.resident) {
+            totalActiveMeshlets_ -= lod.meshletCount;
+        }
+    }
+
+    // O(1) swap-and-pop removal.
+    const auto posIt = slotToActivePos_.find(slotIndex);
+    if (posIt != slotToActivePos_.end()) {
+        const uint32_t pos = posIt->second;
+        if (pos < activeSlotIndices_.size() - 1u) {
+            const uint32_t lastSlot = activeSlotIndices_.back();
+            activeSlotIndices_[pos] = lastSlot;
+            slotToActivePos_[lastSlot] = pos;
+        }
+        activeSlotIndices_.pop_back();
+        slotToActivePos_.erase(posIt);
+    }
+
+    slot.inActiveList = false;
+    activeRangesDirty_ = true;
+    activeMeshletBoundsDirty_ = true;
+}
+
+void MeshletBufferController::switchTileLod(uint32_t slotIndex, int8_t newLod) {
+    TileSlot& slot = tileSlots_[slotIndex];
+    if (slot.activeLod == newLod) return;
+
+    const bool wasActive = slot.inActiveList;
+
+    // Remove contribution of old LOD.
+    if (wasActive && slot.activeLod >= 0) {
+        const auto& oldLod = slot.lods[static_cast<uint8_t>(slot.activeLod)];
+        if (oldLod.resident) {
+            totalActiveMeshlets_ -= oldLod.meshletCount;
+        }
+    }
+
+    slot.activeLod = newLod;
+
+    // If the new LOD is valid and resident, update contribution.
+    if (wasActive && newLod >= 0) {
+        const auto& newLodAlloc = slot.lods[static_cast<uint8_t>(newLod)];
+        if (newLodAlloc.resident && newLodAlloc.meshletCount > 0u) {
+            totalActiveMeshlets_ += newLodAlloc.meshletCount;
+        } else {
+            // New LOD not resident: remove from active list.
+            hideTileSlot(slotIndex);
+            return;
+        }
+    } else if (wasActive && newLod < 0) {
+        // Deselected: remove from active list.
+        hideTileSlot(slotIndex);
         return;
     }
 
-    freeList.push_back(FreeRange{offset, length});
-    std::sort(freeList.begin(), freeList.end(), [](const FreeRange& a, const FreeRange& b) {
-        return a.offset < b.offset;
-    });
-
-    std::vector<FreeRange> merged;
-    merged.reserve(freeList.size());
-    for (const FreeRange& range : freeList) {
-        if (merged.empty()) {
-            merged.push_back(range);
-            continue;
-        }
-
-        FreeRange& back = merged.back();
-        if (back.offset + back.length >= range.offset) {
-            const uint32_t mergedEnd = std::max(back.offset + back.length, range.offset + range.length);
-            back.length = mergedEnd - back.offset;
-            continue;
-        }
-
-        merged.push_back(range);
-    }
-
-    freeList = std::move(merged);
+    activeRangesDirty_ = true;
+    activeMeshletBoundsDirty_ = true;
 }
+
+// ---------------------------------------------------------------------------
+// GPU Buffer Management
+// ---------------------------------------------------------------------------
 
 bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
                                               uint32_t quadWordCapacity,
                                               uint32_t rangeCapacity) {
-    if (bufferManager_ == nullptr || meshletCapacity == 0u || quadWordCapacity == 0u || rangeCapacity == 0u) {
+    if (bufferManager_ == nullptr || meshletCapacity == 0u ||
+        quadWordCapacity == 0u || rangeCapacity == 0u) {
         return false;
     }
 
@@ -120,151 +223,107 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
     metadataDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(MeshletMetadataGPU);
     metadataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     metadataDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(meshMetadataBufferName_, metadataDesc)) {
-        return false;
-    }
+    if (!bufferManager_->createBuffer(meshMetadataBufferName_, metadataDesc)) return false;
 
     BufferDescriptor meshDataDesc = Default;
     meshDataDesc.label = StringView("meshlet data buffer");
     meshDataDesc.size = static_cast<uint64_t>(quadWordCapacity) * sizeof(uint32_t);
     meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     meshDataDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(meshDataBufferName_, meshDataDesc)) {
-        return false;
-    }
+    if (!bufferManager_->createBuffer(meshDataBufferName_, meshDataDesc)) return false;
 
     BufferDescriptor aabbDesc = Default;
     aabbDesc.label = StringView("meshlet aabb buffer");
     aabbDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(MeshletAabbGPU);
     aabbDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     aabbDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(meshAabbBufferName_, aabbDesc)) {
-        return false;
-    }
+    if (!bufferManager_->createBuffer(meshAabbBufferName_, aabbDesc)) return false;
 
     BufferDescriptor visibleIndicesDesc = Default;
     visibleIndicesDesc.label = StringView("visible meshlet indices buffer");
     visibleIndicesDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(uint32_t);
     visibleIndicesDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     visibleIndicesDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(visibleMeshletIndexBufferName_, visibleIndicesDesc)) {
-        return false;
-    }
+    if (!bufferManager_->createBuffer(visibleMeshletIndexBufferName_, visibleIndicesDesc)) return false;
 
     BufferDescriptor activeRangesDesc = Default;
     activeRangesDesc.label = StringView("active meshlet ranges buffer");
     activeRangesDesc.size = static_cast<uint64_t>(rangeCapacity) * sizeof(ActiveMeshletRangeGPU);
     activeRangesDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
     activeRangesDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(activeMeshletRangeBufferName_, activeRangesDesc)) {
-        return false;
-    }
+    if (!bufferManager_->createBuffer(activeMeshletRangeBufferName_, activeRangesDesc)) return false;
 
     BufferDescriptor rangeParamsDesc = Default;
     rangeParamsDesc.label = StringView("active meshlet ranges params buffer");
     rangeParamsDesc.size = sizeof(RangeParamsGPU);
     rangeParamsDesc.usage = BufferUsage::CopyDst | BufferUsage::Uniform;
     rangeParamsDesc.mappedAtCreation = false;
-    if (!bufferManager_->createBuffer(activeMeshletRangeParamsBufferName_, rangeParamsDesc)) {
-        return false;
-    }
+    if (!bufferManager_->createBuffer(activeMeshletRangeParamsBufferName_, rangeParamsDesc)) return false;
 
     meshletCapacity_ = meshletCapacity;
     quadWordCapacity_ = quadWordCapacity;
     rangeCapacity_ = rangeCapacity;
-    meshletFreeRanges_ = {FreeRange{0u, meshletCapacity_}};
-    quadFreeRanges_ = {FreeRange{0u, quadWordCapacity_}};
-    return true;
-}
 
-bool MeshletBufferController::writeAllocation(const AllocationRecord& record) {
-    if (bufferManager_ == nullptr) {
-        return false;
-    }
-
-    if (!record.packed) {
-        return true;
-    }
-    const PackedMeshletData& packed = *record.packed;
-
-    if (!packed.metadata.empty()) {
-        std::vector<MeshletMetadataGPU> metadata = packed.metadata;
-        for (MeshletMetadataGPU& entry : metadata) {
-            entry.dataOffset += record.quadOffset;
-        }
-
-        bufferManager_->writeBuffer(
-            meshMetadataBufferName_,
-            static_cast<uint64_t>(record.meshletOffset) * sizeof(MeshletMetadataGPU),
-            metadata.data(),
-            metadata.size() * sizeof(MeshletMetadataGPU)
-        );
-
-        bufferManager_->writeBuffer(
-            meshAabbBufferName_,
-            static_cast<uint64_t>(record.meshletOffset) * sizeof(MeshletAabbGPU),
-            packed.aabbGpu.data(),
-            packed.aabbGpu.size() * sizeof(MeshletAabbGPU)
-        );
-    }
-
-    if (!packed.quadData.empty()) {
-        bufferManager_->writeBuffer(
-            meshDataBufferName_,
-            static_cast<uint64_t>(record.quadOffset) * sizeof(uint32_t),
-            packed.quadData.data(),
-            packed.quadData.size() * sizeof(uint32_t)
-        );
-    }
+    meshletAllocator_.reset(meshletCapacity_);
+    quadDataAllocator_.reset(quadWordCapacity_);
 
     return true;
-}
-
-void MeshletBufferController::releaseAllocation(const MeshTileLodKey& key) {
-    const auto it = allocations_.find(key);
-    if (it == allocations_.end()) {
-        return;
-    }
-
-    freeRange(meshletFreeRanges_, it->second.meshletOffset, it->second.reservedMeshletCount);
-    freeRange(quadFreeRanges_, it->second.quadOffset, it->second.reservedQuadWordCount);
-    allocations_.erase(it);
 }
 
 bool MeshletBufferController::repackExistingAllocations() {
-    std::vector<AllocationRecord> records;
-    records.reserve(allocations_.size());
-    for (const auto& [_, record] : allocations_) {
-        records.push_back(record);
+    // Collect all resident allocations across all tile slots.
+    struct RepackEntry {
+        uint32_t slotIndex;
+        uint8_t lod;
+    };
+    std::vector<RepackEntry> entries;
+    for (uint32_t si = 0u; si < static_cast<uint32_t>(tileSlots_.size()); ++si) {
+        const TileSlot& slot = tileSlots_[si];
+        // Skip slots that aren't in use (not in coordToSlot_).
+        if (coordToSlot_.find(slot.coord) == coordToSlot_.end() ||
+            coordToSlot_.at(slot.coord) != si) {
+            continue;
+        }
+        for (uint32_t l = 0u; l < kMaxLods; ++l) {
+            if (slot.lods[l].resident) {
+                entries.push_back({si, static_cast<uint8_t>(l)});
+            }
+        }
     }
-    std::sort(records.begin(), records.end(), [](const AllocationRecord& a, const AllocationRecord& b) {
-        return a.key < b.key;
-    });
 
-    allocations_.clear();
-    meshletFreeRanges_ = {FreeRange{0u, meshletCapacity_}};
-    quadFreeRanges_ = {FreeRange{0u, quadWordCapacity_}};
+    // Reset allocators.
+    meshletAllocator_.reset(meshletCapacity_);
+    quadDataAllocator_.reset(quadWordCapacity_);
 
-    for (AllocationRecord& record : records) {
-        const uint32_t meshletCount = record.packed
-            ? static_cast<uint32_t>(record.packed->metadata.size())
-            : 0u;
-        const uint32_t quadWordCount = record.packed
-            ? static_cast<uint32_t>(record.packed->quadData.size())
-            : 0u;
-        if (!allocateRange(meshletFreeRanges_, meshletCount, record.meshletOffset)) {
+    // Re-allocate and re-upload each entry.
+    for (const RepackEntry& entry : entries) {
+        LodAllocation& alloc = tileSlots_[entry.slotIndex].lods[entry.lod];
+        if (!alloc.packed) {
+            alloc.resident = false;
+            continue;
+        }
+
+        const uint32_t meshletCount = static_cast<uint32_t>(alloc.packed->metadata.size());
+        const uint32_t quadWordCount = static_cast<uint32_t>(alloc.packed->quadData.size());
+
+        uint32_t newMeshletOffset = 0u;
+        uint32_t newQuadOffset = 0u;
+        if (!meshletAllocator_.allocate(meshletCount, newMeshletOffset)) return false;
+        if (!quadDataAllocator_.allocate(quadWordCount, newQuadOffset)) {
+            meshletAllocator_.free(newMeshletOffset, meshletCount);
             return false;
         }
-        if (!allocateRange(quadFreeRanges_, quadWordCount, record.quadOffset)) {
-            freeRange(meshletFreeRanges_, record.meshletOffset, meshletCount);
+
+        alloc.meshletOffset = newMeshletOffset;
+        alloc.meshletCount = meshletCount;
+        alloc.reservedMeshletCount = meshletCount;
+        alloc.quadDataOffset = newQuadOffset;
+        alloc.quadDataWordCount = quadWordCount;
+        alloc.reservedQuadWordCount = quadWordCount;
+
+        if (!writeLodAllocation(newMeshletOffset, newQuadOffset, *alloc.packed)) {
             return false;
         }
-        record.reservedMeshletCount = meshletCount;
-        record.reservedQuadWordCount = quadWordCount;
-        if (!writeAllocation(record)) {
-            return false;
-        }
-        allocations_.emplace(record.key, std::move(record));
     }
 
     return true;
@@ -274,13 +333,8 @@ bool MeshletBufferController::ensureBuffers(uint32_t requiredMeshlets,
                                             uint32_t requiredQuadWords,
                                             uint32_t requiredRanges,
                                             bool* recreated) {
-    if (recreated != nullptr) {
-        *recreated = false;
-    }
-
-    if (bufferManager_ == nullptr) {
-        return false;
-    }
+    if (recreated != nullptr) *recreated = false;
+    if (bufferManager_ == nullptr) return false;
 
     const bool needsRecreate =
         meshletCapacity_ < requiredMeshlets ||
@@ -293,9 +347,7 @@ bool MeshletBufferController::ensureBuffers(uint32_t requiredMeshlets,
         !bufferManager_->getBuffer(activeMeshletRangeBufferName_) ||
         !bufferManager_->getBuffer(activeMeshletRangeParamsBufferName_);
 
-    if (!needsRecreate) {
-        return true;
-    }
+    if (!needsRecreate) return true;
 
     uint32_t nextMeshletCapacity = std::max(meshletCapacity_, kInitialMeshletCapacity);
     while (nextMeshletCapacity < requiredMeshlets) {
@@ -320,158 +372,261 @@ bool MeshletBufferController::ensureBuffers(uint32_t requiredMeshlets,
         return false;
     }
 
-    if (recreated != nullptr) {
-        *recreated = true;
-    }
+    if (recreated != nullptr) *recreated = true;
     return true;
 }
 
-MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const MeshStreamingDelta& delta) {
-    ApplyResult result{};
+// ---------------------------------------------------------------------------
+// GPU Data Writes
+// ---------------------------------------------------------------------------
 
-    if (bufferManager_ == nullptr) {
-        return result;
+bool MeshletBufferController::writeLodAllocation(uint32_t meshletOffset,
+                                                 uint32_t quadDataOffset,
+                                                 const PackedMeshletData& packed) {
+    if (bufferManager_ == nullptr) return false;
+
+    if (!packed.metadata.empty()) {
+        // Patch dataOffset in metadata to reflect the quad data position.
+        std::vector<MeshletMetadataGPU> metadata = packed.metadata;
+        for (MeshletMetadataGPU& entry : metadata) {
+            entry.dataOffset += quadDataOffset;
+        }
+
+        bufferManager_->writeBuffer(
+            meshMetadataBufferName_,
+            static_cast<uint64_t>(meshletOffset) * sizeof(MeshletMetadataGPU),
+            metadata.data(),
+            metadata.size() * sizeof(MeshletMetadataGPU));
+
+        bufferManager_->writeBuffer(
+            meshAabbBufferName_,
+            static_cast<uint64_t>(meshletOffset) * sizeof(MeshletAabbGPU),
+            packed.aabbGpu.data(),
+            packed.aabbGpu.size() * sizeof(MeshletAabbGPU));
     }
 
-    auto selectionUsesKey = [this](const MeshTileLodKey& key) {
-        const auto selectionIt = tileSelection_.find(key.tile);
-        return selectionIt != tileSelection_.end() && selectionIt->second == static_cast<int8_t>(key.lod);
-    };
-    bool activeRangesDirty = false;
+    if (!packed.quadData.empty()) {
+        bufferManager_->writeBuffer(
+            meshDataBufferName_,
+            static_cast<uint64_t>(quadDataOffset) * sizeof(uint32_t),
+            packed.quadData.data(),
+            packed.quadData.size() * sizeof(uint32_t));
+    }
 
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// applyDelta -- processes streaming upserts, removals, and selection changes
+// ---------------------------------------------------------------------------
+
+MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const MeshStreamingDelta& delta) {
+    ApplyResult result{};
+    if (bufferManager_ == nullptr) return result;
+
+    // --- Removals ---
     for (const MeshTileLodKey& key : delta.removals) {
-        activeRangesDirty = activeRangesDirty || selectionUsesKey(key);
-        releaseAllocation(key);
+        auto coordIt = coordToSlot_.find(key.tile);
+        if (coordIt == coordToSlot_.end()) continue;
+
+        const uint32_t slotIndex = coordIt->second;
+        TileSlot& slot = tileSlots_[slotIndex];
+        if (key.lod >= kMaxLods) continue;
+
+        LodAllocation& alloc = slot.lods[key.lod];
+        if (alloc.resident) {
+            // If this was the active LOD, hide before freeing.
+            if (slot.activeLod == static_cast<int8_t>(key.lod)) {
+                hideTileSlot(slotIndex);
+                slot.activeLod = -1;
+            }
+            meshletAllocator_.free(alloc.meshletOffset, alloc.reservedMeshletCount);
+            quadDataAllocator_.free(alloc.quadDataOffset, alloc.reservedQuadWordCount);
+            alloc = LodAllocation{};
+        }
+
+        // Check if this slot has any remaining LODs. If not, release the slot.
+        bool anyResident = false;
+        for (uint32_t l = 0u; l < kMaxLods; ++l) {
+            if (slot.lods[l].resident) { anyResident = true; break; }
+        }
+        if (!anyResident && slot.activeLod < 0) {
+            releaseTileSlot(slotIndex);
+        }
+
         result.deltaApplied = true;
     }
 
+    // --- Upserts ---
     for (const MeshTileLodUpload& upsert : delta.upserts) {
         const std::shared_ptr<const PackedMeshletData>& packed = selectPackedForVariant(upsert);
         if (!packed || packed->metadata.empty()) {
-            activeRangesDirty = activeRangesDirty || selectionUsesKey(upsert.key);
-            releaseAllocation(upsert.key);
+            // Empty mesh: treat as removal of this LOD.
+            auto coordIt = coordToSlot_.find(upsert.key.tile);
+            if (coordIt != coordToSlot_.end()) {
+                const uint32_t si = coordIt->second;
+                TileSlot& slot = tileSlots_[si];
+                if (upsert.key.lod < kMaxLods) {
+                    LodAllocation& alloc = slot.lods[upsert.key.lod];
+                    if (alloc.resident) {
+                        if (slot.activeLod == static_cast<int8_t>(upsert.key.lod)) {
+                            hideTileSlot(si);
+                        }
+                        meshletAllocator_.free(alloc.meshletOffset, alloc.reservedMeshletCount);
+                        quadDataAllocator_.free(alloc.quadDataOffset, alloc.reservedQuadWordCount);
+                        alloc = LodAllocation{};
+                        activeRangesDirty_ = true;
+                    }
+                }
+            }
             result.deltaApplied = true;
             continue;
         }
 
-        AllocationRecord record{};
-        record.key = upsert.key;
-        record.packed = packed;
+        if (upsert.key.lod >= kMaxLods) continue;
 
-        const auto previousIt = allocations_.find(upsert.key);
-        const bool hasPrevious = previousIt != allocations_.end();
+        const uint32_t slotIndex = acquireTileSlot(upsert.key.tile);
+        TileSlot& slot = tileSlots_[slotIndex];
+        LodAllocation& alloc = slot.lods[upsert.key.lod];
+
+        const uint32_t requiredMeshletCount = static_cast<uint32_t>(packed->metadata.size());
+        const uint32_t requiredQuadWords = static_cast<uint32_t>(packed->quadData.size());
+
+        // Check if existing allocation can be reused in-place.
+        const bool canReuse = alloc.resident &&
+                              alloc.reservedMeshletCount >= requiredMeshletCount &&
+                              alloc.reservedQuadWordCount >= requiredQuadWords;
 
         uint32_t meshletOffset = 0u;
         uint32_t quadOffset = 0u;
-        const uint32_t requiredMeshletCount = static_cast<uint32_t>(record.packed->metadata.size());
-        const uint32_t requiredQuadWords = static_cast<uint32_t>(record.packed->quadData.size());
-        bool reusedPreviousReservation = false;
 
-        if (hasPrevious &&
-            previousIt->second.reservedMeshletCount >= requiredMeshletCount &&
-            previousIt->second.reservedQuadWordCount >= requiredQuadWords) {
-            meshletOffset = previousIt->second.meshletOffset;
-            quadOffset = previousIt->second.quadOffset;
-            record.reservedMeshletCount = previousIt->second.reservedMeshletCount;
-            record.reservedQuadWordCount = previousIt->second.reservedQuadWordCount;
-            reusedPreviousReservation = true;
+        if (canReuse) {
+            meshletOffset = alloc.meshletOffset;
+            quadOffset = alloc.quadDataOffset;
         } else {
-            const bool meshletAllocated = allocateRange(meshletFreeRanges_, requiredMeshletCount, meshletOffset);
-            const bool quadAllocated =
-                meshletAllocated && allocateRange(quadFreeRanges_, requiredQuadWords, quadOffset);
-            if (!meshletAllocated || !quadAllocated) {
-                if (meshletAllocated) {
-                    freeRange(meshletFreeRanges_, meshletOffset, requiredMeshletCount);
-                }
-                if (quadAllocated) {
-                    freeRange(quadFreeRanges_, quadOffset, requiredQuadWords);
-                }
+            // Free old allocation if it exists.
+            if (alloc.resident) {
+                meshletAllocator_.free(alloc.meshletOffset, alloc.reservedMeshletCount);
+                quadDataAllocator_.free(alloc.quadDataOffset, alloc.reservedQuadWordCount);
+            }
 
+            // Allocate new space.
+            bool meshletOk = meshletAllocator_.allocate(requiredMeshletCount, meshletOffset);
+            bool quadOk = meshletOk && quadDataAllocator_.allocate(requiredQuadWords, quadOffset);
+
+            if (!meshletOk || !quadOk) {
+                if (meshletOk) meshletAllocator_.free(meshletOffset, requiredMeshletCount);
+                if (quadOk) quadDataAllocator_.free(quadOffset, requiredQuadWords);
+
+                // Need bigger buffers.
                 bool recreated = false;
-                const uint32_t requiredMeshlets = meshletCapacity_ + requiredMeshletCount + 64u;
-                const uint32_t requiredQuadWordsTotal = quadWordCapacity_ + requiredQuadWords + 1024u;
-                const uint32_t requiredRanges = std::max<uint32_t>(
+                const uint32_t neededMeshlets = meshletCapacity_ + requiredMeshletCount + 64u;
+                const uint32_t neededQuadWords = quadWordCapacity_ + requiredQuadWords + 1024u;
+                const uint32_t neededRanges = std::max<uint32_t>(
                     rangeCapacity_,
-                    static_cast<uint32_t>(tileSelection_.size() + 64u)
-                );
-                if (!ensureBuffers(requiredMeshlets, requiredQuadWordsTotal, requiredRanges, &recreated)) {
+                    static_cast<uint32_t>(activeSlotIndices_.size() + 64u));
+
+                if (!ensureBuffers(neededMeshlets, neededQuadWords, neededRanges, &recreated)) {
+                    alloc.resident = false;
                     continue;
                 }
                 result.buffersRecreated = result.buffersRecreated || recreated;
-                activeRangesDirty = activeRangesDirty || recreated;
+                if (recreated) activeRangesDirty_ = true;
 
-                const bool meshletAllocatedAfterRecreate =
-                    allocateRange(meshletFreeRanges_, requiredMeshletCount, meshletOffset);
-                const bool quadAllocatedAfterRecreate =
-                    meshletAllocatedAfterRecreate &&
-                    allocateRange(quadFreeRanges_, requiredQuadWords, quadOffset);
-                if (!meshletAllocatedAfterRecreate || !quadAllocatedAfterRecreate) {
-                    if (meshletAllocatedAfterRecreate) {
-                        freeRange(meshletFreeRanges_, meshletOffset, requiredMeshletCount);
-                    }
+                // Retry allocation after repack.
+                meshletOk = meshletAllocator_.allocate(requiredMeshletCount, meshletOffset);
+                quadOk = meshletOk && quadDataAllocator_.allocate(requiredQuadWords, quadOffset);
+                if (!meshletOk || !quadOk) {
+                    if (meshletOk) meshletAllocator_.free(meshletOffset, requiredMeshletCount);
+                    alloc.resident = false;
                     continue;
                 }
             }
-            record.reservedMeshletCount = requiredMeshletCount;
-            record.reservedQuadWordCount = requiredQuadWords;
         }
 
-        record.meshletOffset = meshletOffset;
-        record.quadOffset = quadOffset;
-        if (!writeAllocation(record)) {
-            if (!reusedPreviousReservation) {
-                freeRange(meshletFreeRanges_, meshletOffset, record.reservedMeshletCount);
-                freeRange(quadFreeRanges_, quadOffset, record.reservedQuadWordCount);
+        // Write meshlet data to GPU.
+        if (!writeLodAllocation(meshletOffset, quadOffset, *packed)) {
+            if (!canReuse) {
+                meshletAllocator_.free(meshletOffset, requiredMeshletCount);
+                quadDataAllocator_.free(quadOffset, requiredQuadWords);
             }
             continue;
         }
 
-        if (hasPrevious && !reusedPreviousReservation) {
-            const auto currentOldIt = allocations_.find(upsert.key);
-            if (currentOldIt != allocations_.end()) {
-                freeRange(meshletFreeRanges_, currentOldIt->second.meshletOffset, currentOldIt->second.reservedMeshletCount);
-                freeRange(quadFreeRanges_, currentOldIt->second.quadOffset, currentOldIt->second.reservedQuadWordCount);
-                allocations_.erase(currentOldIt);
+        // Update allocation record.
+        alloc.meshletOffset = meshletOffset;
+        alloc.meshletCount = requiredMeshletCount;
+        alloc.reservedMeshletCount = canReuse ? alloc.reservedMeshletCount : requiredMeshletCount;
+        alloc.quadDataOffset = quadOffset;
+        alloc.quadDataWordCount = requiredQuadWords;
+        alloc.reservedQuadWordCount = canReuse ? alloc.reservedQuadWordCount : requiredQuadWords;
+        alloc.packed = packed;
+        alloc.resident = true;
+
+        result.deltaApplied = true;
+
+        // If this is the active LOD for this slot, mark ranges dirty.
+        if (slot.activeLod == static_cast<int8_t>(upsert.key.lod)) {
+            activeRangesDirty_ = true;
+            activeMeshletBoundsDirty_ = true;
+            // Ensure the slot is shown if it should be.
+            if (!slot.inActiveList) {
+                showTileSlot(slotIndex);
             }
         }
 
-        allocations_[upsert.key] = std::move(record);
-        result.deltaApplied = true;
-        activeRangesDirty = activeRangesDirty || selectionUsesKey(upsert.key);
-
-        // Stop uploading if per-frame byte budget is exceeded to avoid
-        // overwhelming the Metal command queue on macOS (IOFence deadlock).
-        // Skipped upserts will reappear in the next streaming delta.
         if (bufferManager_->isOverBudget()) {
             break;
         }
     }
 
+    // --- Selection changes ---
     if (!delta.selectionChanges.empty()) {
         for (const MeshTileSelectionEntry& entry : delta.selectionChanges) {
-            if (entry.selectedLod >= 0) {
-                tileSelection_[entry.tile] = entry.selectedLod;
+            auto coordIt = coordToSlot_.find(entry.tile);
+            if (coordIt == coordToSlot_.end()) {
+                if (entry.selectedLod < 0) continue;
+                // No slot yet for this coord. Create one with the selection
+                // but it won't be shown until data arrives.
+                const uint32_t si = acquireTileSlot(entry.tile);
+                tileSlots_[si].activeLod = entry.selectedLod;
+                continue;
+            }
+
+            const uint32_t slotIndex = coordIt->second;
+
+            if (entry.selectedLod < 0) {
+                // Deselect this tile.
+                hideTileSlot(slotIndex);
+                tileSlots_[slotIndex].activeLod = -1;
             } else {
-                tileSelection_.erase(entry.tile);
+                switchTileLod(slotIndex, entry.selectedLod);
+
+                // Try to show if the new LOD is resident.
+                TileSlot& slot = tileSlots_[slotIndex];
+                if (!slot.inActiveList && slot.activeLod >= 0) {
+                    const auto& lodAlloc = slot.lods[static_cast<uint8_t>(slot.activeLod)];
+                    if (lodAlloc.resident && lodAlloc.meshletCount > 0u) {
+                        showTileSlot(slotIndex);
+                    }
+                }
             }
         }
         result.deltaApplied = true;
-        activeRangesDirty = true;
     }
 
-    if (activeRangesDirty) {
+    // --- Rebuild active ranges if anything changed ---
+    if (activeRangesDirty_) {
         bool recreatedForRanges = false;
         if (!ensureBuffers(
                 meshletCapacity_,
                 quadWordCapacity_,
-                std::max<uint32_t>(1u, static_cast<uint32_t>(tileSelection_.size())),
+                std::max<uint32_t>(1u, static_cast<uint32_t>(activeSlotIndices_.size())),
                 &recreatedForRanges)) {
             return result;
         }
         result.buffersRecreated = result.buffersRecreated || recreatedForRanges;
-        if (!buildActiveRanges()) {
-            return result;
-        }
+        buildActiveRanges();
     }
 
     if (delta.revision > uploadedMeshRevision_) {
@@ -481,62 +636,46 @@ MeshletBufferController::ApplyResult MeshletBufferController::applyDelta(const M
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// buildActiveRanges -- linear scan over activeSlotIndices_, no hash lookups
+// ---------------------------------------------------------------------------
+
 bool MeshletBufferController::buildActiveRanges() {
-    if (bufferManager_ == nullptr) {
-        return false;
-    }
+    if (bufferManager_ == nullptr) return false;
 
     activeRanges_.clear();
-    activeSelectionKeys_.clear();
+    activeRanges_.reserve(activeSlotIndices_.size());
     activeMeshletBoundsDirty_ = true;
-    activeSelectionMeshletCount_ = 0u;
 
-    std::vector<std::pair<MeshTileSliceCoord, int8_t>> orderedSelection;
-    orderedSelection.reserve(tileSelection_.size());
-    for (const auto& [tile, lod] : tileSelection_) {
-        orderedSelection.emplace_back(tile, lod);
-    }
-    std::sort(orderedSelection.begin(), orderedSelection.end(), [](const auto& a, const auto& b) {
-        return a.first < b.first;
-    });
+    uint32_t prefixSum = 0u;
+    uint32_t computedTotal = 0u;
 
-    for (const auto& [tile, lod] : orderedSelection) {
-        if (lod < 0) {
-            continue;
-        }
+    for (const uint32_t slotIdx : activeSlotIndices_) {
+        const TileSlot& slot = tileSlots_[slotIdx];
+        if (slot.activeLod < 0) continue;
 
-        const MeshTileLodKey key{tile, static_cast<uint8_t>(lod)};
-        const auto it = allocations_.find(key);
-        if (it == allocations_.end()) {
-            continue;
-        }
-        if (!it->second.packed) {
-            continue;
-        }
+        const LodAllocation& lod = slot.lods[static_cast<uint8_t>(slot.activeLod)];
+        if (!lod.resident || lod.meshletCount == 0u) continue;
 
-        const uint32_t count = static_cast<uint32_t>(it->second.packed->metadata.size());
-        if (count == 0u) {
-            continue;
-        }
+        // Cap total meshlets per controller (macOS limit).
+        if (computedTotal + lod.meshletCount > maxActiveMeshlets_) break;
 
-        // Cap total meshlets per controller to prevent a single command buffer
-        // from monopolizing the GPU on macOS (no preemption like WDDM).
-        if (activeSelectionMeshletCount_ + count > maxActiveMeshlets_) {
-            break;
-        }
-
-        activeSelectionMeshletCount_ += count;
-        activeSelectionKeys_.push_back(key);
+        computedTotal += lod.meshletCount;
+        prefixSum += lod.meshletCount;
         activeRanges_.push_back(ActiveMeshletRangeGPU{
-            it->second.meshletOffset,
-            count,
-            activeSelectionMeshletCount_,
-            0u
-        });
+            lod.meshletOffset,
+            lod.meshletCount,
+            prefixSum,
+            0u});
     }
 
+    totalActiveMeshlets_ = computedTotal;
+
+    // Ensure range buffer is large enough.
     bool recreated = false;
-    if (!ensureBuffers(meshletCapacity_, quadWordCapacity_, std::max<uint32_t>(1u, static_cast<uint32_t>(activeRanges_.size())), &recreated)) {
+    if (!ensureBuffers(meshletCapacity_, quadWordCapacity_,
+                       std::max<uint32_t>(1u, static_cast<uint32_t>(activeRanges_.size())),
+                       &recreated)) {
         return false;
     }
 
@@ -545,25 +684,26 @@ bool MeshletBufferController::buildActiveRanges() {
             activeMeshletRangeBufferName_,
             0u,
             activeRanges_.data(),
-            activeRanges_.size() * sizeof(ActiveMeshletRangeGPU)
-        );
+            activeRanges_.size() * sizeof(ActiveMeshletRangeGPU));
     }
 
     const RangeParamsGPU rangeParams{
         static_cast<uint32_t>(activeRanges_.size()),
-        activeSelectionMeshletCount_,
-        0u,
-        0u
-    };
+        computedTotal,
+        0u, 0u};
     bufferManager_->writeBuffer(
         activeMeshletRangeParamsBufferName_,
         0u,
         &rangeParams,
-        sizeof(rangeParams)
-    );
+        sizeof(rangeParams));
 
+    activeRangesDirty_ = false;
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// Accessors (unchanged public API)
+// ---------------------------------------------------------------------------
 
 bool MeshletBufferController::hasMeshletManager() const noexcept {
     return bufferManager_ != nullptr;
@@ -594,11 +734,11 @@ const char* MeshletBufferController::activeMeshletRangeParamsBufferName() const 
 }
 
 uint32_t MeshletBufferController::meshletCount() const noexcept {
-    return activeSelectionMeshletCount_;
+    return totalActiveMeshlets_;
 }
 
 uint32_t MeshletBufferController::activeSelectionMeshletCount() const noexcept {
-    return activeSelectionMeshletCount_;
+    return totalActiveMeshlets_;
 }
 
 uint32_t MeshletBufferController::activeRangeCount() const noexcept {
@@ -619,18 +759,21 @@ const std::vector<MeshletAabb>& MeshletBufferController::activeMeshletBounds() c
     }
 
     activeMeshletBoundsCache_.clear();
-    activeMeshletBoundsCache_.reserve(activeSelectionMeshletCount_);
-    for (const MeshTileLodKey& key : activeSelectionKeys_) {
-        const auto allocationIt = allocations_.find(key);
-        if (allocationIt == allocations_.end() || !allocationIt->second.packed) {
-            continue;
-        }
+    activeMeshletBoundsCache_.reserve(totalActiveMeshlets_);
+
+    for (const uint32_t slotIdx : activeSlotIndices_) {
+        const TileSlot& slot = tileSlots_[slotIdx];
+        if (slot.activeLod < 0) continue;
+
+        const LodAllocation& lod = slot.lods[static_cast<uint8_t>(slot.activeLod)];
+        if (!lod.resident || !lod.packed) continue;
+
         activeMeshletBoundsCache_.insert(
             activeMeshletBoundsCache_.end(),
-            allocationIt->second.packed->bounds.begin(),
-            allocationIt->second.packed->bounds.end()
-        );
+            lod.packed->bounds.begin(),
+            lod.packed->bounds.end());
     }
+
     activeMeshletBoundsDirty_ = false;
     return activeMeshletBoundsCache_;
 }
@@ -645,13 +788,11 @@ MeshletBufferController::ActiveBindings MeshletBufferController::activeBindings(
         activeMeshletRangeParamsBufferName(),
         meshletCount(),
         activeRangeCount(),
-        verticesPerMeshlet()
-    };
+        verticesPerMeshlet()};
 }
 
 const std::shared_ptr<const PackedMeshletData>& MeshletBufferController::selectPackedForVariant(
-    const MeshTileLodUpload& upload
-) const {
+    const MeshTileLodUpload& upload) const {
     if (geometryVariant_ == MeshletGeometryVariant::DoubleSided) {
         return upload.doubleSidedPacked;
     }

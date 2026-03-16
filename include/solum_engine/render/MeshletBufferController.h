@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -9,6 +10,7 @@
 
 #include "solum_engine/render/BufferManager.h"
 #include "solum_engine/render/MeshletPacking.h"
+#include "solum_engine/render/MeshletRangeAllocator.h"
 #include "solum_engine/render/MeshletTypes.h"
 #include "solum_engine/voxel/StreamingUpload.h"
 
@@ -75,18 +77,32 @@ public:
     ActiveBindings activeBindings() const noexcept;
 
 private:
-    struct AllocationRecord {
-        MeshTileLodKey key{};
-        std::shared_ptr<const PackedMeshletData> packed;
+    static constexpr uint32_t kMaxLods = 8u;
+    static constexpr uint32_t kInitialTileSlotCapacity = 4096u;
+    static constexpr uint32_t kInitialMeshletCapacity = 4096u;
+    static constexpr uint32_t kInitialQuadWordCapacity =
+        kInitialMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
+    static constexpr uint32_t kInitialRangeCapacity = 2048u;
+
+    // Per-LOD allocation info stored in a tile slot.
+    struct LodAllocation {
         uint32_t meshletOffset = 0u;
-        uint32_t quadOffset = 0u;
-        uint32_t reservedMeshletCount = 0u;
-        uint32_t reservedQuadWordCount = 0u;
+        uint32_t meshletCount = 0u;           // Actual meshlet count (for rendering)
+        uint32_t reservedMeshletCount = 0u;   // Reserved space (for allocation/free)
+        uint32_t quadDataOffset = 0u;
+        uint32_t quadDataWordCount = 0u;      // Actual quad data size
+        uint32_t reservedQuadWordCount = 0u;  // Reserved space
+        std::shared_ptr<const PackedMeshletData> packed;
+        bool resident = false;
     };
 
-    struct FreeRange {
-        uint32_t offset = 0u;
-        uint32_t length = 0u;
+    // Stable slot for one MeshTileSliceCoord. Each slot can hold multiple LODs
+    // simultaneously, with one LOD selected as active for rendering.
+    struct TileSlot {
+        MeshTileSliceCoord coord{};
+        std::array<LodAllocation, kMaxLods> lods{};
+        int8_t activeLod = -1;
+        bool inActiveList = false;
     };
 
     struct RangeParamsGPU {
@@ -96,27 +112,37 @@ private:
         uint32_t pad1 = 0u;
     };
 
-    static constexpr uint32_t kInitialMeshletCapacity = 4096u;
-    static constexpr uint32_t kInitialQuadWordCapacity =
-        kInitialMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
-    static constexpr uint32_t kInitialRangeCapacity = 2048u;
-
-    bool ensureBuffers(uint32_t requiredMeshlets, uint32_t requiredQuadWords, uint32_t requiredRanges, bool* recreated);
-    bool recreateBuffers(uint32_t meshletCapacity, uint32_t quadWordCapacity, uint32_t rangeCapacity);
+    // Buffer management
+    bool ensureBuffers(uint32_t requiredMeshlets, uint32_t requiredQuadWords,
+                       uint32_t requiredRanges, bool* recreated);
+    bool recreateBuffers(uint32_t meshletCapacity, uint32_t quadWordCapacity,
+                         uint32_t rangeCapacity);
     bool repackExistingAllocations();
 
-    static bool allocateRange(std::vector<FreeRange>& freeList, uint32_t length, uint32_t& outOffset);
-    static void freeRange(std::vector<FreeRange>& freeList, uint32_t offset, uint32_t length);
+    // GPU writes
+    bool writeLodAllocation(uint32_t meshletOffset, uint32_t quadDataOffset,
+                            const PackedMeshletData& packed);
 
-    bool writeAllocation(const AllocationRecord& record);
-    void releaseAllocation(const MeshTileLodKey& key);
+    // Tile slot management
+    uint32_t acquireTileSlot(const MeshTileSliceCoord& coord);
+    void releaseTileSlot(uint32_t slotIndex);
+    void ensureTileSlotCapacity();
 
-    const std::shared_ptr<const PackedMeshletData>& selectPackedForVariant(const MeshTileLodUpload& upload) const;
+    // Active list management (O(1) show/hide)
+    void showTileSlot(uint32_t slotIndex);
+    void hideTileSlot(uint32_t slotIndex);
+    void switchTileLod(uint32_t slotIndex, int8_t newLod);
+
+    // Helpers
+    const std::shared_ptr<const PackedMeshletData>& selectPackedForVariant(
+        const MeshTileLodUpload& upload) const;
     static std::string prefixedName(const std::string& prefix, const char* baseName);
 
     BufferManager* bufferManager_ = nullptr;
     std::string namePrefix_;
     MeshletGeometryVariant geometryVariant_ = MeshletGeometryVariant::Culled;
+
+    // GPU buffer names
     std::string meshDataBufferName_;
     std::string meshMetadataBufferName_;
     std::string meshAabbBufferName_;
@@ -124,21 +150,30 @@ private:
     std::string activeMeshletRangeBufferName_;
     std::string activeMeshletRangeParamsBufferName_;
 
+    // Buffer capacities
     uint32_t meshletCapacity_ = 0u;
     uint32_t quadWordCapacity_ = 0u;
     uint32_t rangeCapacity_ = 0u;
 
-    std::vector<FreeRange> meshletFreeRanges_;
-    std::vector<FreeRange> quadFreeRanges_;
+    // O(log n) allocators (replacing O(n) free-list vectors)
+    MeshletRangeAllocator meshletAllocator_;
+    MeshletRangeAllocator quadDataAllocator_;
 
-    std::unordered_map<MeshTileLodKey, AllocationRecord> allocations_;
-    std::unordered_map<MeshTileSliceCoord, int8_t> tileSelection_;
+    // Tile slot table
+    std::vector<TileSlot> tileSlots_;
+    std::vector<uint32_t> freeSlotIndices_;
+    std::unordered_map<MeshTileSliceCoord, uint32_t> coordToSlot_;
 
+    // Active rendering state
+    std::vector<uint32_t> activeSlotIndices_;
+    std::unordered_map<uint32_t, uint32_t> slotToActivePos_;
+    bool activeRangesDirty_ = true;
+    uint32_t totalActiveMeshlets_ = 0u;
+
+    // GPU active ranges (rebuilt from activeSlotIndices_ when dirty)
     std::vector<ActiveMeshletRangeGPU> activeRanges_;
-    std::vector<MeshTileLodKey> activeSelectionKeys_;
     mutable std::vector<MeshletAabb> activeMeshletBoundsCache_;
     mutable bool activeMeshletBoundsDirty_ = true;
-    uint32_t activeSelectionMeshletCount_ = 0u;
 
     uint64_t uploadedMeshRevision_ = 0u;
 
