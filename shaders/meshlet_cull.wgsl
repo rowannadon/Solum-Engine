@@ -209,6 +209,8 @@ fn cs_main(
         }
 
         let visibleIndex = atomicAdd(&drawArgsWords[1], 1u);
-        visibleMeshletIndices[visibleIndex] = meshletIndex;
+        if (visibleIndex < arrayLength(&visibleMeshletIndices)) {
+            visibleMeshletIndices[visibleIndex] = meshletIndex;
+        }
     }
 }

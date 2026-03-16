@@ -223,7 +223,11 @@ bool isSolidAtMip(const World& world,
         mesherCoord.z * sampleStrideMip
     };
     if (!world.tryGetBlock(worldMipCoord, block, mipLevel)) {
-        return false;
+        // Treat unknown blocks as solid (occluding), consistent with how
+        // unknownCullingBlock() works in the LOD cell meshing path.  This
+        // prevents bright AO seam lines and incorrect full-bright sky light
+        // boosts at tile boundaries whose neighbours haven't generated yet.
+        return true;
     }
     return isMaterialAoOccluder(blockModelLibrary, block.unpack().id);
 }
@@ -344,8 +348,8 @@ void appendTileSeamStrips(ChunkMeshOutput& meshOutput,
                     const glm::ivec3 backCoord = blockCoordMesher + ChunkMesher::directionOffsets[oppositeDirection(faceDirection)];
                     const uint8_t fallbackFront = static_cast<uint8_t>(fallbackLight & 0xFFu);
                     const uint8_t fallbackBack = static_cast<uint8_t>((fallbackLight >> 8u) & 0xFFu);
-                    uint8_t frontPackedLight = kDefaultSeamPackedLight;
-                    uint8_t backPackedLight = kDefaultSeamPackedLight;
+                    uint8_t frontPackedLight = fallbackFront;
+                    uint8_t backPackedLight = fallbackBack;
                     const bool frontLightKnown = trySamplePackedLightAtMip(
                         world,
                         frontCoord,
@@ -362,15 +366,15 @@ void appendTileSeamStrips(ChunkMeshOutput& meshOutput,
                     );
                     if (frontLightKnown) {
                         frontPackedLight = maxPackedLight(frontPackedLight, fallbackFront);
-                    } else {
-                        frontPackedLight = maxPackedLight(kDefaultSeamPackedLight, fallbackFront);
                     }
                     if (backLightKnown) {
                         backPackedLight = maxPackedLight(backPackedLight, fallbackBack);
-                    } else {
-                        backPackedLight = maxPackedLight(kDefaultSeamPackedLight, fallbackBack);
                     }
 
+                    // Only apply full-bright sky light boost when the front
+                    // block is *known* to be air.  isSolidAtMip now returns
+                    // true for unknown blocks, so this naturally guards
+                    // against boosting seams whose neighbours haven't loaded.
                     if (!isSolidAtMip(world, blockModelLibrary, frontCoord, sampleStrideMip, mipLevel)) {
                         frontPackedLight = maxPackedLight(frontPackedLight, kDefaultSeamPackedLight);
                     }

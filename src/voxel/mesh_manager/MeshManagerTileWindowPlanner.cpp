@@ -141,12 +141,26 @@ void MeshManager::pruneMeshTilesOutsideWindowLocked() {
 void MeshManager::ensureVisibleFrontierLocked() {
     while (visibleFrontierRing_ <= maxVisibleFrontierRing_) {
         if (!currentVisibleRingInitialized_) {
-            currentVisibleRingOutstandingTiles_.clear();
+            // Don't clear outstanding tiles — keep waiting tiles from previous
+            // rings so they can still be woken by wakeVisibleTilesForGeneratedColumns.
             initializeVisibleRingLocked(visibleFrontierRing_);
             currentVisibleRingInitialized_ = true;
         }
 
-        if (!currentVisibleRingOutstandingTiles_.empty()) {
+        // Only block frontier advancement on tiles that are actively being
+        // dispatched or queued — NOT on tiles merely waiting for their
+        // footprint to be generated.  This prevents a single tile with an
+        // incomplete footprint (e.g. at the world-generation boundary) from
+        // starving every tile in every outer ring.
+        bool hasActiveOutstanding = false;
+        for (const auto& tile : currentVisibleRingOutstandingTiles_) {
+            if (!waitingVisibleTiles_.contains(tile)) {
+                hasActiveOutstanding = true;
+                break;
+            }
+        }
+
+        if (hasActiveOutstanding) {
             return;
         }
 
@@ -561,15 +575,13 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
         return a.coord.lodLevel < b.coord.lodLevel;
     });
 
-    std::size_t pendingCount = 0u;
-    {
-        std::shared_lock<std::shared_mutex> lock(meshMutex_);
-        pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
-    }
-    const std::size_t maxPending = maxPendingMeshJobs(jobs_.worker_count());
-    std::size_t jobIndex = 0u;
-    while (jobIndex < jobsToSchedule.size() && pendingCount < maxPending) {
-        const ScheduledTileLod& scheduled = jobsToSchedule[jobIndex++];
+    // Schedule all affected tiles without a pending-job cap.
+    // scheduleTileLodMeshing already handles dedup (deferred remesh if
+    // already pending, footprint check, active-window check), so the actual
+    // number of *new* jobs submitted is naturally bounded.  Dropping tiles
+    // here would permanently lose remesh requests because the generation
+    // revision has already been advanced past these columns.
+    for (const ScheduledTileLod& scheduled : jobsToSchedule) {
         scheduleTileLodMeshing(
             scheduled.coord,
             scheduled.priority,
@@ -577,9 +589,6 @@ void MeshManager::scheduleRemeshForNewColumns(const ColumnCoord& centerColumn) {
             meshTileSizeChunks_ + 4,
             scheduled.usePriorityQueue
         );
-
-        std::shared_lock<std::shared_mutex> lock(meshMutex_);
-        pendingCount = pendingTileLodJobs_.size() + pendingPriorityTileLodJobs_.size();
     }
 
     pumpTileQueues();

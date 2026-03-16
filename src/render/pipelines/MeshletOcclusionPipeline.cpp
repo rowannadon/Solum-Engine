@@ -444,6 +444,11 @@ void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
         return;
     }
 
+    // Cap instance count to prevent the depth prepass from exceeding Metal's
+    // GPU command buffer timeout. Each instance draws MESHLET_VERTEX_CAPACITY
+    // vertices with a per-vertex binary search, so the cost is O(N * V * logR).
+    const uint32_t cappedMeshletCount = std::min(meshletCount, kMaxDepthPrepassInstances);
+
     RenderPassDepthStencilAttachment depthAttachment = Default;
     depthAttachment.view = occlusionDepthView;
     depthAttachment.depthClearValue = 1.0f;
@@ -464,7 +469,7 @@ void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
     RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
     pass.setPipeline(prepassPipeline);
     pass.setBindGroup(0, prepassBindGroup, 0, nullptr);
-    pass.draw(MESHLET_VERTEX_CAPACITY, meshletCount, 0, 0);
+    pass.draw(MESHLET_VERTEX_CAPACITY, cappedMeshletCount, 0, 0);
     pass.end();
     pass.release();
 }

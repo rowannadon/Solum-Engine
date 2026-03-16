@@ -245,25 +245,28 @@ void MeshletCullingPipeline::updateCullParams(uint32_t meshletCount,
 
 void MeshletCullingPipeline::encode(CommandEncoder encoder,
                                     const MeshletBufferController& meshletBuffers) {
-    ComputePipeline cullPipeline = r_.pip.getComputePipeline(cullPipelineName_);
-    BindGroup cullBindGroup = r_.pip.getBindGroup(cullBgName_);
-    if (!cullPipeline || !cullBindGroup) {
-        return;
-    }
-
+    // Always reset indirect args to safe defaults first, even if we cannot
+    // dispatch the cull pass (e.g. missing bind group after buffer recreation).
+    // Without this, a stale instanceCount from a previous frame would cause
+    // drawIndirect to launch a massive draw with potentially invalid data,
+    // which can hang the GPU and crash WindowServer on macOS.
     Buffer resetBuffer = r_.buf.getBuffer(indirectResetBufferName_);
     Buffer indirectArgsBuffer = r_.buf.getBuffer(indirectArgsBufferName_);
-    if (!resetBuffer || !indirectArgsBuffer) {
-        return;
+    if (resetBuffer && indirectArgsBuffer) {
+        encoder.copyBufferToBuffer(
+            resetBuffer,
+            0u,
+            indirectArgsBuffer,
+            0u,
+            sizeof(uint32_t) * 4u
+        );
     }
 
-    encoder.copyBufferToBuffer(
-        resetBuffer,
-        0u,
-        indirectArgsBuffer,
-        0u,
-        sizeof(uint32_t) * 4u
-    );
+    ComputePipeline cullPipeline = r_.pip.getComputePipeline(cullPipelineName_);
+    BindGroup cullBindGroup = r_.pip.getBindGroup(cullBgName_);
+    if (!cullPipeline || !cullBindGroup || !resetBuffer || !indirectArgsBuffer) {
+        return;
+    }
 
     // Tile-dispatch: one workgroup per active tile. Each workgroup iterates
     // over its tile's meshlets internally (128 threads, strided).

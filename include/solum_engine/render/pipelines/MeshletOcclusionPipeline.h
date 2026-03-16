@@ -58,4 +58,13 @@ private:
     static constexpr const char* kHiZDownsamplePipelineName = "meshlet_hiz_downsample_pipeline";
 
     static constexpr uint32_t kOcclusionHiZWorkgroupSize = 8u;
+
+    // Maximum meshlet instances for the depth prepass. The prepass draws every
+    // active meshlet with MESHLET_VERTEX_CAPACITY vertices each, where each
+    // vertex invocation performs a binary search through active ranges. Beyond
+    // this cap the GPU work can exceed Metal's command buffer timeout (~2 s),
+    // causing a GPU hang that cascades into a WindowServer watchdog crash on
+    // macOS. When capped, the Hi-Z pyramid is built from a partial depth
+    // buffer — occlusion culling becomes less effective but still functional.
+    static constexpr uint32_t kMaxDepthPrepassInstances = 100'000u;
 };
