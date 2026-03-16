@@ -265,8 +265,10 @@ void MeshletCullingPipeline::encode(CommandEncoder encoder,
         sizeof(uint32_t) * 4u
     );
 
-    const uint32_t meshletCount = meshletBuffers.activeSelectionMeshletCount();
-    if (meshletCount == 0u) {
+    // Tile-dispatch: one workgroup per active tile. Each workgroup iterates
+    // over its tile's meshlets internally (128 threads, strided).
+    const uint32_t activeTileCount = meshletBuffers.activeRangeCount();
+    if (activeTileCount == 0u) {
         return;
     }
 
@@ -274,9 +276,7 @@ void MeshletCullingPipeline::encode(CommandEncoder encoder,
     ComputePassEncoder pass = encoder.beginComputePass(passDesc);
     pass.setPipeline(cullPipeline);
     pass.setBindGroup(0, cullBindGroup, 0, nullptr);
-    const uint32_t workgroupCount =
-        (meshletCount + kMeshletCullWorkgroupSize - 1u) / kMeshletCullWorkgroupSize;
-    pass.dispatchWorkgroups(workgroupCount, 1u, 1u);
+    pass.dispatchWorkgroups(activeTileCount, 1u, 1u);
     pass.end();
     pass.release();
 }

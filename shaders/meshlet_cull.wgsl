@@ -13,10 +13,10 @@ struct ActiveMeshletRange {
 };
 
 struct CullParams {
-    meshletCount: u32,
+    totalMeshlets: u32,
     hizMipCount: u32,
-    activeRangeCount: u32,
-    pad2: u32,
+    activeTileCount: u32,
+    pad: u32,
 };
 
 @group(0) @binding(0) var<uniform> frameUniforms: FrameUniforms;
@@ -41,36 +41,6 @@ fn corner_position(minCorner: vec3f, maxCorner: vec3f, index: u32) -> vec3f {
         case 6u: { return vec3f(maxCorner.x, maxCorner.y, maxCorner.z); }
         default: { return vec3f(minCorner.x, maxCorner.y, maxCorner.z); }
     }
-}
-
-fn resolve_meshlet_index(activeIndex: u32) -> u32 {
-    if (cullParams.activeRangeCount == 0u) {
-        return 0xffffffffu;
-    }
-
-    var left: u32 = 0u;
-    var right: u32 = cullParams.activeRangeCount;
-    while (left < right) {
-        let mid = (left + right) / 2u;
-        let prefix = activeRanges[mid].prefixEnd;
-        if (activeIndex < prefix) {
-            right = mid;
-        } else {
-            left = mid + 1u;
-        }
-    }
-
-    if (left >= cullParams.activeRangeCount) {
-        return 0xffffffffu;
-    }
-
-    let range = activeRanges[left];
-    let rangeStart = range.prefixEnd - range.meshletCount;
-    if (activeIndex < rangeStart || activeIndex >= range.prefixEnd) {
-        return 0xffffffffu;
-    }
-
-    return range.meshletOffset + (activeIndex - rangeStart);
 }
 
 fn is_visible(aabb: MeshletAabb, clipFromLocal: mat4x4f) -> bool {
@@ -205,33 +175,40 @@ fn is_occluded(aabb: MeshletAabb, clipFromLocal: mat4x4f) -> bool {
     return !maybeVisible;
 }
 
+// Tile-dispatch model: one workgroup per active tile.
+// Each workgroup reads its tile's meshlet range from activeRanges and iterates
+// over the meshlets in a strided pattern across threads. This eliminates the
+// O(log n) binary search per thread from the old per-meshlet dispatch.
 @compute @workgroup_size(128, 1, 1)
 fn cs_main(
-    @builtin(global_invocation_id) gid: vec3u,
-    @builtin(local_invocation_index) localIndex: u32
+    @builtin(workgroup_id) wgId: vec3u,
+    @builtin(local_invocation_index) lid: u32
 ) {
-    if (localIndex == 0u) {
+    let tileIndex = wgId.x;
+    if (tileIndex >= cullParams.activeTileCount) {
+        return;
+    }
+
+    if (lid == 0u) {
         clipFromLocalWg = cull_clip_from_local_matrix();
     }
     workgroupBarrier();
 
-    let activeMeshletIndex = gid.x;
-    if (activeMeshletIndex >= cullParams.meshletCount) {
-        return;
-    }
+    let tile = activeRanges[tileIndex];
+    let meshletOffset = tile.meshletOffset;
+    let meshletCount = tile.meshletCount;
 
-    let meshletIndex = resolve_meshlet_index(activeMeshletIndex);
-    if (meshletIndex == 0xffffffffu) {
-        return;
-    }
+    for (var i = lid; i < meshletCount; i += 128u) {
+        let meshletIndex = meshletOffset + i;
 
-    if (!is_visible(meshletAabbs[meshletIndex], clipFromLocalWg)) {
-        return;
-    }
-    if (is_occluded(meshletAabbs[meshletIndex], clipFromLocalWg)) {
-        return;
-    }
+        if (!is_visible(meshletAabbs[meshletIndex], clipFromLocalWg)) {
+            continue;
+        }
+        if (is_occluded(meshletAabbs[meshletIndex], clipFromLocalWg)) {
+            continue;
+        }
 
-    let visibleIndex = atomicAdd(&drawArgsWords[1], 1u);
-    visibleMeshletIndices[visibleIndex] = meshletIndex;
+        let visibleIndex = atomicAdd(&drawArgsWords[1], 1u);
+        visibleMeshletIndices[visibleIndex] = meshletIndex;
+    }
 }
