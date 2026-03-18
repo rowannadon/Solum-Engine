@@ -11,7 +11,7 @@
 
 namespace terrain_internal {
 
-inline constexpr int kHeightmapUpscaleFactor = 2;
+inline constexpr int kHeightmapUpscaleFactor = 8;
 inline constexpr int kFallbackTerrainHeight = 100;
 inline constexpr const char* kActiveBiomeName = "forest";
 

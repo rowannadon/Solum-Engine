@@ -34,7 +34,7 @@ int wrapIndex(int value, int size) {
 }
 
 std::string resolveHeightmapPath() {
-    return std::string(RESOURCE_DIR) + "/height/heightmap6.png";
+    return std::string(RESOURCE_DIR) + "/height/heightmap.png";
 }
 
 std::filesystem::path biomeConfigPath() {

@@ -388,7 +388,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
         const auto waitStart = std::chrono::steady_clock::now();
         while (framesInFlight_.load(std::memory_order_acquire) >= kMaxFramesInFlight) {
             context->instance.processEvents();
-            if (checkGpuStall("framesInFlight wait", waitStart, std::chrono::milliseconds(2000))) {
+            if (checkGpuStall("framesInFlight wait", waitStart, std::chrono::milliseconds(500))) {
                 finalizeFrameTiming();
                 return;
             }
@@ -530,7 +530,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
             MainTimingStage::DeviceTick,
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(tickElapsed).count())
         );
-        if (checkGpuStall("device.tick (pre-present)", tickStart, std::chrono::milliseconds(1500))) {
+        if (checkGpuStall("device.tick (pre-present)", tickStart, std::chrono::milliseconds(500))) {
             targetView.release();
             finalizeFrameTiming();
             return;
@@ -546,7 +546,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
         MainTimingStage::Present,
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(presentElapsed).count())
     );
-    if (checkGpuStall("present", presentStart, std::chrono::milliseconds(1500))) {
+    if (checkGpuStall("present", presentStart, std::chrono::milliseconds(500))) {
         finalizeFrameTiming();
         return;
     }
@@ -560,7 +560,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
             MainTimingStage::DeviceTick,
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(tickElapsed).count())
         );
-        if (checkGpuStall("device.tick (post-present)", tickStart, std::chrono::milliseconds(1500))) {
+        if (checkGpuStall("device.tick (post-present)", tickStart, std::chrono::milliseconds(500))) {
             finalizeFrameTiming();
             return;
         }
