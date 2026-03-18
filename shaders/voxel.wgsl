@@ -300,8 +300,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let blockRadiance = blockLightColor * blockStrength * blockExposure * blockVisibility;
     let combinedRadiance = max(vec3f(0.0, 0.0, 0.0), skyRadiance + blockRadiance);
     let totalLightColor = vec3f(1.0, 1.0, 1.0) - exp(-combinedRadiance * 1.65);
+    // Remap the light curve to a fixed ambient floor so the darkest values stay readable
+    // while remaining monotonically darker as incoming light decreases.
+    let ambientFloorColor = mix(vec3f(0.18, 0.2, 0.24), vec3f(0.22, 0.21, 0.18), daylight);
+    let liftedLightColor = ambientFloorColor + ((vec3f(1.0, 1.0, 1.0) - ambientFloorColor) * totalLightColor);
     let shaded = max(0.45, shade);
 
-    let linearColor = baseColor * shaded * totalLightColor;
+    let linearColor = baseColor * shaded * liftedLightColor;
     return vec4f(linearColor, 1.0);
 }
