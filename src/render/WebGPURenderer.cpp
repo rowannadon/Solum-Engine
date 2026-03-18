@@ -17,6 +17,7 @@ bool WebGPURenderer::initialize() {
 bool WebGPURenderer::initialize(const Config& config) {
     (void)config;
     RenderConfig renderConfig;
+    hasPresentedFrame_.store(false, std::memory_order_release);
 
     context = std::make_unique<WebGPUContext>();
     if (!context->initialize(renderConfig)) {
@@ -306,6 +307,10 @@ uint64_t WebGPURenderer::uploadedMeshRevision() const noexcept {
     );
 }
 
+bool WebGPURenderer::hasPresentedFrame() const noexcept {
+    return hasPresentedFrame_.load(std::memory_order_acquire);
+}
+
 void WebGPURenderer::processPendingMeshUploads() {
     if (!pendingMeshDelta_.has_value()) {
         return;
@@ -465,16 +470,23 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
         );
     }
 
-    if (selectionOutlinePipeline_.has_value()) {
+    const bool hasBoundsOverlay = boundsDebugPipeline_.has_value() && boundsDebugPipeline_->isEnabled();
+    const bool hasImGuiOverlay = ImGui::GetCurrentContext() != nullptr;
+    const bool hasSelectionOverlay =
+        selectionOutlinePipeline_.has_value() && selectionOutlinePipeline_->hasSelection();
+    if (selectionOutlinePipeline_.has_value() &&
+        (hasBoundsOverlay || hasImGuiOverlay || hasSelectionOverlay)) {
         selectionOutlinePipeline_->render(
             targetView,
             encoder,
             [&](RenderPassEncoder& pass) {
-                if (boundsDebugPipeline_.has_value()) {
+                if (hasBoundsOverlay) {
                     boundsDebugPipeline_->draw(pass);
                 }
-                ImGui::Render();
-                ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
+                if (hasImGuiOverlay) {
+                    ImGui::Render();
+                    ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
+                }
             }
         );
     }
@@ -569,6 +581,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
         consecutiveSlowFrames_ = 0;
     }
 
+    hasPresentedFrame_.store(true, std::memory_order_release);
     finalizeFrameTiming();
 }
 
@@ -620,6 +633,8 @@ std::pair<SurfaceTexture, TextureView> WebGPURenderer::GetNextSurfaceViewData() 
 }
 
 void WebGPURenderer::terminate() {
+    hasPresentedFrame_.store(false, std::memory_order_release);
+
     if (selectionOutlinePipeline_.has_value()) {
         selectionOutlinePipeline_->removeResources();
         selectionOutlinePipeline_.reset();

@@ -428,17 +428,7 @@ bool MeshletOcclusionPipeline::rebuildHierarchyBindings() {
 
 void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
                                                   const MeshletBufferController& meshletBuffers) {
-    RenderPipeline prepassPipeline = r_.pip.getPipeline(kDepthPrepassPipelineName);
-    BindGroup prepassBindGroup = r_.pip.getBindGroup(kDepthPrepassBgName);
-    if (!prepassPipeline || !prepassBindGroup) {
-        return;
-    }
-
     const uint32_t meshletCount = meshletBuffers.activeSelectionMeshletCount();
-    if (meshletCount == 0u) {
-        return;
-    }
-
     TextureView occlusionDepthView = r_.tex.getTextureView(kOcclusionDepthViewName);
     if (!occlusionDepthView) {
         return;
@@ -467,9 +457,15 @@ void MeshletOcclusionPipeline::encodeDepthPrepass(CommandEncoder encoder,
     passDesc.timestampWrites = nullptr;
 
     RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
-    pass.setPipeline(prepassPipeline);
-    pass.setBindGroup(0, prepassBindGroup, 0, nullptr);
-    pass.draw(MESHLET_VERTEX_CAPACITY, cappedMeshletCount, 0, 0);
+    if (meshletCount > 0u) {
+        RenderPipeline prepassPipeline = r_.pip.getPipeline(kDepthPrepassPipelineName);
+        BindGroup prepassBindGroup = r_.pip.getBindGroup(kDepthPrepassBgName);
+        if (prepassPipeline && prepassBindGroup) {
+            pass.setPipeline(prepassPipeline);
+            pass.setBindGroup(0, prepassBindGroup, 0, nullptr);
+            pass.draw(MESHLET_VERTEX_CAPACITY, cappedMeshletCount, 0, 0);
+        }
+    }
     pass.end();
     pass.release();
 }

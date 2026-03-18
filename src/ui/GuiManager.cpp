@@ -27,6 +27,8 @@ float hoursToDayPhase(float hours) {
 using namespace wgpu;
 
 bool GuiManager::initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::TextureFormat format) {
+    enabled_ = false;
+
 // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -61,6 +63,7 @@ bool GuiManager::initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::Textur
         return false;
     }
 
+    enabled_ = true;
     return true;    
 }
 
@@ -70,6 +73,16 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
                              FirstPersonCamera& camera,
                              float frameTime,
                              const RuntimeTimingSnapshot& runtimeTiming) {
+    if (!enabled_) {
+        (void)uniforms;
+        (void)deltaTime;
+        (void)frameTimes;
+        (void)camera;
+        (void)frameTime;
+        (void)runtimeTiming;
+        return;
+    }
+
     if (imguiState.useManualTime) {
         imguiState.currentTimeHours = wrapHours(imguiState.manualTime);
     } else {
@@ -266,12 +279,19 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
 }
 
 void GuiManager::terminateImGUI() {
+    if (!enabled_) {
+        return;
+    }
     ImGui_ImplWGPU_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+    enabled_ = false;
 }
 
 void GuiManager::updateImGUIFrame() {
+    if (!enabled_) {
+        return;
+    }
     ImGui_ImplWGPU_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();

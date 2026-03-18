@@ -21,6 +21,7 @@ public:
     explicit SelectionOutlinePipeline(RenderServices& r) : AbstractRenderPipeline(r) {}
 
     bool setSelectedBlock(const std::optional<BlockCoord>& selectedBlock);
+    bool hasSelection() const noexcept { return vertexCount_ > 0u; }
 
     bool createResources() override;
     void removeResources() override;

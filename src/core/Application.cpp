@@ -22,6 +22,7 @@ bool Application::Initialize() {
     WebGPURenderer::Config rendererConfig{};
     if (!gpu.initialize(rendererConfig)) return false;
     if (!voxelStreaming_.initialize(gpu.getBlockModelLibrary())) return false;
+    streamingStarted_ = false;
     buf = gpu.getBufferManager();
 
     window = gpu.getWindow();
@@ -74,7 +75,6 @@ bool Application::Initialize() {
     uniforms.cullingViewMatrix = cullingViewMatrix_;
     uniforms.inverseCullingViewMatrix = inverseCullingViewMatrix_;
     gpu.setDebugWorld(voxelStreaming_.world());
-    voxelStreaming_.start(camera.position, gpu.uploadedMeshRevision());
 
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
 
@@ -85,14 +85,18 @@ bool Application::Initialize() {
 
     registerMovementCallbacks();
     // Install ImGui's full GLFW callback set and chain to the app callbacks above.
-    ImGui_ImplGlfw_InstallCallbacks(window);
+    if (gui.isEnabled()) {
+        ImGui_ImplGlfw_InstallCallbacks(window);
+    }
 
     return true;
 }
 
 
 void Application::Terminate() {
-    voxelStreaming_.stop();
+    if (streamingStarted_) {
+        voxelStreaming_.stop();
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     gui.terminateImGUI();
 }
@@ -109,20 +113,26 @@ void Application::MainLoop() {
     gui.updateImGUIFrame();
 
     // Process input (only if ImGUI doesn't want input)
-    ImGuiIO& io = ImGui::GetIO();
-    if (cursorCaptured) {
-        io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
-        io.MouseDelta = ImVec2(0.0f, 0.0f);
-        for (bool& down : io.MouseDown) {
-            down = false;
+    bool wantCaptureKeyboard = false;
+    bool wantCaptureMouse = false;
+    if (gui.isEnabled()) {
+        ImGuiIO& io = ImGui::GetIO();
+        if (cursorCaptured) {
+            io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+            io.MouseDelta = ImVec2(0.0f, 0.0f);
+            for (bool& down : io.MouseDown) {
+                down = false;
+            }
+            io.MouseWheel = io.MouseWheelH = 0.0f;
         }
-        io.MouseWheel = io.MouseWheelH = 0.0f;
+        wantCaptureKeyboard = io.WantCaptureKeyboard;
+        wantCaptureMouse = io.WantCaptureMouse;
     }
 
-    if (!io.WantCaptureKeyboard && !io.WantCaptureMouse) {
+    if (!wantCaptureKeyboard && !wantCaptureMouse) {
         processInput();
     }
-    updateTargetedBlockSelection(cursorCaptured && !io.WantCaptureMouse);
+    updateTargetedBlockSelection(cursorCaptured && !wantCaptureMouse);
     processBlockInteractions();
 
     // Early exit if frame budget is already exceeded
@@ -142,9 +152,11 @@ void Application::MainLoop() {
         sseProjectionScale = 390.0f;
     }
 
-    voxelStreaming_.updateCamera(camera.position, sseProjectionScale);
-    if (auto delta = voxelStreaming_.tryConsumePreparedDelta()) {
-        gpu.queueMeshDelta(std::move(*delta));
+    if (streamingStarted_) {
+        voxelStreaming_.updateCamera(camera.position, sseProjectionScale);
+        if (auto delta = voxelStreaming_.tryConsumePreparedDelta()) {
+            gpu.queueMeshDelta(std::move(*delta));
+        }
     }
     voxelStreaming_.recordMainUpdateDurationNs(
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -163,6 +175,11 @@ void Application::MainLoop() {
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
     
     gpu.renderFrame(uniforms);
+
+    if (!streamingStarted_ && gpu.hasPresentedFrame()) {
+        voxelStreaming_.start(camera.position, gpu.uploadedMeshRevision());
+        streamingStarted_ = true;
+    }
 
     if (framePacer_) {
         const FramePacingResult pacing = framePacer_->finalizeFrameAndPace(

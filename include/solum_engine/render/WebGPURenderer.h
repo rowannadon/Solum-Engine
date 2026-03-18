@@ -69,6 +69,7 @@ private:
     static constexpr uint32_t kMaxFramesInFlight = 2u;
 #endif
     std::atomic<uint32_t> framesInFlight_{0};
+    std::atomic<bool> hasPresentedFrame_{false};
 
     bool gpuStallDetected_{false};
     uint32_t consecutiveSlowFrames_{0};
@@ -104,6 +105,7 @@ public:
     void setSelectionOutlineBlock(const std::optional<BlockCoord>& blockCoord);
     void queueMeshDelta(MeshStreamingDelta&& delta);
     uint64_t uploadedMeshRevision() const noexcept;
+    bool hasPresentedFrame() const noexcept;
 
     void renderFrame(FrameUniforms& uniforms);
 

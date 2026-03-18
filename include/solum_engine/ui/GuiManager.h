@@ -41,6 +41,7 @@ class GuiManager {
     };
 
     ImGUIState imguiState;  // Add ImGUI state
+    bool enabled_ = false;
 
 public:
     bool initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::TextureFormat format);
@@ -50,7 +51,8 @@ public:
                      FirstPersonCamera& camera,
                      float frameTime,
                      const RuntimeTimingSnapshot& runtimeTiming);
-    bool isCullingCameraFrozen() const noexcept { return imguiState.freezeCullingCamera; }
+    bool isEnabled() const noexcept { return enabled_; }
+    bool isCullingCameraFrozen() const noexcept { return enabled_ && imguiState.freezeCullingCamera; }
     void terminateImGUI();
     void updateImGUIFrame();
 };

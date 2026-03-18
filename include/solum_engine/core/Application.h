@@ -76,6 +76,7 @@ private:
     WebGPURenderer gpu;
     VoxelStreamingSystem voxelStreaming_;
     BufferManager *buf;
+    bool streamingStarted_ = false;
 
     FirstPersonCamera camera;
     std::mutex cameraMutex;

@@ -18,22 +18,7 @@ MeshletBufferController::MeshletBufferController(Config config)
       meshAabbBufferName_(prefixedName(namePrefix_, "meshlet_aabb_buffer")),
       visibleMeshletIndexBufferName_(prefixedName(namePrefix_, "visible_meshlet_indices_buffer")),
       activeMeshletRangeBufferName_(prefixedName(namePrefix_, "active_meshlet_ranges_buffer")),
-      activeMeshletRangeParamsBufferName_(prefixedName(namePrefix_, "active_meshlet_ranges_params_buffer")) {
-#ifdef __APPLE__
-    // Keep the first active meshlet set well below Metal watchdog territory.
-    // The culled path must also stay aligned with the occlusion prepass cap,
-    // while the double-sided path tends to be denser and more expensive due to
-    // foliage overdraw and the lack of a dedicated depth prepass.
-    switch (geometryVariant_) {
-    case MeshletGeometryVariant::Culled:
-        maxActiveMeshlets_ = 100'000u;
-        break;
-    case MeshletGeometryVariant::DoubleSided:
-        maxActiveMeshlets_ = 40'000u;
-        break;
-    }
-#endif
-}
+      activeMeshletRangeParamsBufferName_(prefixedName(namePrefix_, "active_meshlet_ranges_params_buffer")) {}
 
 std::string MeshletBufferController::prefixedName(const std::string& prefix, const char* baseName) {
     if (prefix.empty()) {
