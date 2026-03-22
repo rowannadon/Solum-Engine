@@ -37,6 +37,10 @@ int32_t pow2ClampedShift(int32_t shift) {
     return (1 << clampedShift);
 }
 
+jobsystem::Priority maxPriority(jobsystem::Priority a, jobsystem::Priority b) {
+    return (static_cast<uint8_t>(a) >= static_cast<uint8_t>(b)) ? a : b;
+}
+
 }  // namespace
 
 MeshManager::MeshManager(const World& world, std::shared_ptr<const BlockModelLibrary> blockModelLibrary)
@@ -126,6 +130,7 @@ MeshManager::PlanningUpdate MeshManager::updatePlanningInputs(const glm::vec3& p
         update.shouldPumpPendingWork =
             !pendingTileLodJobs_.empty() ||
             !pendingPriorityTileLodJobs_.empty() ||
+            !queuedTileLodDispatches_.empty() ||
             !queuedVisibleTileHeap_.empty() ||
             !currentVisibleRingOutstandingTiles_.empty() ||
             !waitingVisibleTiles_.empty();
@@ -197,6 +202,68 @@ void MeshManager::updatePlayerPosition(const glm::vec3& playerWorldPosition, flo
     if (changeFlags.generation) {
         scheduleRemeshForNewColumns(update.centerColumn);
     }
+}
+
+bool MeshManager::enqueueTileLodMeshingRequest(const PendingMeshDispatch& dispatch,
+                                               int32_t distanceSq,
+                                               uint8_t tier) {
+    std::unique_lock<std::shared_mutex> lock(meshMutex_);
+    return enqueueTileLodMeshingRequestLocked(dispatch, distanceSq, tier);
+}
+
+bool MeshManager::enqueueTileLodMeshingRequestLocked(const PendingMeshDispatch& dispatch,
+                                                     int32_t distanceSq,
+                                                     uint8_t tier) {
+    if (!isTileWithinActiveWindowLocked(dispatch.coord.tile.tile, dispatch.activeWindowExtraChunks)) {
+        return false;
+    }
+    if (!isTileFootprintGenerated(dispatch.coord.tile.tile)) {
+        return false;
+    }
+
+    const bool normalPending = pendingTileLodJobs_.find(dispatch.coord) != pendingTileLodJobs_.end();
+    const bool priorityPending = pendingPriorityTileLodJobs_.find(dispatch.coord) != pendingPriorityTileLodJobs_.end();
+    if (priorityPending || normalPending) {
+        if (dispatch.forceRemesh) {
+            deferredRemeshTileLods_.insert(dispatch.coord);
+        }
+        return false;
+    }
+
+    MeshTileState& tileState = meshTiles_[dispatch.coord.tile.tile];
+    auto& lodState = tileState.lodStates[dispatch.coord.lodLevel][dispatch.coord.tile.z];
+    if (lodState.resident && !dispatch.forceRemesh) {
+        return false;
+    }
+
+    if (distanceSq < 0) {
+        distanceSq = hasLastScheduledCenter_ ? visibleDistanceSqForTileLocked(dispatch.coord.tile.tile) : 0;
+    }
+
+    const auto existingIt = queuedTileLodDispatches_.find(dispatch.coord);
+    QueuedMeshDispatchEntry entry;
+    if (existingIt != queuedTileLodDispatches_.end()) {
+        entry = existingIt->second;
+        entry.dispatch.priority = maxPriority(entry.dispatch.priority, dispatch.priority);
+        entry.dispatch.forceRemesh = entry.dispatch.forceRemesh || dispatch.forceRemesh;
+        entry.dispatch.usePriorityQueue = entry.dispatch.usePriorityQueue || dispatch.usePriorityQueue;
+        entry.dispatch.activeWindowExtraChunks = std::max(
+            entry.dispatch.activeWindowExtraChunks,
+            dispatch.activeWindowExtraChunks
+        );
+        entry.distanceSq = std::min(entry.distanceSq, distanceSq);
+        entry.tier = std::min(entry.tier, tier);
+    } else {
+        entry.dispatch = dispatch;
+        entry.distanceSq = distanceSq;
+        entry.tier = tier;
+    }
+
+    entry.centerVersion = tileQueueCenterVersion_;
+    entry.sequence = tileQueueSequence_++;
+    queuedTileLodDispatches_[dispatch.coord] = entry;
+    queuedTileLodDispatchHeap_.push(entry);
+    return true;
 }
 
 bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
@@ -333,16 +400,25 @@ bool MeshManager::scheduleTileLodMeshing(const TileLodCoord& coord,
                         pendingPriorityTileLodJobs_.find(coord) == pendingPriorityTileLodJobs_.end()) {
                         deferredRemeshTileLods_.erase(coord);
                     }
+
+                    pumpQueues = pumpQueues ||
+                        !queuedTileLodDispatches_.empty() ||
+                        hasVisibleQueueWorkLocked();
                 }
 
                 if (rescheduleDeferred) {
-                    scheduleTileLodMeshing(
-                        coord,
-                        priorityFromLodLevel(coord.lodLevel),
-                        true,
-                        meshTileSizeChunks_ + 4,
-                        usePriorityQueue
+                    enqueueTileLodMeshingRequest(
+                        PendingMeshDispatch{
+                            coord,
+                            priorityFromLodLevel(coord.lodLevel),
+                            true,
+                            usePriorityQueue,
+                            meshTileSizeChunks_ + 4
+                        },
+                        -1,
+                        usePriorityQueue ? 0u : 1u
                     );
+                    pumpQueues = true;
                 }
                 if (pumpQueues) {
                     pumpTileQueues();

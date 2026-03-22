@@ -76,6 +76,33 @@ private:
         jobsystem::Priority priority = jobsystem::Priority::Low;
         bool forceRemesh = false;
         bool usePriorityQueue = false;
+        int32_t activeWindowExtraChunks = 0;
+    };
+
+    struct QueuedMeshDispatchEntry {
+        PendingMeshDispatch dispatch{};
+        int32_t distanceSq = 0;
+        uint8_t tier = 1u;
+        uint64_t centerVersion = 0u;
+        uint64_t sequence = 0u;
+    };
+
+    struct QueuedMeshDispatchEntryCompare {
+        bool operator()(const QueuedMeshDispatchEntry& a, const QueuedMeshDispatchEntry& b) const noexcept {
+            if (a.tier != b.tier) {
+                return a.tier > b.tier;
+            }
+            if (a.dispatch.usePriorityQueue != b.dispatch.usePriorityQueue) {
+                return !a.dispatch.usePriorityQueue && b.dispatch.usePriorityQueue;
+            }
+            if (a.distanceSq != b.distanceSq) {
+                return a.distanceSq > b.distanceSq;
+            }
+            if (a.dispatch.priority != b.dispatch.priority) {
+                return static_cast<uint8_t>(a.dispatch.priority) < static_cast<uint8_t>(b.dispatch.priority);
+            }
+            return a.sequence > b.sequence;
+        }
     };
 
     struct MeshTileLodState {
@@ -156,7 +183,16 @@ private:
                                   bool dispatchNow,
                                   std::vector<PendingMeshDispatch>* dispatches,
                                   std::vector<MeshTileCoord>* dispatchedTiles,
-                                  bool* repump);
+                                  bool* repump,
+                                  std::size_t* remainingDispatchBudget = nullptr);
+    bool enqueueTileLodMeshingRequest(const PendingMeshDispatch& dispatch,
+                                      int32_t distanceSq = -1,
+                                      uint8_t tier = 1u);
+    bool enqueueTileLodMeshingRequestLocked(const PendingMeshDispatch& dispatch,
+                                            int32_t distanceSq,
+                                            uint8_t tier);
+    void drainQueuedTileLodDispatchesLocked(std::vector<PendingMeshDispatch>& dispatches,
+                                            std::size_t& remainingBudget);
     void pumpTileQueues();
 
     int8_t desiredLodForTile(const MeshTileCoord& tileCoord,
@@ -220,6 +256,7 @@ private:
     std::unordered_set<TileLodCoord> pendingTileLodJobs_;
     std::unordered_set<TileLodCoord> pendingPriorityTileLodJobs_;
     std::unordered_set<TileLodCoord> deferredRemeshTileLods_;
+    std::unordered_map<TileLodCoord, QueuedMeshDispatchEntry> queuedTileLodDispatches_;
     std::unordered_map<MeshTileCoord, MeshTileState> meshTiles_;
     std::unordered_set<MeshTileCoord> currentVisibleRingOutstandingTiles_;
     std::unordered_set<MeshTileCoord> queuedVisibleTiles_;
@@ -229,6 +266,11 @@ private:
         std::vector<QueuedVisibleTileEntry>,
         QueuedVisibleTileEntryCompare
     > queuedVisibleTileHeap_;
+    std::priority_queue<
+        QueuedMeshDispatchEntry,
+        std::vector<QueuedMeshDispatchEntry>,
+        QueuedMeshDispatchEntryCompare
+    > queuedTileLodDispatchHeap_;
 
     std::deque<MeshTileLodKey> pendingUploadOrder_;
     std::unordered_set<MeshTileLodKey> pendingUploadSet_;

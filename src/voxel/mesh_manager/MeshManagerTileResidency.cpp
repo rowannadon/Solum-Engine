@@ -144,6 +144,10 @@ bool MeshManager::hasPendingJobs() const {
     return !pendingTileLodJobs_.empty() ||
            !pendingPriorityTileLodJobs_.empty() ||
            !deferredRemeshTileLods_.empty() ||
+           !queuedTileLodDispatches_.empty() ||
+           !queuedVisibleTileHeap_.empty() ||
+           !currentVisibleRingOutstandingTiles_.empty() ||
+           !waitingVisibleTiles_.empty() ||
            !pendingPriorityUploadOrder_.empty() ||
            !pendingUploadOrder_.empty() ||
            !pendingRemovalOrder_.empty() ||

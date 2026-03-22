@@ -192,14 +192,20 @@ void MeshManager::scheduleRemeshForChangedChunks(const ColumnCoord& centerColumn
     });
 
     for (const ScheduledTileLod& scheduled : jobsToSchedule) {
-        scheduleTileLodMeshing(
-            scheduled.coord,
-            scheduled.priority,
-            true,
-            meshTileSizeChunks_ + 2,
-            scheduled.usePriorityQueue
+        enqueueTileLodMeshingRequest(
+            PendingMeshDispatch{
+                scheduled.coord,
+                scheduled.priority,
+                true,
+                scheduled.usePriorityQueue,
+                meshTileSizeChunks_ + 2
+            },
+            scheduled.distanceSq,
+            scheduled.tier
         );
     }
+
+    pumpTileQueues();
 }
 
 void MeshManager::scheduleRemeshForPlayerEditedChunks(const ColumnCoord& centerColumn) {
