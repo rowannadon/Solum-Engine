@@ -67,7 +67,14 @@ private:
     bool resizePending = false;
     std::optional<MeshStreamingDelta> pendingMeshDelta_;
 
+#ifdef __APPLE__
+    // Metal's IOFence tracker can deadlock when multiple frames are in flight
+    // and each frame issues many queue.writeBuffer() calls (tile streaming).
+    // Serialising CPU/GPU avoids cumulative IOFence pressure.
+    static constexpr uint32_t kMaxFramesInFlight = 1u;
+#else
     static constexpr uint32_t kMaxFramesInFlight = 2u;
+#endif
     std::atomic<uint32_t> framesInFlight_{0};
     std::atomic<bool> hasPresentedFrame_{false};
 

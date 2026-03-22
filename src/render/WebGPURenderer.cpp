@@ -424,6 +424,13 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
 
     processPendingMeshUploads();
 
+#ifdef WEBGPU_BACKEND_DAWN
+    // Let Metal drain any implicit command buffers created by
+    // queue.writeBuffer() / growBuffer during mesh uploads before
+    // we start encoding the frame's render commands.
+    context->getDevice().tick();
+#endif
+
     const auto debugUpdateStart = std::chrono::steady_clock::now();
     if (boundsDebugPipeline_.has_value()) {
         debugBoundsManager_.update(uniforms, *boundsDebugPipeline_, culledMeshletBuffers_);

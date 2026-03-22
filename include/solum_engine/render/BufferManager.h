@@ -18,6 +18,11 @@ private:
     size_t frameBytesWritten_{0};
     size_t frameUploadBudgetBytes_{0};
 
+    // Grow-batch state: when active, growBuffer records copies into this
+    // encoder instead of submitting immediately.
+    wgpu::CommandEncoder growEncoder_;
+    std::vector<wgpu::Buffer> growOldBuffers_;
+
 public:
 #ifdef __APPLE__
     static constexpr size_t kDefaultFrameUploadBudgetBytes = 16u * 1024u * 1024u;
@@ -43,11 +48,20 @@ public:
     wgpu::Buffer getBuffer(const std::string& bufferName) const;
     void writeBuffer(const std::string& bufferName, uint64_t bufferOffset, const void* data, size_t size);
 
+    /// Begin a batched grow operation. All subsequent growBuffer() calls will
+    /// record their copy commands into a shared encoder instead of submitting
+    /// individually. Call endGrowBatch() to submit all copies in one command buffer.
+    void beginGrowBatch();
+
     /// Replace a named buffer with a new, larger one, copying old contents via
-    /// GPU-side blit. Returns the new buffer (also stored under bufferName).
-    /// The old buffer is released after the copy command is submitted.
+    /// GPU-side blit. If a grow batch is active (beginGrowBatch was called),
+    /// the copy is deferred until endGrowBatch(). Otherwise submits immediately.
     wgpu::Buffer growBuffer(const std::string& bufferName,
                             const wgpu::BufferDescriptor& newDesc);
+
+    /// Submit all batched grow copies in a single command buffer and release
+    /// old buffers. No-op if no grow batch is active.
+    void endGrowBatch();
 
     void deleteBuffer(const std::string& bufferName);
     void terminate();

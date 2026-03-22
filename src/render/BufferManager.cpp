@@ -36,6 +36,14 @@ wgpu::Buffer BufferManager::createBuffer(const std::string& bufferName, const wg
     return buffer;
 }
 
+void BufferManager::beginGrowBatch() {
+    if (growEncoder_) return;  // Already in a batch.
+
+    wgpu::CommandEncoderDescriptor encDesc = wgpu::Default;
+    encDesc.label = wgpu::StringView("Buffer grow batch");
+    growEncoder_ = device.createCommandEncoder(encDesc);
+}
+
 wgpu::Buffer BufferManager::growBuffer(const std::string& bufferName,
                                        const wgpu::BufferDescriptor& newDesc) {
     wgpu::Buffer oldBuffer = getBuffer(bufferName);
@@ -56,27 +64,53 @@ wgpu::Buffer BufferManager::growBuffer(const std::string& bufferName,
     // GPU-side copy of old contents into the new buffer.
     // The old buffer must have been created with CopySrc usage.
     if (oldBuffer && oldSize > 0u && newBuffer) {
-        wgpu::CommandEncoderDescriptor encDesc = wgpu::Default;
-        encDesc.label = wgpu::StringView("Buffer grow copy");
-        wgpu::CommandEncoder encoder = device.createCommandEncoder(encDesc);
-
         const uint64_t copySize = std::min(oldSize, newDesc.size);
-        encoder.copyBufferToBuffer(oldBuffer, 0u, newBuffer, 0u, copySize);
 
-        wgpu::CommandBufferDescriptor cbDesc = wgpu::Default;
-        cbDesc.label = wgpu::StringView("Buffer grow copy cmd");
-        wgpu::CommandBuffer cmd = encoder.finish(cbDesc);
-        encoder.release();
+        if (growEncoder_) {
+            // Batched: record into the shared encoder; defer old buffer release.
+            growEncoder_.copyBufferToBuffer(oldBuffer, 0u, newBuffer, 0u, copySize);
+            growOldBuffers_.push_back(oldBuffer);
+        } else {
+            // Unbatched: submit immediately.
+            wgpu::CommandEncoderDescriptor encDesc = wgpu::Default;
+            encDesc.label = wgpu::StringView("Buffer grow copy");
+            wgpu::CommandEncoder encoder = device.createCommandEncoder(encDesc);
 
-        queue.submit(1, &cmd);
-        cmd.release();
-    }
+            encoder.copyBufferToBuffer(oldBuffer, 0u, newBuffer, 0u, copySize);
 
-    if (oldBuffer) {
+            wgpu::CommandBufferDescriptor cbDesc = wgpu::Default;
+            cbDesc.label = wgpu::StringView("Buffer grow copy cmd");
+            wgpu::CommandBuffer cmd = encoder.finish(cbDesc);
+            encoder.release();
+
+            queue.submit(1, &cmd);
+            cmd.release();
+            oldBuffer.release();
+        }
+    } else if (oldBuffer) {
         oldBuffer.release();
     }
 
     return newBuffer;
+}
+
+void BufferManager::endGrowBatch() {
+    if (!growEncoder_) return;
+
+    wgpu::CommandBufferDescriptor cbDesc = wgpu::Default;
+    cbDesc.label = wgpu::StringView("Buffer grow batch cmd");
+    wgpu::CommandBuffer cmd = growEncoder_.finish(cbDesc);
+    growEncoder_.release();
+    growEncoder_ = nullptr;
+
+    queue.submit(1, &cmd);
+    cmd.release();
+
+    // Release old buffers now that the copy has been submitted.
+    for (wgpu::Buffer& buf : growOldBuffers_) {
+        buf.release();
+    }
+    growOldBuffers_.clear();
 }
 
 wgpu::Buffer BufferManager::getBuffer(const std::string& bufferName) const {
@@ -88,6 +122,16 @@ wgpu::Buffer BufferManager::getBuffer(const std::string& bufferName) const {
 }
 
 void BufferManager::terminate() {
+    // Clean up any pending grow batch.
+    if (growEncoder_) {
+        growEncoder_.release();
+        growEncoder_ = nullptr;
+    }
+    for (wgpu::Buffer& buf : growOldBuffers_) {
+        buf.release();
+    }
+    growOldBuffers_.clear();
+
     // Clean up regular buffers
     for (auto& pair : buffers) {
         if (pair.second) {

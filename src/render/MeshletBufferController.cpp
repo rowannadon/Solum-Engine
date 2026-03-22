@@ -281,6 +281,10 @@ bool MeshletBufferController::growBuffers(uint32_t newMeshletCapacity,
                                           uint32_t newRangeCapacity) {
     if (bufferManager_ == nullptr) return false;
 
+    // Batch all copy commands into a single queue.submit() to avoid
+    // overwhelming Metal's IOFence tracker with many small submissions.
+    bufferManager_->beginGrowBatch();
+
     // Grow meshlet-sized buffers (metadata, aabb, visible indices).
     if (newMeshletCapacity > meshletCapacity_) {
         BufferDescriptor metadataDesc = Default;
@@ -288,21 +292,30 @@ bool MeshletBufferController::growBuffers(uint32_t newMeshletCapacity,
         metadataDesc.size = static_cast<uint64_t>(newMeshletCapacity) * sizeof(MeshletMetadataGPU);
         metadataDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
         metadataDesc.mappedAtCreation = false;
-        if (!bufferManager_->growBuffer(meshMetadataBufferName_, metadataDesc)) return false;
+        if (!bufferManager_->growBuffer(meshMetadataBufferName_, metadataDesc)) {
+            bufferManager_->endGrowBatch();
+            return false;
+        }
 
         BufferDescriptor aabbDesc = Default;
         aabbDesc.label = StringView("meshlet aabb buffer");
         aabbDesc.size = static_cast<uint64_t>(newMeshletCapacity) * sizeof(MeshletAabbGPU);
         aabbDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
         aabbDesc.mappedAtCreation = false;
-        if (!bufferManager_->growBuffer(meshAabbBufferName_, aabbDesc)) return false;
+        if (!bufferManager_->growBuffer(meshAabbBufferName_, aabbDesc)) {
+            bufferManager_->endGrowBatch();
+            return false;
+        }
 
         BufferDescriptor visibleIndicesDesc = Default;
         visibleIndicesDesc.label = StringView("visible meshlet indices buffer");
         visibleIndicesDesc.size = static_cast<uint64_t>(newMeshletCapacity) * sizeof(uint32_t);
         visibleIndicesDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
         visibleIndicesDesc.mappedAtCreation = false;
-        if (!bufferManager_->growBuffer(visibleMeshletIndexBufferName_, visibleIndicesDesc)) return false;
+        if (!bufferManager_->growBuffer(visibleMeshletIndexBufferName_, visibleIndicesDesc)) {
+            bufferManager_->endGrowBatch();
+            return false;
+        }
 
         meshletAllocator_.grow(newMeshletCapacity);
         meshletCapacity_ = newMeshletCapacity;
@@ -315,7 +328,10 @@ bool MeshletBufferController::growBuffers(uint32_t newMeshletCapacity,
         meshDataDesc.size = static_cast<uint64_t>(newQuadWordCapacity) * sizeof(uint32_t);
         meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
         meshDataDesc.mappedAtCreation = false;
-        if (!bufferManager_->growBuffer(meshDataBufferName_, meshDataDesc)) return false;
+        if (!bufferManager_->growBuffer(meshDataBufferName_, meshDataDesc)) {
+            bufferManager_->endGrowBatch();
+            return false;
+        }
 
         quadDataAllocator_.grow(newQuadWordCapacity);
         quadWordCapacity_ = newQuadWordCapacity;
@@ -328,11 +344,16 @@ bool MeshletBufferController::growBuffers(uint32_t newMeshletCapacity,
         activeRangesDesc.size = static_cast<uint64_t>(newRangeCapacity) * sizeof(ActiveMeshletRangeGPU);
         activeRangesDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
         activeRangesDesc.mappedAtCreation = false;
-        if (!bufferManager_->growBuffer(activeMeshletRangeBufferName_, activeRangesDesc)) return false;
+        if (!bufferManager_->growBuffer(activeMeshletRangeBufferName_, activeRangesDesc)) {
+            bufferManager_->endGrowBatch();
+            return false;
+        }
 
         rangeCapacity_ = newRangeCapacity;
     }
 
+    // Submit all copy commands in one command buffer.
+    bufferManager_->endGrowBatch();
     return true;
 }
 

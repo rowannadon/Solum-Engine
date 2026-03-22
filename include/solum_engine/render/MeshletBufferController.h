@@ -87,9 +87,9 @@ private:
     static constexpr uint32_t kMaxLods = 8u;
     static constexpr uint32_t kInitialTileSlotCapacity = 4096u;
 #ifdef __APPLE__
-    // Start larger on macOS to avoid early buffer-growth events.
-    // 32K meshlets ≈ 50 MB initial GPU allocation (fine for 32 GB unified memory).
-    static constexpr uint32_t kInitialMeshletCapacity = 32'768u;
+    // Start modestly larger on macOS to reduce early buffer-growth events.
+    // 8K meshlets ≈ 12 MB initial GPU allocation per controller.
+    static constexpr uint32_t kInitialMeshletCapacity = 8'192u;
 #else
     static constexpr uint32_t kInitialMeshletCapacity = 4096u;
 #endif
