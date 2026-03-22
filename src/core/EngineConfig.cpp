@@ -15,7 +15,7 @@ using json = nlohmann::json;
 namespace {
 
 #ifdef __APPLE__
-constexpr std::size_t kDefaultUploadBudgetBytesPerFrame = 16u * 1024u * 1024u;
+constexpr std::size_t kDefaultUploadBudgetBytesPerFrame = 4u * 1024u * 1024u;
 constexpr uint32_t kDefaultMaxActiveMeshlets = 1'000'000u;
 #else
 constexpr std::size_t kDefaultUploadBudgetBytesPerFrame = 128u * 1024u * 1024u;

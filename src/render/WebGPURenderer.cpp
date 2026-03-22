@@ -392,12 +392,11 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
     {
         const auto waitStart = std::chrono::steady_clock::now();
         while (framesInFlight_.load(std::memory_order_acquire) >= kMaxFramesInFlight) {
-#ifdef WEBGPU_BACKEND_DAWN
-            // device.tick() polls the Metal/Vulkan fence for completed work;
-            // instance.processEvents() dispatches AllowProcessEvents callbacks
-            // (including onSubmittedWorkDone). Both are needed.
-            context->getDevice().tick();
-#endif
+            // processEvents() dispatches AllowProcessEvents callbacks
+            // (including onSubmittedWorkDone) which decrements framesInFlight_.
+            // Avoid device.tick() here — on Metal it can block indefinitely
+            // when the GPU is in a recovery/deadlock state, preventing our
+            // stall detection from firing.
             context->instance.processEvents();
             if (checkGpuStall("framesInFlight wait", waitStart, kFrameInFlightTimeout)) {
                 finalizeFrameTiming();
@@ -568,22 +567,6 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
         finalizeFrameTiming();
         return;
     }
-
-#ifdef WEBGPU_BACKEND_DAWN
-    {
-        const auto tickStart = std::chrono::steady_clock::now();
-        context->getDevice().tick();
-        const auto tickElapsed = std::chrono::steady_clock::now() - tickStart;
-        timingTracker_.record(
-            MainTimingStage::DeviceTick,
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(tickElapsed).count())
-        );
-        if (checkGpuStall("device.tick (post-present)", tickStart, kDeviceTickTimeout)) {
-            finalizeFrameTiming();
-            return;
-        }
-    }
-#endif
 
     // Track slow frames for upload throttling.
     const auto totalFrameTime = std::chrono::steady_clock::now() - frameCpuStart;

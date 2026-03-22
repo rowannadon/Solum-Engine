@@ -21,6 +21,7 @@ void BufferManager::writeBuffer(const std::string& bufferName, uint64_t bufferOf
     if (buffer) {
         queue.writeBuffer(buffer, bufferOffset, data, size);
         frameBytesWritten_ += size;
+        ++frameWriteCount_;
     }
 }
 

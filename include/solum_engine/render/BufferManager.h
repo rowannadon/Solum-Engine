@@ -17,6 +17,8 @@ private:
 
     size_t frameBytesWritten_{0};
     size_t frameUploadBudgetBytes_{0};
+    uint32_t frameWriteCount_{0};
+    uint32_t maxWriteCallsPerFrame_{0};
 
     // Grow-batch state: when active, growBuffer records copies into this
     // encoder instead of submitting immediately.
@@ -25,13 +27,16 @@ private:
 
 public:
 #ifdef __APPLE__
-    static constexpr size_t kDefaultFrameUploadBudgetBytes = 16u * 1024u * 1024u;
+    static constexpr size_t kDefaultFrameUploadBudgetBytes = 4u * 1024u * 1024u;
+    static constexpr uint32_t kDefaultMaxWriteCallsPerFrame = 16u;
 #else
     static constexpr size_t kDefaultFrameUploadBudgetBytes = 128u * 1024u * 1024u;
+    static constexpr uint32_t kDefaultMaxWriteCallsPerFrame = 0u;  // 0 = unlimited
 #endif
 
     struct Config {
         size_t frameUploadBudgetBytes = kDefaultFrameUploadBudgetBytes;
+        uint32_t maxWriteCallsPerFrame = kDefaultMaxWriteCallsPerFrame;
     };
 
     BufferManager(wgpu::Device d, wgpu::Queue q)
@@ -41,7 +46,8 @@ public:
         : device(d),
           queue(q),
           frameUploadBudgetBytes_(config.frameUploadBudgetBytes > 0 ? config.frameUploadBudgetBytes
-                                                                   : kDefaultFrameUploadBudgetBytes) {}
+                                                                   : kDefaultFrameUploadBudgetBytes),
+          maxWriteCallsPerFrame_(config.maxWriteCallsPerFrame) {}
 
     // Existing methods
     wgpu::Buffer createBuffer(const std::string& bufferName, const wgpu::BufferDescriptor& config);
@@ -66,10 +72,15 @@ public:
     void deleteBuffer(const std::string& bufferName);
     void terminate();
 
-    void resetFrameBudget() { frameBytesWritten_ = 0; }
+    void resetFrameBudget() { frameBytesWritten_ = 0; frameWriteCount_ = 0; }
     size_t frameBytesWritten() const { return frameBytesWritten_; }
     size_t frameUploadBudgetBytes() const { return frameUploadBudgetBytes_; }
-    bool isOverBudget() const { return frameBytesWritten_ >= frameUploadBudgetBytes_; }
+    uint32_t frameWriteCount() const { return frameWriteCount_; }
+    bool isOverBudget() const {
+        if (frameBytesWritten_ >= frameUploadBudgetBytes_) return true;
+        if (maxWriteCallsPerFrame_ > 0u && frameWriteCount_ >= maxWriteCallsPerFrame_) return true;
+        return false;
+    }
 };
 
 #endif
