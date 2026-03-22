@@ -23,6 +23,11 @@ public:
     /// Reset allocator to a single free range spanning [0, capacity).
     void reset(uint32_t capacity);
 
+    /// Grow capacity without disturbing existing allocations.
+    /// Adds free space covering [oldCapacity, newCapacity) and coalesces
+    /// with any trailing free range. No-op if newCapacity <= current capacity.
+    void grow(uint32_t newCapacity);
+
     uint32_t capacity() const noexcept { return capacity_; }
     uint32_t totalFree() const noexcept { return totalFree_; }
     size_t fragmentCount() const noexcept { return freeByOffset_.size(); }

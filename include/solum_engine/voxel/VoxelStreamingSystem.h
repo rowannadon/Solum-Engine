@@ -18,13 +18,33 @@
 #include "solum_engine/resources/Coords.h"
 #include "solum_engine/voxel/BlockMaterial.h"
 #include "solum_engine/voxel/BlockModelLibrary.h"
+#include "solum_engine/voxel/MeshManager.h"
 #include "solum_engine/voxel/StreamingUpload.h"
+#include "solum_engine/voxel/World.h"
 #include "solum_engine/voxel/mesh_stream/UploadMailbox.h"
 
-class MeshManager;
-class World;
-
 class VoxelStreamingSystem {
+public:
+    struct Config {
+        World::Config worldConfig = [] {
+            World::Config config;
+            config.columnLoadRadius = 32;
+            config.jobConfig.worker_threads = 2;
+            return config;
+        }();
+        MeshManager::Config meshConfig = [] {
+            MeshManager::Config config;
+            config.meshTileSizeChunks = 4;
+            config.meshTileHeightChunks = 4;
+            config.lodLevelCount = 4;
+            config.activeChunkRadius = 32;
+            config.lodSseTargetPixels = 16.0f;
+            config.jobConfig.worker_threads = 2;
+            return config;
+        }();
+        std::size_t maxDeltaEntriesPerTick = 64u;
+    };
+
 private:
     enum class TimingStage : std::size_t {
         MainUpdateWorldStreaming = 0,
@@ -42,7 +62,6 @@ private:
         std::array<uint64_t, static_cast<std::size_t>(TimingStage::Count)> maxNs{};
         uint64_t streamSkipNoCamera = 0;
         uint64_t streamSkipUnchanged = 0;
-        uint64_t streamSkipThrottle = 0;
         uint64_t streamSnapshotsPrepared = 0;
     };
 
@@ -55,6 +74,7 @@ private:
     std::unique_ptr<World> world_;
     std::unique_ptr<MeshManager> meshManager_;
     std::shared_ptr<const BlockModelLibrary> blockModelLibrary_;
+    Config config_{};
 
     std::thread streamingThread_;
     mutable std::mutex streamingMutex_;
@@ -93,7 +113,7 @@ public:
     VoxelStreamingSystem();
     ~VoxelStreamingSystem();
 
-    bool initialize(std::shared_ptr<const BlockModelLibrary> blockModelLibrary);
+    bool initialize(const Config& config, std::shared_ptr<const BlockModelLibrary> blockModelLibrary);
     void start(const glm::vec3& initialCameraPosition, uint64_t initialUploadedMeshRevision);
     void stop();
 

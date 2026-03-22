@@ -4,12 +4,14 @@
 #include <glfw3webgpu/glfw3webgpu.h>
 
 #include <atomic>
+#include <string>
 #include <webgpu/webgpu.hpp>
 
 struct RenderConfig {
     int width = 1280;
     int height = 720;
-    const char* title = "Voxel Engine";
+    std::string title = "Voxel Engine";
+    std::string presentMode = "fifo";
 };
 
 class WebGPUContext {
@@ -40,4 +42,5 @@ public:
 
 private:
     std::atomic<bool> deviceLost_{false};
+    std::string preferredPresentMode_ = "fifo";
 };

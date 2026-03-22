@@ -88,6 +88,18 @@ void MeshletRangeAllocator::reset(uint32_t capacity) {
     }
 }
 
+void MeshletRangeAllocator::grow(uint32_t newCapacity) {
+    if (newCapacity <= capacity_) {
+        return;
+    }
+    // Free the range [oldCapacity, newCapacity). The free() method
+    // handles coalescing with any adjacent free range at the old end.
+    const uint32_t oldCapacity = capacity_;
+    const uint32_t added = newCapacity - oldCapacity;
+    capacity_ = newCapacity;
+    free(oldCapacity, added);
+}
+
 void MeshletRangeAllocator::eraseSizeEntry(uint32_t size, uint32_t offset) {
     auto [begin, end] = freeBySize_.equal_range(size);
     for (auto it = begin; it != end; ++it) {

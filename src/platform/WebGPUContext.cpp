@@ -1,7 +1,9 @@
 #include "solum_engine/platform/WebGPUContext.h"
+#include <cctype>
 #include <cstdlib>
-#include <cstring>
 #include <optional>
+#include <string>
+#include <string_view>
 
 using namespace wgpu;
 
@@ -21,7 +23,29 @@ const char* presentModeName(PresentMode mode) {
     }
 }
 
-PresentMode choosePreferredPresentMode(const SurfaceCapabilities& capabilities) {
+std::optional<PresentMode> parsePresentModeString(std::string_view modeValue) {
+    std::string normalized;
+    normalized.reserve(modeValue.size());
+    for (const char c : modeValue) {
+        normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+
+    if (normalized == "immediate") {
+        return PresentMode::Immediate;
+    }
+    if (normalized == "mailbox") {
+        return PresentMode::Mailbox;
+    }
+    if (normalized == "fifo") {
+        return PresentMode::Fifo;
+    }
+    if (normalized == "fifo_relaxed" || normalized == "fifo-relaxed") {
+        return PresentMode::FifoRelaxed;
+    }
+    return std::nullopt;
+}
+
+PresentMode choosePreferredPresentMode(const SurfaceCapabilities& capabilities, std::string_view requestedMode) {
     auto supports = [&capabilities](PresentMode mode) {
         for (size_t i = 0; i < capabilities.presentModeCount; ++i) {
             if (capabilities.presentModes[i] == mode) {
@@ -31,32 +55,29 @@ PresentMode choosePreferredPresentMode(const SurfaceCapabilities& capabilities) 
         return false;
     };
 
-    auto parseEnvPresentMode = []() -> std::optional<PresentMode> {
-        const char* modeValue = std::getenv("SOL_PRESENT_MODE");
-        if (modeValue == nullptr) {
-            return std::nullopt;
+    if (!requestedMode.empty() && requestedMode != "auto") {
+        if (const std::optional<PresentMode> configuredMode = parsePresentModeString(requestedMode);
+            configuredMode.has_value()) {
+            if (supports(*configuredMode)) {
+                return *configuredMode;
+            }
+            std::cout << "Requested present mode via config is unavailable: "
+                      << presentModeName(*configuredMode) << std::endl;
+        } else {
+            std::cout << "Requested present mode via config is invalid: "
+                      << requestedMode << std::endl;
         }
-        if (std::strcmp(modeValue, "immediate") == 0) {
-            return PresentMode::Immediate;
+    } else {
+        const char* envValue = std::getenv("SOL_PRESENT_MODE");
+        if (envValue != nullptr) {
+            if (const std::optional<PresentMode> envMode = parsePresentModeString(envValue); envMode.has_value()) {
+                if (supports(*envMode)) {
+                    return *envMode;
+                }
+                std::cout << "Requested present mode via SOL_PRESENT_MODE is unavailable: "
+                          << presentModeName(*envMode) << std::endl;
+            }
         }
-        if (std::strcmp(modeValue, "mailbox") == 0) {
-            return PresentMode::Mailbox;
-        }
-        if (std::strcmp(modeValue, "fifo") == 0) {
-            return PresentMode::Fifo;
-        }
-        if (std::strcmp(modeValue, "fifo_relaxed") == 0) {
-            return PresentMode::FifoRelaxed;
-        }
-        return std::nullopt;
-    };
-
-    if (const std::optional<PresentMode> envMode = parseEnvPresentMode(); envMode.has_value()) {
-        if (supports(*envMode)) {
-            return *envMode;
-        }
-        std::cout << "Requested present mode via SOL_PRESENT_MODE is unavailable: "
-                  << presentModeName(*envMode) << std::endl;
     }
 
     // Default to FIFO for stable frame pacing unless explicitly overridden.
@@ -116,7 +137,8 @@ bool WebGPUContext::initialize(const RenderConfig& config) {
     // create the window
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    window = glfwCreateWindow(config.width, config.height, config.title, nullptr, nullptr);
+    preferredPresentMode_ = config.presentMode;
+    window = glfwCreateWindow(config.width, config.height, config.title.c_str(), nullptr, nullptr);
 
     if (!window) {
         std::cerr << "Could not open window!" << std::endl;
@@ -287,7 +309,7 @@ bool WebGPUContext::configureSurface() {
     config.viewFormats = nullptr;
     config.usage = TextureUsage::RenderAttachment;
     config.device = device;
-    config.presentMode = choosePreferredPresentMode(capabilities);
+    config.presentMode = choosePreferredPresentMode(capabilities, preferredPresentMode_);
     config.alphaMode = CompositeAlphaMode::Auto;
 
     surface.configure(config);

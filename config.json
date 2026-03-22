@@ -1,0 +1,75 @@
+{
+  "windowConfig": {
+    "width": 1280,
+    "height": 720,
+    "title": "Voxel Engine",
+    "presentMode": "fifo"
+  },
+  "cameraConfig": {
+    "initialPosition": [0.0, 0.0, 175.0],
+    "yaw": 180.0,
+    "pitch": 0.0,
+    "movementSpeed": 80.0,
+    "mouseSensitivity": 0.1,
+    "fieldOfViewDegrees": 85.0,
+    "nearClip": 0.1,
+    "farClip": 2500.0
+  },
+  "framePacingConfig": {
+    "useMonitorRefreshRate": true,
+    "targetFps": 60.0
+  },
+  "timeConfig": {
+    "dayDurationSeconds": 300.0,
+    "initialTimeHours": 12.0,
+    "timeMultiplier": 0.5,
+    "pauseTime": false,
+    "useManualTime": false,
+    "manualTimeHours": 12.0
+  },
+  "debugConfig": {
+    "enableMeshletDebug": false,
+    "enableBoundsDebug": false,
+    "showChunkBounds": true,
+    "showColumnBounds": true,
+    "showRegionBounds": true,
+    "showMeshletBounds": false,
+    "freezeCullingCamera": false
+  },
+  "occlusionConfig": {
+    "enabled": false,
+    "depthBias": 0.01,
+    "nearSkipDistance": 20.0,
+    "minProjectedSpanPixels": 1.0
+  },
+  "interactionConfig": {
+    "blockReach": 32.0
+  },
+  "worldConfig": {
+    "columnLoadRadius": 64,
+    "maxInFlightColumnJobs": 0,
+    "jobConfig": {
+      "workerThreads": 2
+    }
+  },
+  "meshConfig": {
+    "lodLevelCount": 4,
+    "meshTileSizeChunks": 4,
+    "meshTileHeightChunks": 4,
+    "activeChunkRadius": 64,
+    "lodSseTargetPixels": 2.0,
+    "lodSseHysteresisPixels": 0.25,
+    "lodSseMinDepthBlocks": 4.0,
+    "lodSseFallbackProjectionScale": 390.0,
+    "jobConfig": {
+      "workerThreads": 2
+    }
+  },
+  "meshletBufferConfig": {
+    "uploadBudgetBytesPerFrame": 0,
+    "maxActiveMeshlets": 0
+  },
+  "streamingConfig": {
+    "maxDeltaEntriesPerTick": 64
+  }
+}

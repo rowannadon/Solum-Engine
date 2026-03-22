@@ -32,7 +32,11 @@ class World;
 
 class WebGPURenderer {
 public:
-    struct Config {};
+    struct Config {
+        RenderConfig renderConfig{};
+        std::size_t frameUploadBudgetBytesPerFrame = BufferManager::kDefaultFrameUploadBudgetBytes;
+        uint32_t maxActiveMeshlets = MeshletBufferController::kDefaultMaxActiveMeshlets;
+    };
 
 private:
     std::unique_ptr<WebGPUContext> context;
@@ -63,17 +67,23 @@ private:
     bool resizePending = false;
     std::optional<MeshStreamingDelta> pendingMeshDelta_;
 
-#ifdef __APPLE__
-    static constexpr uint32_t kMaxFramesInFlight = 1u;
-#else
     static constexpr uint32_t kMaxFramesInFlight = 2u;
-#endif
     std::atomic<uint32_t> framesInFlight_{0};
     std::atomic<bool> hasPresentedFrame_{false};
 
     bool gpuStallDetected_{false};
     uint32_t consecutiveSlowFrames_{0};
     static constexpr uint32_t kMaxConsecutiveSlowFrames = 15u;
+
+#ifdef __APPLE__
+    static constexpr auto kFrameInFlightTimeout = std::chrono::milliseconds(500);
+    static constexpr auto kDeviceTickTimeout = std::chrono::milliseconds(500);
+    static constexpr auto kPresentTimeout = std::chrono::milliseconds(500);
+#else
+    static constexpr auto kFrameInFlightTimeout = std::chrono::milliseconds(150);
+    static constexpr auto kDeviceTickTimeout = std::chrono::milliseconds(150);
+    static constexpr auto kPresentTimeout = std::chrono::milliseconds(150);
+#endif
 
     bool checkGpuStall(const char* stage, std::chrono::steady_clock::time_point start,
                        std::chrono::milliseconds threshold);

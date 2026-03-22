@@ -14,37 +14,50 @@
 #include "solum_engine/render/Uniforms.h"
 
 class GuiManager {
-        // ImGUI state
+public:
+    struct Config {
+        float dayDurationSeconds = 300.0f;
+        float timeMultiplier = 0.5f;
+        bool pauseTime = false;
+        float manualTimeHours = 12.0f;
+        bool useManualTime = false;
+        float initialTimeHours = 12.0f;
+        bool freezeCullingCamera = false;
+        glm::vec3 cameraResetPosition{0.0f, 0.0f, 175.0f};
+        float cameraResetYaw = 180.0f;
+        float cameraResetPitch = 0.0f;
+        float cameraResetMovementSpeed = 80.0f;
+        float cameraResetMouseSensitivity = 0.1f;
+        float cameraResetFieldOfView = 85.0f;
+        bool occlusionEnabled = true;
+        float occlusionBias = 0.01f;
+        float occlusionNearSkipDistance = 20.0f;
+        float occlusionMinProjectedSpanPixels = 1.0f;
+    };
+
+private:
+    // ImGUI state
     struct ImGUIState {
         bool showMainWindow = true;
-        float timeMultiplier = 0.5f;  // Multiplier for time (originally hardcoded as 0.5)
-        bool pauseTime = false;       // Allow pausing time
-        float manualTime = 12.0f;     // Manual time override in hours [0, 24)
-        bool useManualTime = false;   // Use manual time instead of automatic
+        float timeMultiplier = 0.5f;
+        bool pauseTime = false;
+        float manualTime = 12.0f;
+        bool useManualTime = false;
         float currentTimeHours = 12.0f;
 
-        // Camera controls
         bool showCameraControls = true;
-
-        // Performance metrics
         bool showPerformanceMetrics = true;
-
-        // Lighting controls
-        bool showLightingControls = true;
-        glm::vec3 lightDirection = glm::vec3(0.3f, 0.3f, -0.7f);
-        glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 0.9f);
-        float lightIntensity = 1.0f;
-
-        // Debug controls
         bool showDebugControls = true;
         bool freezeCullingCamera = false;
     };
 
-    ImGUIState imguiState;  // Add ImGUI state
+    ImGUIState imguiState;
+    Config config_{};
     bool enabled_ = false;
 
 public:
     bool initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::TextureFormat format);
+    bool initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::TextureFormat format, const Config& config);
     void renderImGUI(FrameUniforms& uniforms,
                      float deltaTime,
                      const std::vector<float>& frameTimes,

@@ -4,29 +4,21 @@
 #include <cmath>
 #include <utility>
 
-#include "solum_engine/voxel/MeshManager.h"
-#include "solum_engine/voxel/World.h"
-
 VoxelStreamingSystem::VoxelStreamingSystem() = default;
 
 VoxelStreamingSystem::~VoxelStreamingSystem() {
     stop();
 }
 
-bool VoxelStreamingSystem::initialize(std::shared_ptr<const BlockModelLibrary> blockModelLibrary) {
+bool VoxelStreamingSystem::initialize(const Config& config, std::shared_ptr<const BlockModelLibrary> blockModelLibrary) {
+    config_ = config;
     blockModelLibrary_ = std::move(blockModelLibrary);
 
-    World::Config worldConfig;
-    worldConfig.columnLoadRadius = 32;
-    worldConfig.jobConfig.worker_threads = 2;
-
-    MeshManager::Config meshConfig;
-    meshConfig.meshTileSizeChunks = 4;
-    meshConfig.meshTileHeightChunks = 4;
-    meshConfig.lodLevelCount = 4;
-    meshConfig.activeChunkRadius = 32;
-    meshConfig.lodSseTargetPixels = 16.0f;
-    meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
+    World::Config worldConfig = config_.worldConfig;
+    MeshManager::Config meshConfig = config_.meshConfig;
+    if (meshConfig.jobConfig.worker_threads == 0u) {
+        meshConfig.jobConfig.worker_threads = worldConfig.jobConfig.worker_threads;
+    }
     const int32_t clampedWorldRadius = std::max(1, worldConfig.columnLoadRadius);
     meshConfig.activeChunkRadius = std::min(meshConfig.activeChunkRadius, clampedWorldRadius);
 
@@ -46,7 +38,7 @@ void VoxelStreamingSystem::start(const glm::vec3& initialCameraPosition, uint64_
         streamerLastDeltaRevision_ = initialUploadedMeshRevision;
         requestStreamingWorkLocked(true);
         latestStreamingCamera_ = initialCameraPosition;
-        latestStreamingSseProjectionScale_ = 390.0f;
+        latestStreamingSseProjectionScale_ = config_.meshConfig.lodSseFallbackProjectionScale;
     }
 
     streamingThread_ = std::thread([this] {
@@ -187,9 +179,9 @@ void VoxelStreamingSystem::runMeshStep(const StreamingLoopState& state) {
 
 std::optional<MeshStreamingDelta> VoxelStreamingSystem::buildDelta() {
     const auto copyStart = std::chrono::steady_clock::now();
-    constexpr std::size_t kMaxDeltaEntriesPerTick = 64u;
-    std::vector<MeshTileLodUpload> upserts = meshManager_->consumePendingTileLodUploads(kMaxDeltaEntriesPerTick);
-    std::vector<MeshTileLodKey> removals = meshManager_->consumePendingTileLodRemovals(kMaxDeltaEntriesPerTick);
+    const std::size_t maxDeltaEntriesPerTick = std::max<std::size_t>(1u, config_.maxDeltaEntriesPerTick);
+    std::vector<MeshTileLodUpload> upserts = meshManager_->consumePendingTileLodUploads(maxDeltaEntriesPerTick);
+    std::vector<MeshTileLodKey> removals = meshManager_->consumePendingTileLodRemovals(maxDeltaEntriesPerTick);
     recordTimingNs(
         TimingStage::StreamCopyMeshlets,
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -273,7 +265,6 @@ VoxelStreamingSystem::TimingRawTotals VoxelStreamingSystem::captureTimingRawTota
 
     totals.streamSkipNoCamera = streamSkipNoCamera_.load(std::memory_order_relaxed);
     totals.streamSkipUnchanged = streamSkipUnchanged_.load(std::memory_order_relaxed);
-    totals.streamSkipThrottle = 0u;
     totals.streamSnapshotsPrepared = streamSnapshotsPrepared_.load(std::memory_order_relaxed);
     return totals;
 }
@@ -347,8 +338,6 @@ RuntimeTimingSnapshot VoxelStreamingSystem::getRuntimeTimingSnapshot() {
                 currentTotals.streamSkipNoCamera - lastTimingRawTotals_.streamSkipNoCamera;
             snapshot.streamSkipUnchanged =
                 currentTotals.streamSkipUnchanged - lastTimingRawTotals_.streamSkipUnchanged;
-            snapshot.streamSkipThrottle =
-                currentTotals.streamSkipThrottle - lastTimingRawTotals_.streamSkipThrottle;
             snapshot.streamSnapshotsPrepared =
                 currentTotals.streamSnapshotsPrepared - lastTimingRawTotals_.streamSnapshotsPrepared;
 

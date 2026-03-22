@@ -28,6 +28,12 @@ enum class MeshletGeometryVariant {
 
 class MeshletBufferController {
 public:
+#ifdef __APPLE__
+    static constexpr uint32_t kDefaultMaxActiveMeshlets = 1'000'000u;
+#else
+    static constexpr uint32_t kDefaultMaxActiveMeshlets = UINT32_MAX;
+#endif
+
     struct Config {
         std::string namePrefix;
         MeshletGeometryVariant geometryVariant = MeshletGeometryVariant::Culled;
@@ -54,6 +60,7 @@ public:
     };
 
     bool initialize(BufferManager* bufferManager);
+    void setMaxActiveMeshlets(uint32_t maxActiveMeshlets) noexcept;
 
     ApplyResult applyDelta(const MeshStreamingDelta& delta);
     bool buildActiveRanges();
@@ -79,7 +86,13 @@ public:
 private:
     static constexpr uint32_t kMaxLods = 8u;
     static constexpr uint32_t kInitialTileSlotCapacity = 4096u;
+#ifdef __APPLE__
+    // Start larger on macOS to avoid early buffer-growth events.
+    // 32K meshlets ≈ 50 MB initial GPU allocation (fine for 32 GB unified memory).
+    static constexpr uint32_t kInitialMeshletCapacity = 32'768u;
+#else
     static constexpr uint32_t kInitialMeshletCapacity = 4096u;
+#endif
     static constexpr uint32_t kInitialQuadWordCapacity =
         kInitialMeshletCapacity * MESHLET_QUAD_CAPACITY * MESHLET_QUAD_DATA_WORD_STRIDE;
     static constexpr uint32_t kInitialRangeCapacity = 2048u;
@@ -117,6 +130,8 @@ private:
                        uint32_t requiredRanges, bool* recreated);
     bool recreateBuffers(uint32_t meshletCapacity, uint32_t quadWordCapacity,
                          uint32_t rangeCapacity);
+    bool growBuffers(uint32_t newMeshletCapacity, uint32_t newQuadWordCapacity,
+                     uint32_t newRangeCapacity);
     bool repackExistingAllocations();
 
     // GPU writes
@@ -177,10 +192,5 @@ private:
 
     uint64_t uploadedMeshRevision_ = 0u;
 
-#ifdef __APPLE__
-    static constexpr uint32_t kDefaultMaxActiveMeshlets = 300'000u;
-#else
-    static constexpr uint32_t kDefaultMaxActiveMeshlets = UINT32_MAX;
-#endif
     uint32_t maxActiveMeshlets_ = kDefaultMaxActiveMeshlets;
 };

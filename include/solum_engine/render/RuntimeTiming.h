@@ -31,7 +31,6 @@ struct RuntimeTimingSnapshot {
 
     uint64_t streamSkipNoCamera = 0;
     uint64_t streamSkipUnchanged = 0;
-    uint64_t streamSkipThrottle = 0;
     uint64_t streamSnapshotsPrepared = 0;
     uint64_t mainUploadsApplied = 0;
 

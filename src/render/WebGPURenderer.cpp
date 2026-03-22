@@ -15,19 +15,24 @@ bool WebGPURenderer::initialize() {
 }
 
 bool WebGPURenderer::initialize(const Config& config) {
-    (void)config;
-    RenderConfig renderConfig;
     hasPresentedFrame_.store(false, std::memory_order_release);
 
     context = std::make_unique<WebGPUContext>();
-    if (!context->initialize(renderConfig)) {
+    if (!context->initialize(config.renderConfig)) {
         return false;
     }
 
     pipelineManager = std::make_unique<PipelineManager>(context->getDevice(), context->getSurfaceFormat());
-    bufferManager = std::make_unique<BufferManager>(context->getDevice(), context->getQueue());
+    bufferManager = std::make_unique<BufferManager>(
+        context->getDevice(),
+        context->getQueue(),
+        BufferManager::Config{config.frameUploadBudgetBytesPerFrame}
+    );
     textureManager = std::make_unique<TextureManager>(context->getDevice(), context->getQueue());
     materialManager = std::make_unique<MaterialManager>();
+
+    culledMeshletBuffers_.setMaxActiveMeshlets(config.maxActiveMeshlets);
+    doubleSidedMeshletBuffers_.setMaxActiveMeshlets(config.maxActiveMeshlets);
 
     services_.emplace(*bufferManager, *textureManager, *pipelineManager, *context);
 
@@ -387,8 +392,14 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
     {
         const auto waitStart = std::chrono::steady_clock::now();
         while (framesInFlight_.load(std::memory_order_acquire) >= kMaxFramesInFlight) {
+#ifdef WEBGPU_BACKEND_DAWN
+            // device.tick() polls the Metal/Vulkan fence for completed work;
+            // instance.processEvents() dispatches AllowProcessEvents callbacks
+            // (including onSubmittedWorkDone). Both are needed.
+            context->getDevice().tick();
+#endif
             context->instance.processEvents();
-            if (checkGpuStall("framesInFlight wait", waitStart, std::chrono::milliseconds(150))) {
+            if (checkGpuStall("framesInFlight wait", waitStart, kFrameInFlightTimeout)) {
                 finalizeFrameTiming();
                 return;
             }
@@ -530,7 +541,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
             MainTimingStage::DeviceTick,
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(tickElapsed).count())
         );
-        if (checkGpuStall("device.tick (pre-present)", tickStart, std::chrono::milliseconds(150))) {
+        if (checkGpuStall("device.tick (pre-present)", tickStart, kDeviceTickTimeout)) {
             targetView.release();
             finalizeFrameTiming();
             return;
@@ -546,7 +557,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
         MainTimingStage::Present,
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(presentElapsed).count())
     );
-    if (checkGpuStall("present", presentStart, std::chrono::milliseconds(150))) {
+    if (checkGpuStall("present", presentStart, kPresentTimeout)) {
         finalizeFrameTiming();
         return;
     }
@@ -560,7 +571,7 @@ void WebGPURenderer::renderFrame(FrameUniforms& uniforms) {
             MainTimingStage::DeviceTick,
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(tickElapsed).count())
         );
-        if (checkGpuStall("device.tick (post-present)", tickStart, std::chrono::milliseconds(150))) {
+        if (checkGpuStall("device.tick (post-present)", tickStart, kDeviceTickTimeout)) {
             finalizeFrameTiming();
             return;
         }

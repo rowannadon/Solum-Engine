@@ -8,7 +8,6 @@
 namespace { constexpr bool kEnableImGuiGamepadNav = false; }
 
 namespace {
-constexpr float kDayDurationSeconds = 300.0f;
 constexpr float kHoursPerDay = 24.0f;
 
 float wrapHours(float hours) {
@@ -27,6 +26,24 @@ float hoursToDayPhase(float hours) {
 using namespace wgpu;
 
 bool GuiManager::initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::TextureFormat format) {
+    return initImGUI(window, device, format, Config{});
+}
+
+bool GuiManager::initImGUI(GLFWwindow* window,
+                           wgpu::Device device,
+                           wgpu::TextureFormat format,
+                           const Config& config) {
+    config_ = config;
+    if (!std::isfinite(config_.dayDurationSeconds) || config_.dayDurationSeconds <= 0.0f) {
+        config_.dayDurationSeconds = 300.0f;
+    }
+    imguiState.timeMultiplier = config_.timeMultiplier;
+    imguiState.pauseTime = config_.pauseTime;
+    imguiState.manualTime = wrapHours(config_.manualTimeHours);
+    imguiState.useManualTime = config_.useManualTime;
+    imguiState.currentTimeHours = wrapHours(config_.initialTimeHours);
+    imguiState.freezeCullingCamera = config_.freezeCullingCamera;
+
     enabled_ = false;
 
 // Setup Dear ImGui context
@@ -49,7 +66,7 @@ bool GuiManager::initImGUI(GLFWwindow* window, wgpu::Device device, wgpu::Textur
 
     ImGui_ImplWGPU_InitInfo webgpu_init_info = {};
     webgpu_init_info.Device = device;
-    webgpu_init_info.NumFramesInFlight = 2;
+    webgpu_init_info.NumFramesInFlight = 1;
     webgpu_init_info.RenderTargetFormat = format;
     // Match the main voxel pass so ImGui can be drawn in the same render pass.
     webgpu_init_info.DepthStencilFormat = TextureFormat::Depth32Float;
@@ -88,7 +105,7 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
     } else {
         imguiState.manualTime = wrapHours(imguiState.manualTime);
         if (!imguiState.pauseTime) {
-            const float hoursPerSecond = (kHoursPerDay / kDayDurationSeconds) * imguiState.timeMultiplier;
+            const float hoursPerSecond = (kHoursPerDay / config_.dayDurationSeconds) * imguiState.timeMultiplier;
             imguiState.currentTimeHours = wrapHours(imguiState.currentTimeHours + (deltaTime * hoursPerSecond));
         }
     }
@@ -108,7 +125,7 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
                 ImGui::SliderFloat("Time Multiplier", &imguiState.timeMultiplier, 0.0f, 5.0f, "%.2f");
                 ImGui::SameLine();
                 if (ImGui::Button("Reset##time")) {
-                    imguiState.timeMultiplier = 0.5f;
+                    imguiState.timeMultiplier = config_.timeMultiplier;
                 }
             }
 
@@ -132,13 +149,13 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
             ImGui::SliderFloat("FOV", &camera.zoom, 10.0f, 180.0f, "%.1f");
 
             if (ImGui::Button("Reset Camera")) {
-                camera.position = glm::vec3(5.0f, 0.0f, 200.0f);
-                camera.yaw = 180.0f;
-                camera.pitch = 0.0f;
-                camera.zoom = 85.0f;
+                camera.position = config_.cameraResetPosition;
+                camera.yaw = config_.cameraResetYaw;
+                camera.pitch = config_.cameraResetPitch;
+                camera.movementSpeed = config_.cameraResetMovementSpeed;
+                camera.mouseSensitivity = config_.cameraResetMouseSensitivity;
+                camera.zoom = config_.cameraResetFieldOfView;
                 camera.updateCameraVectors();
-                //updateViewMatrix();
-                //updateProjectionMatrix(camera.zoom);
             }
 
             ImGui::Text("Position: %.1f, %.1f, %.1f", camera.position.x, camera.position.y, camera.position.z);
@@ -184,10 +201,9 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
             ImGui::Text("Stream Prepare Upload: avg %.3f ms, load %.2f ms/s", runtimeTiming.streamPrepareUpload.averageMs, runtimeTiming.streamPrepareUpload.totalMsPerSecond);
 
             ImGui::Separator();
-            ImGui::Text("Stream skips (window): no camera %llu, unchanged %llu, throttle %llu",
+            ImGui::Text("Stream skips (window): no camera %llu, unchanged %llu",
                         static_cast<unsigned long long>(runtimeTiming.streamSkipNoCamera),
-                        static_cast<unsigned long long>(runtimeTiming.streamSkipUnchanged),
-                        static_cast<unsigned long long>(runtimeTiming.streamSkipThrottle));
+                        static_cast<unsigned long long>(runtimeTiming.streamSkipUnchanged));
             ImGui::Text("Stream snapshots (window): %llu",
                         static_cast<unsigned long long>(runtimeTiming.streamSnapshotsPrepared));
             ImGui::Text("Main uploads (window): %llu",
@@ -267,10 +283,10 @@ void GuiManager::renderImGUI(FrameUniforms& uniforms,
             ImGui::SliderFloat("Near Skip Distance", &uniforms.occlusionParams[2], 0.0f, 128.0f, "%.1f");
             ImGui::SliderFloat("Min Projected Span (px)", &uniforms.occlusionParams[3], 0.0f, 8.0f, "%.2f");
             if (ImGui::Button("Reset Occlusion")) {
-                uniforms.occlusionParams[0] = 1.0f;
-                uniforms.occlusionParams[1] = 0.01f;
-                uniforms.occlusionParams[2] = 20.0f;
-                uniforms.occlusionParams[3] = 1.0f;
+                uniforms.occlusionParams[0] = config_.occlusionEnabled ? 1.0f : 0.0f;
+                uniforms.occlusionParams[1] = config_.occlusionBias;
+                uniforms.occlusionParams[2] = config_.occlusionNearSkipDistance;
+                uniforms.occlusionParams[3] = config_.occlusionMinProjectedSpanPixels;
             }
         }
 

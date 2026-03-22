@@ -65,6 +65,12 @@ bool MeshletBufferController::initialize(BufferManager* bufferManager) {
     return buildActiveRanges();
 }
 
+void MeshletBufferController::setMaxActiveMeshlets(uint32_t maxActiveMeshlets) noexcept {
+    maxActiveMeshlets_ = std::max<uint32_t>(1u, maxActiveMeshlets);
+    activeRangesDirty_ = true;
+    activeMeshletBoundsDirty_ = true;
+}
+
 // ---------------------------------------------------------------------------
 // Tile Slot Management
 // ---------------------------------------------------------------------------
@@ -221,35 +227,35 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
     BufferDescriptor metadataDesc = Default;
     metadataDesc.label = StringView("meshlet metadata buffer");
     metadataDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(MeshletMetadataGPU);
-    metadataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    metadataDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
     metadataDesc.mappedAtCreation = false;
     if (!bufferManager_->createBuffer(meshMetadataBufferName_, metadataDesc)) return false;
 
     BufferDescriptor meshDataDesc = Default;
     meshDataDesc.label = StringView("meshlet data buffer");
     meshDataDesc.size = static_cast<uint64_t>(quadWordCapacity) * sizeof(uint32_t);
-    meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
     meshDataDesc.mappedAtCreation = false;
     if (!bufferManager_->createBuffer(meshDataBufferName_, meshDataDesc)) return false;
 
     BufferDescriptor aabbDesc = Default;
     aabbDesc.label = StringView("meshlet aabb buffer");
     aabbDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(MeshletAabbGPU);
-    aabbDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    aabbDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
     aabbDesc.mappedAtCreation = false;
     if (!bufferManager_->createBuffer(meshAabbBufferName_, aabbDesc)) return false;
 
     BufferDescriptor visibleIndicesDesc = Default;
     visibleIndicesDesc.label = StringView("visible meshlet indices buffer");
     visibleIndicesDesc.size = static_cast<uint64_t>(meshletCapacity) * sizeof(uint32_t);
-    visibleIndicesDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    visibleIndicesDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
     visibleIndicesDesc.mappedAtCreation = false;
     if (!bufferManager_->createBuffer(visibleMeshletIndexBufferName_, visibleIndicesDesc)) return false;
 
     BufferDescriptor activeRangesDesc = Default;
     activeRangesDesc.label = StringView("active meshlet ranges buffer");
     activeRangesDesc.size = static_cast<uint64_t>(rangeCapacity) * sizeof(ActiveMeshletRangeGPU);
-    activeRangesDesc.usage = BufferUsage::CopyDst | BufferUsage::Storage;
+    activeRangesDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
     activeRangesDesc.mappedAtCreation = false;
     if (!bufferManager_->createBuffer(activeMeshletRangeBufferName_, activeRangesDesc)) return false;
 
@@ -266,6 +272,66 @@ bool MeshletBufferController::recreateBuffers(uint32_t meshletCapacity,
 
     meshletAllocator_.reset(meshletCapacity_);
     quadDataAllocator_.reset(quadWordCapacity_);
+
+    return true;
+}
+
+bool MeshletBufferController::growBuffers(uint32_t newMeshletCapacity,
+                                          uint32_t newQuadWordCapacity,
+                                          uint32_t newRangeCapacity) {
+    if (bufferManager_ == nullptr) return false;
+
+    // Grow meshlet-sized buffers (metadata, aabb, visible indices).
+    if (newMeshletCapacity > meshletCapacity_) {
+        BufferDescriptor metadataDesc = Default;
+        metadataDesc.label = StringView("meshlet metadata buffer");
+        metadataDesc.size = static_cast<uint64_t>(newMeshletCapacity) * sizeof(MeshletMetadataGPU);
+        metadataDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
+        metadataDesc.mappedAtCreation = false;
+        if (!bufferManager_->growBuffer(meshMetadataBufferName_, metadataDesc)) return false;
+
+        BufferDescriptor aabbDesc = Default;
+        aabbDesc.label = StringView("meshlet aabb buffer");
+        aabbDesc.size = static_cast<uint64_t>(newMeshletCapacity) * sizeof(MeshletAabbGPU);
+        aabbDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
+        aabbDesc.mappedAtCreation = false;
+        if (!bufferManager_->growBuffer(meshAabbBufferName_, aabbDesc)) return false;
+
+        BufferDescriptor visibleIndicesDesc = Default;
+        visibleIndicesDesc.label = StringView("visible meshlet indices buffer");
+        visibleIndicesDesc.size = static_cast<uint64_t>(newMeshletCapacity) * sizeof(uint32_t);
+        visibleIndicesDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
+        visibleIndicesDesc.mappedAtCreation = false;
+        if (!bufferManager_->growBuffer(visibleMeshletIndexBufferName_, visibleIndicesDesc)) return false;
+
+        meshletAllocator_.grow(newMeshletCapacity);
+        meshletCapacity_ = newMeshletCapacity;
+    }
+
+    // Grow quad data buffer.
+    if (newQuadWordCapacity > quadWordCapacity_) {
+        BufferDescriptor meshDataDesc = Default;
+        meshDataDesc.label = StringView("meshlet data buffer");
+        meshDataDesc.size = static_cast<uint64_t>(newQuadWordCapacity) * sizeof(uint32_t);
+        meshDataDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
+        meshDataDesc.mappedAtCreation = false;
+        if (!bufferManager_->growBuffer(meshDataBufferName_, meshDataDesc)) return false;
+
+        quadDataAllocator_.grow(newQuadWordCapacity);
+        quadWordCapacity_ = newQuadWordCapacity;
+    }
+
+    // Grow range buffer.
+    if (newRangeCapacity > rangeCapacity_) {
+        BufferDescriptor activeRangesDesc = Default;
+        activeRangesDesc.label = StringView("active meshlet ranges buffer");
+        activeRangesDesc.size = static_cast<uint64_t>(newRangeCapacity) * sizeof(ActiveMeshletRangeGPU);
+        activeRangesDesc.usage = BufferUsage::CopyDst | BufferUsage::CopySrc | BufferUsage::Storage;
+        activeRangesDesc.mappedAtCreation = false;
+        if (!bufferManager_->growBuffer(activeMeshletRangeBufferName_, activeRangesDesc)) return false;
+
+        rangeCapacity_ = newRangeCapacity;
+    }
 
     return true;
 }
@@ -336,10 +402,8 @@ bool MeshletBufferController::ensureBuffers(uint32_t requiredMeshlets,
     if (recreated != nullptr) *recreated = false;
     if (bufferManager_ == nullptr) return false;
 
-    const bool needsRecreate =
-        meshletCapacity_ < requiredMeshlets ||
-        quadWordCapacity_ < requiredQuadWords ||
-        rangeCapacity_ < requiredRanges ||
+    // Check if any buffers are missing entirely (e.g. first init).
+    const bool buffersMissing =
         !bufferManager_->getBuffer(meshDataBufferName_) ||
         !bufferManager_->getBuffer(meshMetadataBufferName_) ||
         !bufferManager_->getBuffer(meshAabbBufferName_) ||
@@ -347,7 +411,12 @@ bool MeshletBufferController::ensureBuffers(uint32_t requiredMeshlets,
         !bufferManager_->getBuffer(activeMeshletRangeBufferName_) ||
         !bufferManager_->getBuffer(activeMeshletRangeParamsBufferName_);
 
-    if (!needsRecreate) return true;
+    const bool needsGrow =
+        meshletCapacity_ < requiredMeshlets ||
+        quadWordCapacity_ < requiredQuadWords ||
+        rangeCapacity_ < requiredRanges;
+
+    if (!buffersMissing && !needsGrow) return true;
 
     uint32_t nextMeshletCapacity = std::max(meshletCapacity_, kInitialMeshletCapacity);
     while (nextMeshletCapacity < requiredMeshlets) {
@@ -364,12 +433,18 @@ bool MeshletBufferController::ensureBuffers(uint32_t requiredMeshlets,
         nextRangeCapacity = std::max(requiredRanges, nextRangeCapacity * 2u);
     }
 
-    if (!recreateBuffers(nextMeshletCapacity, nextQuadWordCapacity, nextRangeCapacity)) {
-        return false;
-    }
-
-    if (!repackExistingAllocations()) {
-        return false;
+    if (buffersMissing) {
+        // First creation: no existing data to preserve.
+        if (!recreateBuffers(nextMeshletCapacity, nextQuadWordCapacity, nextRangeCapacity)) {
+            return false;
+        }
+    } else {
+        // Growth: use GPU-side blit copy instead of CPU repack.
+        // This avoids the writeBuffer storm that causes IOFence deadlocks
+        // on macOS Metal when many meshlets need to be re-uploaded.
+        if (!growBuffers(nextMeshletCapacity, nextQuadWordCapacity, nextRangeCapacity)) {
+            return false;
+        }
     }
 
     if (recreated != nullptr) *recreated = true;

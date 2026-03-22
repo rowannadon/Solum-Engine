@@ -14,7 +14,6 @@ RuntimeTimingSnapshot mergeRuntimeTimingSnapshots(const RuntimeTimingSnapshot& g
     merged.streamPrepareUpload = streamingTiming.streamPrepareUpload;
     merged.streamSkipNoCamera = streamingTiming.streamSkipNoCamera;
     merged.streamSkipUnchanged = streamingTiming.streamSkipUnchanged;
-    merged.streamSkipThrottle = streamingTiming.streamSkipThrottle;
     merged.streamSnapshotsPrepared = streamingTiming.streamSnapshotsPrepared;
     merged.worldHasPendingJobs = streamingTiming.worldHasPendingJobs;
     merged.meshHasPendingJobs = streamingTiming.meshHasPendingJobs;

@@ -7,8 +7,8 @@
       "seed": 1337,
       "horizontalFrequency": 0.75,
       "verticalFrequency": 2.0,
-      "maxStrengthBlocks": 24.0,
-      "falloffBlocks": 16.0,
+      "maxStrengthBlocks": 8.0,
+      "falloffBlocks": 5.0,
       "encodedNodeTree": "DQAE@BCQgEAwrXIz8E"
     },
     "materials": {

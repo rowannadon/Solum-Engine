@@ -7,6 +7,7 @@
 
 #include <glm/mat4x4.hpp>
 
+#include "solum_engine/core/EngineConfig.h"
 #include "solum_engine/render/Uniforms.h"
 #include "solum_engine/render/RuntimeTiming.h"
 #include "solum_engine/render/WebGPURenderer.h"
@@ -36,7 +37,7 @@ private:
     void onScroll(double xoffset, double yoffset);
     void onKey(int key, int scancode, int action, int mods);
 
-    void updateProjectionMatrix(int zoom);
+    void updateProjectionMatrix(float zoom);
     void updateViewMatrix();
     void updateViewportUniforms();
     void processInput();
@@ -70,12 +71,13 @@ private:
         bool Shift = false;   // Move down
     };
 
-    GLFWwindow* window;
+    GLFWwindow* window = nullptr;
     GuiManager gui;
+    EngineConfig config_{};
 
     WebGPURenderer gpu;
     VoxelStreamingSystem voxelStreaming_;
-    BufferManager *buf;
+    BufferManager* buf = nullptr;
     bool streamingStarted_ = false;
 
     FirstPersonCamera camera;

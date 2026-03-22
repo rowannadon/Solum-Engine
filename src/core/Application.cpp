@@ -18,26 +18,69 @@
 #include "solum_engine/voxel/MaterialRegistry.h"
 #include "solum_engine/voxel/World.h"
 
+namespace {
+
+float hoursToDayPhase(float hours) {
+    float wrapped = std::fmod(hours, 24.0f);
+    if (wrapped < 0.0f) {
+        wrapped += 24.0f;
+    }
+    return std::fmod(wrapped + 18.0f, 24.0f) / 24.0f;
+}
+
+}  // namespace
+
 bool Application::Initialize() {
+    config_ = EngineConfig::loadDefault();
+
     WebGPURenderer::Config rendererConfig{};
+    rendererConfig.renderConfig.width = config_.windowConfig.width;
+    rendererConfig.renderConfig.height = config_.windowConfig.height;
+    rendererConfig.renderConfig.title = config_.windowConfig.title;
+    rendererConfig.renderConfig.presentMode = config_.windowConfig.presentMode;
+    rendererConfig.frameUploadBudgetBytesPerFrame = config_.meshletBufferConfig.uploadBudgetBytesPerFrame;
+    rendererConfig.maxActiveMeshlets = config_.meshletBufferConfig.maxActiveMeshlets;
     if (!gpu.initialize(rendererConfig)) return false;
-    if (!voxelStreaming_.initialize(gpu.getBlockModelLibrary())) return false;
+
+    VoxelStreamingSystem::Config streamingConfig{};
+    streamingConfig.worldConfig.columnLoadRadius = config_.worldConfig.columnLoadRadius;
+    streamingConfig.worldConfig.maxInFlightColumnJobs = config_.worldConfig.maxInFlightColumnJobs;
+    streamingConfig.worldConfig.jobConfig.worker_threads = config_.worldConfig.jobConfig.workerThreads;
+    streamingConfig.meshConfig.lodLevelCount = config_.meshConfig.lodLevelCount;
+    streamingConfig.meshConfig.meshTileSizeChunks = config_.meshConfig.meshTileSizeChunks;
+    streamingConfig.meshConfig.meshTileHeightChunks = config_.meshConfig.meshTileHeightChunks;
+    streamingConfig.meshConfig.activeChunkRadius = config_.meshConfig.activeChunkRadius;
+    streamingConfig.meshConfig.lodSseTargetPixels = config_.meshConfig.lodSseTargetPixels;
+    streamingConfig.meshConfig.lodSseHysteresisPixels = config_.meshConfig.lodSseHysteresisPixels;
+    streamingConfig.meshConfig.lodSseMinDepthBlocks = config_.meshConfig.lodSseMinDepthBlocks;
+    streamingConfig.meshConfig.lodSseFallbackProjectionScale = config_.meshConfig.lodSseFallbackProjectionScale;
+    streamingConfig.meshConfig.jobConfig.worker_threads = config_.meshConfig.jobConfig.workerThreads;
+    streamingConfig.maxDeltaEntriesPerTick = config_.streamingConfig.maxDeltaEntriesPerTick;
+    if (!voxelStreaming_.initialize(streamingConfig, gpu.getBlockModelLibrary())) return false;
     streamingStarted_ = false;
     buf = gpu.getBufferManager();
 
     window = gpu.getWindow();
+    mouseState.lastX = 0.5f * static_cast<float>(config_.windowConfig.width);
+    mouseState.lastY = 0.5f * static_cast<float>(config_.windowConfig.height);
 
-    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-    if (mode) {
-        std::cout << "Monitor refresh rate: " << mode->refreshRate << " Hz" << std::endl;
-        refreshRate = mode->refreshRate;
+    float targetFps = config_.framePacingConfig.targetFps;
+    if (config_.framePacingConfig.useMonitorRefreshRate) {
+        GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        if (mode != nullptr && mode->refreshRate > 0) {
+            std::cout << "Monitor refresh rate: " << mode->refreshRate << " Hz" << std::endl;
+            refreshRate = mode->refreshRate;
+            targetFps = static_cast<float>(refreshRate);
+        } else {
+            std::cout << "Monitor refresh rate unavailable, using configured target FPS: "
+                      << targetFps << std::endl;
+        }
     } else {
-        std::cout << "Monitor refresh rate unavailable, using default: " << refreshRate << " Hz" << std::endl;
+        refreshRate = static_cast<int>(std::round(targetFps));
     }
-    framePacer_ = std::make_unique<FramePacer>(static_cast<float>(refreshRate));
+    framePacer_ = std::make_unique<FramePacer>(targetFps);
 
-    // initialize uniforms
     uniforms.modelMatrix = glm::mat4x4(1.0);
     uniforms.projectionMatrix = glm::mat4x4(1.0);
     uniforms.inverseProjectionMatrix = glm::mat4x4(1.0);
@@ -45,19 +88,34 @@ bool Application::Initialize() {
     uniforms.inverseViewMatrix = glm::mat4x4(1.0);
     uniforms.cullingViewMatrix = glm::mat4x4(1.0);
     uniforms.inverseCullingViewMatrix = glm::mat4x4(1.0);
-    uniforms.renderFlags[0] =
-        kRenderFlagBoundsChunks |
-        kRenderFlagBoundsColumns |
-        kRenderFlagBoundsRegions;
+    uniforms.renderFlags[0] = 0u;
+    if (config_.debugConfig.enableMeshletDebug) {
+        uniforms.renderFlags[0] |= kRenderFlagMeshletDebug;
+    }
+    if (config_.debugConfig.enableBoundsDebug) {
+        uniforms.renderFlags[0] |= kRenderFlagBoundsDebug;
+    }
+    if (config_.debugConfig.showChunkBounds) {
+        uniforms.renderFlags[0] |= kRenderFlagBoundsChunks;
+    }
+    if (config_.debugConfig.showColumnBounds) {
+        uniforms.renderFlags[0] |= kRenderFlagBoundsColumns;
+    }
+    if (config_.debugConfig.showRegionBounds) {
+        uniforms.renderFlags[0] |= kRenderFlagBoundsRegions;
+    }
+    if (config_.debugConfig.showMeshletBounds) {
+        uniforms.renderFlags[0] |= kRenderFlagBoundsMeshlets;
+    }
     uniforms.renderFlags[1] = 0u;
     uniforms.renderFlags[2] = 0u;
     uniforms.renderFlags[3] = 0u;
-    uniforms.occlusionParams[0] = 1.0f;
-    uniforms.occlusionParams[1] = 0.01f;
-    uniforms.occlusionParams[2] = 20.0f;
-    uniforms.occlusionParams[3] = 1.0f;
-    uniforms.timeParams[0] = 0.25f;
-    uniforms.timeParams[1] = 12.0f;
+    uniforms.occlusionParams[0] = config_.occlusionConfig.enabled ? 1.0f : 0.0f;
+    uniforms.occlusionParams[1] = config_.occlusionConfig.depthBias;
+    uniforms.occlusionParams[2] = config_.occlusionConfig.nearSkipDistance;
+    uniforms.occlusionParams[3] = config_.occlusionConfig.minProjectedSpanPixels;
+    uniforms.timeParams[0] = hoursToDayPhase(config_.timeConfig.initialTimeHours);
+    uniforms.timeParams[1] = config_.timeConfig.initialTimeHours;
     uniforms.timeParams[2] = 0.0f;
     uniforms.timeParams[3] = 0.0f;
     uniforms.viewportParams[0] = 1.0f;
@@ -65,7 +123,12 @@ bool Application::Initialize() {
     uniforms.viewportParams[2] = 2.0f;
     uniforms.viewportParams[3] = 2.0f;
 
-    camera.position = glm::vec3(0.0, 0.0, 175.0);
+    camera.position = config_.cameraConfig.initialPosition;
+    camera.yaw = config_.cameraConfig.yaw;
+    camera.pitch = config_.cameraConfig.pitch;
+    camera.movementSpeed = config_.cameraConfig.movementSpeed;
+    camera.mouseSensitivity = config_.cameraConfig.mouseSensitivity;
+    camera.zoom = config_.cameraConfig.fieldOfViewDegrees;
     camera.updateCameraVectors();
     updateViewportUniforms();
     updateProjectionMatrix(camera.zoom);
@@ -78,7 +141,25 @@ bool Application::Initialize() {
 
     buf->writeBuffer("uniform_buffer", 0, &uniforms, sizeof(FrameUniforms));
 
-    if (!gui.initImGUI(window, gpu.getContext()->getDevice(), gpu.getContext()->getSurfaceFormat())) {
+    GuiManager::Config guiConfig{};
+    guiConfig.dayDurationSeconds = config_.timeConfig.dayDurationSeconds;
+    guiConfig.timeMultiplier = config_.timeConfig.timeMultiplier;
+    guiConfig.pauseTime = config_.timeConfig.pauseTime;
+    guiConfig.manualTimeHours = config_.timeConfig.manualTimeHours;
+    guiConfig.useManualTime = config_.timeConfig.useManualTime;
+    guiConfig.initialTimeHours = config_.timeConfig.initialTimeHours;
+    guiConfig.freezeCullingCamera = config_.debugConfig.freezeCullingCamera;
+    guiConfig.cameraResetPosition = config_.cameraConfig.initialPosition;
+    guiConfig.cameraResetYaw = config_.cameraConfig.yaw;
+    guiConfig.cameraResetPitch = config_.cameraConfig.pitch;
+    guiConfig.cameraResetMovementSpeed = config_.cameraConfig.movementSpeed;
+    guiConfig.cameraResetMouseSensitivity = config_.cameraConfig.mouseSensitivity;
+    guiConfig.cameraResetFieldOfView = config_.cameraConfig.fieldOfViewDegrees;
+    guiConfig.occlusionEnabled = config_.occlusionConfig.enabled;
+    guiConfig.occlusionBias = config_.occlusionConfig.depthBias;
+    guiConfig.occlusionNearSkipDistance = config_.occlusionConfig.nearSkipDistance;
+    guiConfig.occlusionMinProjectedSpanPixels = config_.occlusionConfig.minProjectedSpanPixels;
+    if (!gui.initImGUI(window, gpu.getContext()->getDevice(), gpu.getContext()->getSurfaceFormat(), guiConfig)) {
         std::cerr << "Failed to initialize ImGUI" << std::endl;
         return false;
     }
@@ -250,14 +331,19 @@ void Application::processInput() {
     updateViewMatrix();
 }
 
-void Application::updateProjectionMatrix(int zoom) {
+void Application::updateProjectionMatrix(float zoom) {
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
     if (width <= 0 || height <= 0) {
         return;
     }
     float ratio = width / (float)height;
-    uniforms.projectionMatrix = glm::perspective(zoom * PI / 180, ratio, 0.1f, 2500.0f);
+    uniforms.projectionMatrix = glm::perspective(
+        zoom * PI / 180.0f,
+        ratio,
+        config_.cameraConfig.nearClip,
+        config_.cameraConfig.farClip
+    );
     uniforms.inverseProjectionMatrix = glm::inverse(uniforms.projectionMatrix);
 
     buf->writeBuffer("uniform_buffer", offsetof(FrameUniforms, projectionMatrix), &uniforms.projectionMatrix, sizeof(FrameUniforms::projectionMatrix));
@@ -510,7 +596,7 @@ void Application::updateTargetedBlockSelection(bool enabled) {
     }
 
     VoxelRaycastHit rayHit{};
-    if (raycastTargetBlock(32.0f, rayHit) && rayHit.hit) {
+    if (raycastTargetBlock(config_.interactionConfig.blockReach, rayHit) && rayHit.hit) {
         currentTargetBlockHit_ = rayHit;
         gpu.setSelectionOutlineBlock(rayHit.breakCoord);
         return;
